@@ -1,4 +1,4 @@
-const Symbol = @import("symbol.zig").Symbol;
+const Symbol = @import("metadata.zig").Symbol;
 const utils = @import("utils.zig");
 
 const readInt = utils.readInt;

@@ -72,7 +72,7 @@ export var counts: MapDef linksection(".maps") = .{
 export fn onCpusample(ctx: *anyopaque) linksection("perf_event") c_int {
     var zero: u32 = 0;
 
-    const target_ptr = bpf_map_lookup_elem(&target_pid, &zero);
+    const target_ptr = bpf_map_lookup_elem(&target_pid, &zero) orelse return 0;
     const pid = @as(*const u32, @ptrCast(@alignCast(target_ptr)));
     if (pid.* == 0) return 0;
 

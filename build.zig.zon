@@ -32,6 +32,14 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
+      .libbpf = .{
+            .url = "https://codeload.github.com/libbpf/libbpf/tar.gz/refs/tags/v1.5.0",
+            .hash = "N-V-__8AAFtHQgDJG7PwHj2BHSIwjUDNrxWlPWGM0kG7i3HV",
+        },
+      .zlib = .{
+            .url = "https://codeload.github.com/madler/zlib/tar.gz/refs/tags/v1.3.1",
+            .hash = "N-V-__8AAB0eQwD-0MdOEBmz7intriBReIsIDNlukNVoNu6o",
+        },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding

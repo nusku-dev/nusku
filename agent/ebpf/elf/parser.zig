@@ -1,9 +1,9 @@
 const std = @import("std");
 const utils = @import("utils.zig");
-const Symbol = @import("symbol.zig").Symbol;
+const Symbol = @import("metadata.zig").Symbol;
 const RelocIterator = @import("relocation.zig").RelocIterator;
 
-const Error = utils.Error;
+pub const Error = utils.Error;
 const readInt = utils.readInt;
 
 const EM_BPF = 247;
@@ -11,7 +11,7 @@ const SHT_SYMTAB = 2;
 const STB_GLOBAL = 1;
 const SHT_REL = 9;
 
-const Section = struct {
+pub const Section = struct {
     index: usize,
     /// Offset of this section's name inside the section-name string table.
     name: u32,

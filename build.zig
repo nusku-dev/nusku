@@ -1,12 +1,15 @@
 const std = @import("std");
-
 const agent = @import("agent/build.zig");
 
 pub fn build(b: *std.Build) void {
+    // musl by default: it is what makes a fully static binary possible.
     const target = b.standardTargetOptions(.{
         .default_target = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl },
     });
     const optimize = b.standardOptimizeOption(.{});
+
+    // Created first so components can register their tests with it.
+    const test_step = b.step("test", "Run all tests");
 
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("cli/root.zig"),
@@ -20,7 +23,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const agent_mod = agent.build(b, target, optimize);
+    // The agent: its libraries, kernel programs, module and tests all live in agent/build.zig.
+    const agent_mod = agent.add(b, .{
+        .target = target,
+        .optimize = optimize,
+        .test_step = test_step,
+    });
 
     const exe = b.addExecutable(.{
         .name = "nusku",
@@ -48,20 +56,8 @@ pub fn build(b: *std.Build) void {
     }
 
     const mod_tests = b.addTest(.{ .root_module = cli_mod });
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-
-    const agent_tests = b.addTest(.{ .root_module = agent_mod });
-    const run_agent_tests = b.addRunArtifact(agent_tests);
-
-    const run_ebpf_tests = agent.runTests(b, target, optimize);
+    test_step.dependOn(&b.addRunArtifact(mod_tests).step);
 
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
-
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
-    test_step.dependOn(&run_ebpf_tests.step);
-    test_step.dependOn(&run_agent_tests.step);
+    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 }
