@@ -1,20 +1,18 @@
 const std = @import("std");
 const parser = @import("../elf/parser.zig");
 const meta = @import("../elf/metadata.zig");
-const Map = @import("libc/map.zig").Map;
-const Program = @import("libc/program.zig").Program;
-const cError = @import("libc/error.zig").Error;
+const Map = @import("map.zig").Map;
+const Program = @import("program.zig").Program;
+const cError = @import("../libc/error.zig").Error;
 
-const Error = parser.Error || cError || error{UnknownMap};
+pub const Error = parser.Error || cError || error{UnknownMap};
 
 const ELF = parser.ELF;
-
-const Kind = enum { oncpu };
 
 /// A map we created, matched to its definition in the object by name.
 pub const MapRef = struct {
     name: []const u8,
-    fd: c_int,
+    map: Map,
 };
 
 const R_BPF_64_64: u32 = 1;
@@ -24,46 +22,21 @@ const BPF_PSEUDO_MAP_FD: u8 = 1;
 pub const Loader = struct {
     elf: ELF,
     allocator: std.mem.Allocator,
-    maps: std.ArrayList(Map),
     program: ?Program,
 
     pub fn init(allocator: std.mem.Allocator, elf: ELF) Loader {
-        return .{ .allocator = allocator, .elf = elf, .maps = .empty, .program = null };
+        return .{ .allocator = allocator, .elf = elf, .program = null };
     }
 
-    pub fn load(self: *Loader, kind: Kind) !void {
-        if (self.program != null or self.maps.items.len != 0) {
-            return error.AlreadyLoaded;
-        }
-
-        errdefer self.deinit();
-
-        switch (kind) {
-            .oncpu => try self.loadOnCpu(),
-        }
-    }
-
-    pub fn deinit(self: *Loader) void {
-        if (self.program) |*program| {
-            program.deinit();
-        }
-        self.program = null;
-
-        for (self.maps.items) |*map| {
-            map.deinit();
-        }
-
-        self.maps.deinit(self.allocator);
-        self.maps = .empty;
-    }
-
-    fn loadOnCpu(self: *Loader) Error!void {
-        const stacks_fd = try self.createAndTrackMap("stacks");
-        const counts_fd = try self.createAndTrackMap("counts");
-        const target_pid_fd = try self.createAndTrackMap("target_pid");
-
-        const section = try self.elf.findSection("perf_event");
-        const func = try self.elf.findSymbol("onCpusample");
+    pub fn load(
+        self: *Loader,
+        kind: Program.Kind,
+        section_name: []const u8,
+        function_name: [:0]const u8,
+        maps: []const MapRef,
+    ) Error!c_int {
+        const section = try self.elf.findSection(section_name);
+        const func = try self.elf.findSymbol(function_name);
         const section_bytes = try self.elf.readSectionData(section);
         if (func.section != section.index or func.value != 0 or func.size != section_bytes.len) return error.Unsupported;
         if (section_bytes.len == 0 or section_bytes.len % 8 != 0) return error.Unsupported;
@@ -74,29 +47,22 @@ pub const Loader = struct {
         const code = std.mem.sliceAsBytes(words);
         @memcpy(code, section_bytes);
 
-        const maps = [_]MapRef{
-            .{ .name = "stacks", .fd = stacks_fd },
-            .{ .name = "counts", .fd = counts_fd },
-            .{ .name = "target_pid", .fd = target_pid_fd },
-        };
-
-        try self.patchMaps(section, code, &maps);
+        try self.patchMaps(section, code, maps);
         var log = std.mem.zeroes([64 * 1024]u8);
 
         const license = try self.elf.readSectionData(try self.elf.findSection("license"));
 
-        self.program = try Program.load(.perf_event, "onCpusample", code, license, &log);
+        const program = try Program.load(kind, function_name, code, license, &log);
+        self.program = program;
+
+        return program.fd;
     }
 
-    fn createAndTrackMap(self: *Loader, name: [:0]const u8) Error!c_int {
-        const map = try self.createMap(name);
-
-        self.maps.append(self.allocator, map) catch |err| {
-            var owned_map = map;
-            owned_map.deinit();
-            return err;
-        };
-        return map.fd;
+    pub fn deinit(self: *Loader) void {
+        if (self.program) |*program| {
+            program.deinit();
+        }
+        self.program = null;
     }
 
     /// Fills in the map descriptors in a copy of the program's code. For each relocation, the
@@ -130,25 +96,26 @@ pub const Loader = struct {
     fn fdForOffset(self: Loader, maps: []const MapRef, def_offset: i32) Error!c_int {
         for (maps) |m| {
             const symbol = try self.elf.findSymbol(m.name);
-            if (def_offset >= 0 and symbol.value == @as(usize, @intCast(def_offset))) return m.fd;
+            if (def_offset >= 0 and symbol.value == @as(usize, @intCast(def_offset))) return m.map.fd;
         }
         return error.UnknownMap;
     }
 
     /// Creates one of the object's maps in the kernel, using the definition stored in the object
-    fn createMap(self: Loader, name: [:0]const u8) Error!Map {
+    pub fn createMap(self: Loader, name: [:0]const u8) Error!MapRef {
         const symbol = try self.elf.findSymbol(name);
         const maps = try self.elf.findSection(".maps");
         if (symbol.section != maps.index or symbol.size != 16) return error.Unsupported;
 
         const bytes = try self.elf.readSectionData(maps);
         const mapDef = try meta.MapDef.init(bytes, symbol);
-        return Map.create(name, .{
+        const map = try Map.create(name, .{
             .map_type = mapDef.map_type,
             .key_size = mapDef.key_size,
             .value_size = mapDef.value_size,
             .max_entries = mapDef.max_entries,
         });
+        return .{ .name = name, .map = map };
     }
 };
 
@@ -161,36 +128,30 @@ test "creates the three maps in the kernel" {
     var loader = Loader.init(testing.allocator, elf);
     defer loader.deinit();
 
-    const stacks_fd = loader.createAndTrackMap("stacks") catch |err| {
+    const stacks = loader.createMap("stacks") catch |err| {
         if (err == error.PermissionDenied or err == error.NotSupported) {
             return error.SkipZigTest;
         }
         return err;
     };
 
-    try testing.expect(stacks_fd >= 0);
-    try testing.expectEqual(@as(usize, 1), loader.maps.items.len);
+    try testing.expect(stacks.map.fd >= 0);
 
-    const counts_fd = try loader.createAndTrackMap("counts");
-    try testing.expect(counts_fd >= 0);
-    try testing.expectEqual(@as(usize, 2), loader.maps.items.len);
+    const counts = try loader.createMap("counts");
+    try testing.expect(counts.map.fd >= 0);
 
-    const target_pid_fd = try loader.createAndTrackMap("target_pid");
-    try testing.expect(target_pid_fd >= 0);
-
-    try testing.expectEqual(@as(usize, 3), loader.maps.items.len);
+    const target_pid = try loader.createMap("target_pid");
+    try testing.expect(target_pid.map.fd >= 0);
 
     // The array map is the one we can round-trip a value through without a program.
     const key = std.mem.toBytes(@as(u32, 0));
     const value = std.mem.toBytes(@as(u32, 4242));
 
-    const target_pid = loader.maps.items[2];
-
-    try target_pid.update(&key, &value);
+    try target_pid.map.update(&key, &value);
 
     var out: [4]u8 = undefined;
 
-    try std.testing.expect(try target_pid.lookup(&key, &out));
+    try std.testing.expect(try target_pid.map.lookup(&key, &out));
     try std.testing.expectEqual(@as(u32, 4242), std.mem.bytesToValue(u32, &out));
 }
 
@@ -203,9 +164,9 @@ test "patchMaps fills in the descriptors and touches nothing else" {
     defer testing.allocator.free(code);
 
     const maps = [_]MapRef{
-        .{ .name = "stacks", .fd = 100 },
-        .{ .name = "counts", .fd = 101 },
-        .{ .name = "target_pid", .fd = 102 },
+        .{ .name = "stacks", .map = Map{ .fd = 100, .key_size = 4, .value_size = 4 } },
+        .{ .name = "counts", .map = Map{ .fd = 101, .key_size = 4, .value_size = 4 } },
+        .{ .name = "target_pid", .map = Map{ .fd = 102, .key_size = 4, .value_size = 4 } },
     };
 
     var loader = Loader.init(testing.allocator, elf);
@@ -223,7 +184,7 @@ test "patchMaps fills in the descriptors and touches nothing else" {
 
         const before = std.mem.readInt(i32, original[reloc.offset + 4 ..][0..4], .little);
         const expected: i32 = for (maps) |m| {
-            if ((try elf.findSymbol(m.name)).value == before) break m.fd;
+            if ((try elf.findSymbol(m.name)).value == before) break m.map.fd;
         } else return error.TestUnexpectedResult;
 
         try testing.expectEqual(@as(u8, 1), code[reloc.offset + 1] >> 4);
@@ -253,26 +214,10 @@ test "patchMaps fails when a map is missing from the list" {
     defer loader.deinit();
 
     const maps = [_]MapRef{
-        .{ .name = "stacks", .fd = 100 },
-        .{ .name = "target_pid", .fd = 102 },
+        .{ .name = "stacks", .map = Map{ .fd = 101, .value_size = 4, .key_size = 4 } },
+        .{ .name = "target_pid", .map = Map{ .fd = 102, .value_size = 4, .key_size = 4 } },
     };
     try testing.expectError(error.UnknownMap, loader.patchMaps(program, code, &maps));
-}
-
-test "the kernel verifier accepts the program (needs root, skipped otherwise)" {
-    const elf = try ELF.init(@embedFile("oncpu_bpf"));
-
-    var loader = Loader.init(testing.allocator, elf);
-    defer loader.deinit();
-
-    loader.loadOnCpu() catch |err| {
-        if (err == error.PermissionDenied or err == error.NotSupported) {
-            return error.SkipZigTest;
-        }
-        return err;
-    };
-
-    try testing.expect(loader.program.?.fd >= 0);
 }
 
 test "a rejected program comes with the verifier's explanation (needs root, skipped otherwise)" {

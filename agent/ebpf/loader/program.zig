@@ -1,6 +1,6 @@
 const std = @import("std");
-const c = @import("clibs.zig").clibs;
-const err = @import("error.zig");
+const c = @import("../libc/import.zig").clibs;
+const err = @import("../libc/error.zig");
 
 const Error = err.Error;
 const fromErrno = err.fromErrno;
@@ -8,7 +8,7 @@ const fromErrno = err.fromErrno;
 pub const Program = struct {
     fd: c_int,
 
-    const Kind = enum { perf_event };
+    pub const Kind = enum { perf_event };
 
     /// Loads a program into the kernel; the verifier runs here. `insns` is a whole number of
     /// 8-byte instructions. `license` is the license section including its terminating zero.
@@ -83,6 +83,16 @@ const ProgLoadOpts = extern struct {
     log_true_size: u32 = 0,
     token_fd: u32 = 0,
 };
+
+// These numbers come from laying out the C struct on a 64-bit target by hand.
+// If one is wrong, the build stops here instead of corrupting a system call.
+comptime {
+    std.debug.assert(@sizeOf(ProgLoadOpts) == 112);
+    std.debug.assert(@offsetOf(ProgLoadOpts, "fd_array") == 48);
+    std.debug.assert(@offsetOf(ProgLoadOpts, "log_level") == 88);
+    std.debug.assert(@offsetOf(ProgLoadOpts, "log_buf") == 96);
+    std.debug.assert(@offsetOf(ProgLoadOpts, "token_fd") == 108);
+}
 
 const testing = std.testing;
 

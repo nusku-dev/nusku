@@ -1,6 +1,6 @@
 const std = @import("std");
-const c = @import("clibs.zig").clibs;
-const err = @import("error.zig");
+const c = @import("../libc/import.zig").clibs;
+const err = @import("../libc/error.zig");
 
 const Error = err.Error;
 const fromErrno = err.fromErrno;
@@ -58,7 +58,75 @@ pub const Map = struct {
     }
 };
 
+/// A map seen through its real key and value types.
+pub fn TypedMap(comptime K: type, comptime V: type) type {
+    comptime {
+        assertPlainData(K);
+        assertPlainData(V);
+    }
+    return struct {
+        const Self = @This();
+        raw: Map,
+
+        /// Wraps `raw` after checking that its key and value sizes match K and V.
+        /// This catches the kernel program and the Zig side drifting apart.
+        pub fn init(raw: Map) Error!Self {
+            if (raw.key_size != @sizeOf(K) or raw.value_size != @sizeOf(V)) return error.InvalidArgument;
+            return .{ .raw = raw };
+        }
+
+        pub fn update(self: Self, key: K, value: V) Error!void {
+            try self.raw.update(std.mem.asBytes(&key), std.mem.asBytes(&value));
+        }
+
+        /// Returns null when the key is not in the map.
+        pub fn lookup(self: Self, key: K) Error!?V {
+            var value: V = undefined;
+            if (!try self.raw.lookup(std.mem.asBytes(&key), std.mem.asBytes(&value))) return null;
+            return value;
+        }
+
+        /// Walks the keys: pass null for the first one, the previous key after that.
+        /// Returns null after the last key.
+        pub fn nextKey(self: Self, prev: ?K) Error!?K {
+            var next: K = undefined;
+            const found = if (prev) |p|
+                try self.raw.nextKey(std.mem.asBytes(&p), std.mem.asBytes(&next))
+            else
+                try self.raw.nextKey(null, std.mem.asBytes(&next));
+            return if (found) next else null;
+        }
+    };
+}
+
+/// Keys and values are copied byte for byte to and from the kernel, so their layout must be
+/// fixed: integers, arrays, or extern structs. Padding bytes are rejected because they hold
+/// garbage and the kernel compares keys by bytes.
+fn assertPlainData(comptime T: type) void {
+    switch (@typeInfo(T)) {
+        .int => {},
+        .array => |a| assertPlainData(a.child),
+        .@"struct" => |s| {
+            if (s.layout != .@"extern") @compileError(@typeName(T) ++ " must be an extern struct");
+            var sum: usize = 0;
+            inline for (s.fields) |f| {
+                assertPlainData(f.type);
+                sum += @sizeOf(f.type);
+            }
+            if (sum != @sizeOf(T)) @compileError(@typeName(T) ++ " has padding bytes");
+        },
+        else => @compileError("unsupported map type " ++ @typeName(T)),
+    }
+}
+
 const testing = std.testing;
+
+test "TypedMap checks the sizes of the map it wraps" {
+    const Counters = TypedMap(u32, u64);
+    _ = try Counters.init(.{ .fd = -1, .key_size = 4, .value_size = 8 });
+    try std.testing.expectError(error.InvalidArgument, Counters.init(.{ .fd = -1, .key_size = 8, .value_size = 8 }));
+    try std.testing.expectError(error.InvalidArgument, Counters.init(.{ .fd = -1, .key_size = 4, .value_size = 4 }));
+}
 
 test "map update and lookup round-trip" {
     var map = Map.create("nusku_test", .{

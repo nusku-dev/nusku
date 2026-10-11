@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("clibs.zig").clibs;
+const c = @import("import.zig").clibs;
 
 // libbpf reports failure as a negative errno. We turn that into a Zig error in one place.
 pub const Error = error{
