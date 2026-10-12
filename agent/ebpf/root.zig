@@ -1,11 +1,7 @@
 const std = @import("std");
 const oncpu_test = @import("kernel/oncpu_test.zig");
 const loader = @import("loader/loader.zig");
-const oncpu = @import("metrics/oncpu.zig");
-
-pub const Ebpf = struct {
-    fn init() !void {}
-};
+pub const oncpu = @import("metrics/oncpu.zig");
 
 test "BPF object file exists and is not empty" {
     const oncpu_bpf_bytes = @embedFile("oncpu_bpf");

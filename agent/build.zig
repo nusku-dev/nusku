@@ -12,27 +12,25 @@ pub const Options = struct {
 
 /// Builds the agent and returns its module.
 pub fn add(b: *std.Build, options: Options) *std.Build.Module {
+    // The one and only ebpf module: C libs and kernel programs attach here.
+    const ebpf = b.createModule(.{
+        .root_source_file = b.path("agent/ebpf/root.zig"),
+        .target = options.target,
+        .optimize = options.optimize,
+        .link_libc = true,
+    });
+    addCLibraries(b, ebpf, options);
+    addKernelProgram(b, ebpf, "oncpu", "agent/ebpf/kernel/oncpu.ebpf.zig");
+
     const module = b.createModule(.{
         .root_source_file = b.path("agent/root.zig"),
         .target = options.target,
         .optimize = options.optimize,
         .link_libc = true,
     });
+    module.addImport("ebpf", ebpf);
 
-    module.addAnonymousImport("ebpf", .{
-        .root_source_file = b.path("agent/ebpf/root.zig"),
-        .target = options.target,
-        .optimize = options.optimize,
-        .link_libc = true,
-    });
-    addCLibraries(b, module, options);
-
-    // Kernel programs. Each one becomes an import named "<name>_bpf" (read it with
-    // @embedFile) and a copy in zig-out/bpf/<name>.bpf.o for inspection.
-    // A new measurement adds one line here.
-    addKernelProgram(b, module, "oncpu", "agent/ebpf/kernel/oncpu.ebpf.zig");
-
-    addTests(b, module, options.test_step);
+    addTests(b, module, ebpf, options.test_step);
     return module;
 }
 
@@ -60,28 +58,23 @@ fn addKernelProgram(b: *std.Build, module: *std.Build.Module, name: []const u8, 
 
 /// Runs the agent's tests, and also installs the test binary as zig-out/bin/agent-tests, so
 /// the tests that need root can be run with sudo without building as root.
-fn addTests(b: *std.Build, module: *std.Build.Module, test_step: *std.Build.Step) void {
-    const ebpf_tests_module = b.createModule(.{
-        .root_source_file = b.path("agent/ebpf/root.zig"),
-        .target = module.resolved_target.?,
-        .optimize = module.optimize.?,
-        .link_libc = true,
-    });
+fn addTests(
+    b: *std.Build,
+    agent_module: *std.Build.Module,
+    ebpf_module: *std.Build.Module,
+    test_step: *std.Build.Step,
+) void {
+    // Tests inside agent/ebpf/**
+    const ebpf_tests = b.addTest(.{ .root_module = ebpf_module });
+    test_step.dependOn(&b.addRunArtifact(ebpf_tests).step);
+    test_step.dependOn(&b.addInstallArtifact(ebpf_tests, .{
+        .dest_sub_path = "agent-ebpf-tests",
+    }).step);
 
-    ebpf_tests_module.addImport(
-        "oncpu_bpf",
-        module.import_table.get("oncpu_bpf") orelse unreachable,
-    );
-
-    addCLibraries(b, ebpf_tests_module, .{
-        .target = module.resolved_target.?,
-        .optimize = module.optimize.?,
-        .test_step = test_step,
-    });
-
-    const tests = b.addTest(.{ .root_module = ebpf_tests_module });
-    test_step.dependOn(&b.addRunArtifact(tests).step);
-    test_step.dependOn(&b.addInstallArtifact(tests, .{
+    // Tests inside agent/** (root.zig and everything it @imports by file)
+    const agent_tests = b.addTest(.{ .root_module = agent_module });
+    test_step.dependOn(&b.addRunArtifact(agent_tests).step);
+    test_step.dependOn(&b.addInstallArtifact(agent_tests, .{
         .dest_sub_path = "agent-tests",
     }).step);
 }

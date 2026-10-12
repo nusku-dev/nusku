@@ -29,14 +29,14 @@ const StackSample = struct {
     kernel: []const u64,
 };
 
-const Window = struct {
+pub const Window = struct {
     /// Samples in this window; always the sum over `stacks`.
     samples: u64,
     /// Most frequent first.
     stacks: []StackSample,
 };
 
-const OnCpu = struct {
+pub const OnCpu = struct {
     allocator: std.mem.Allocator,
     stacks: TypedMap(u32, StackTrace),
     counts: TypedMap(StackKey, u64),
@@ -86,6 +86,8 @@ const OnCpu = struct {
     /// Loads the program and starts sampling `pid` at `hz` samples per second on every CPU.
     /// Needs root. The caller has already checked that `pid` is valid and exists.
     pub fn start(self: *OnCpu, pid: u32, hz: u32) !void {
+        if (self.attached != 0) return error.AlreadyStarted;
+
         std.debug.assert(sys.isValidPid(pid));
 
         // Set the target before attaching: until then every sample is ignored.
@@ -209,6 +211,14 @@ fn expectConsistent(window: Window) !void {
     try std.testing.expectEqual(window.samples, sum);
 }
 
+test "deinit is safe without starting" {
+    var cpu = OnCpu.init(testing.allocator) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    cpu.deinit();
+}
+
 test "collect reports only what is new since the previous call (needs root, skipped otherwise)" {
     var cpu = OnCpu.init(testing.allocator) catch |err| switch (err) {
         error.PermissionDenied => return error.SkipZigTest,
@@ -258,6 +268,68 @@ test "collect reports only what is new since the previous call (needs root, skip
         std.debug.print("top stack: {d} samples, {d} user frames, {d} kernel frames\n", .{ top.samples, top.user.len, top.kernel.len });
         for (top.user[0..@min(top.user.len, 4)]) |addr| std.debug.print("  user 0x{x}\n", .{addr});
     }
+}
+
+test "collect reports an empty window when no new samples arrive (needs root, skipped otherwise)" {
+    var cpu = OnCpu.init(std.testing.allocator) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer cpu.deinit();
+
+    cpu.start(sys.currentPid(), 99) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    // Generate samples for the first window.
+    burn(300);
+
+    var arena1 = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena1.deinit();
+
+    const first = try cpu.collect(arena1.allocator());
+    try std.testing.expect(first.samples > 0);
+
+    // Stop this process from contributing new samples.
+    const slot = std.mem.toBytes(@as(u32, 0));
+    const nobody = std.mem.toBytes(@as(u32, 0));
+    try cpu.target_pid.map.update(&slot, &nobody);
+
+    // Allow any in-flight samples to settle.
+    burn(50);
+
+    var arena2 = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena2.deinit();
+
+    const second = try cpu.collect(arena2.allocator());
+
+    try std.testing.expectEqual(@as(u64, 0), second.samples);
+    try std.testing.expectEqual(@as(usize, 0), second.stacks.len);
+}
+
+test "start rejects a second call" {
+    var cpu = OnCpu.init(std.testing.allocator) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer cpu.deinit();
+
+    try cpu.start(sys.currentPid(), 99);
+
+    try std.testing.expectError(
+        error.AlreadyStarted,
+        cpu.start(sys.currentPid(), 99),
+    );
+
+    // The original session should still collect samples.
+    burn(200);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const window = try cpu.collect(arena.allocator());
+    try std.testing.expect(window.samples > 0);
 }
 
 test "the kernel verifier accepts the program (needs root, skipped otherwise)" {
