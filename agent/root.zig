@@ -1,12 +1,15 @@
 const std = @import("std");
-const session = @import("session.zig");
+const session = @import("core/session.zig");
+const cfg = @import("core/config.zig");
+const driver = @import("core/driver.zig");
+const sys = @import("core/sys.zig");
+const pro = @import("profile.zig");
 
-pub const Config = @import("config.zig").Config;
-
-test "test the tests in root " {
-    try std.testing.expectEqual(1, 1);
-}
+pub const profile = pro.profile;
+pub const Options = cfg.Options;
 
 test {
     _ = session;
+    _ = driver;
+    _ = profile;
 }

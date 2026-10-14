@@ -1,23 +1,21 @@
 const std = @import("std");
 const ebpf = @import("ebpf");
-const Config = @import("config.zig").Config;
 const Metric = @import("config.zig").Metric;
 const sys = @import("sys.zig");
+const times = @import("times.zig");
+
 const oncpu = ebpf.oncpu;
 
-pub const CpuWindow = oncpu.Window; // adjust: the type OnCpu.collect returns
+pub const CpuWindow = oncpu.Window;
 
-/// The sampling rate. 99 Hz avoids lining up with the kernel's own 100 Hz timer tick.
 const sample_hz = 99;
 
 const SIGINT = 2;
 const SIGTERM = 15;
 
-/// The longest duration whose milliseconds fit in the timer's 32-bit argument (about 49 days).
 const max_duration_s = std.math.maxInt(u32) / 1000;
 
 pub const Report = struct {
-    /// Monotonic milliseconds when the report was taken.
     timestamp_ms: u64,
     cpu: ?oncpu.Window = null,
 };
@@ -56,7 +54,7 @@ pub const Session = struct {
     pub fn report(self: *Session, arena: std.mem.Allocator) !Report {
         if (!self.started) return error.NotStarted;
 
-        var result = Report{ .timestamp_ms = sys.nowMs() };
+        var result = Report{ .timestamp_ms = times.nowMs() };
         if (self.cpu) |*cpu| result.cpu = try cpu.collect(arena);
         return result;
     }
@@ -65,9 +63,9 @@ pub const Session = struct {
 const Set = std.EnumSet(Metric);
 
 fn burn(ms: u64) void {
-    const until = sys.nowMs() + ms;
+    const until = times.nowMs() + ms;
     var x: u64 = 0;
-    while (sys.nowMs() < until) x +%= 1;
+    while (times.nowMs() < until) x +%= 1;
     std.mem.doNotOptimizeAway(x);
 }
 
