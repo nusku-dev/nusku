@@ -2,10 +2,10 @@ const std = @import("std");
 const log = @import("log");
 const cli = @import("cli");
 const utils = @import("_utils.zig");
+const Metric = @import("agent").Metric;
 const ag = @import("../clients/agent.zig");
 const slog = log.scope("prof");
 
-const Metric = ag.Metric;
 const Agent = ag.Agent;
 
 pub const cmd: cli.Command = .{
@@ -34,7 +34,8 @@ pub const cmd: cli.Command = .{
         .{
             .name = "metrics",
             .kind = .string,
-            .default = "cpu,offcpu,mem,io,net,locks,sched",
+            .default = "cpu",
+            //  .default = "cpu,offcpu,mem,io,net,locks,sched",
             .help = "Comma-separated list of metrics to collect",
         },
         .{
@@ -104,7 +105,7 @@ fn run(ctx: *cli.Context) anyerror!void {
         .pid = agent.pid.?,
     });
 
-    agent.run() catch |err| {
+    agent.run(ctx.allocator, ctx.stdout) catch |err| {
         slog.err("agent failed to start", .{
             .pid = agent.pid,
             .cause = err,
