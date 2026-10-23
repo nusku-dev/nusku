@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 WORKERS=${WORKERS:-4}
 sudo -v || exit 1   # so the background sudo below does not need to ask for a password
 
-./zig-out/bin/nusku-gosvc -workers "$WORKERS" -out /tmp/svc-oracle.json > /tmp/svc-stdout.txt 2>&1 &
+"${SERVICE:-./zig-out/bin/nusku-gosvc}" -workers "$WORKERS" -out /tmp/svc-oracle.json > /tmp/svc-stdout.txt 2>&1 &
 SVC=$!
 sleep 3
 

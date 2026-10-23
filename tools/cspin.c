@@ -1,6 +1,10 @@
 // A C program with a known call chain, to be built without frame pointers:
 // main calls top, top calls mid, mid calls leaf, and leaf does all the work.
+// Each function stores its result in a volatile global after the call, so the compiler can
+// neither turn a call into a jump nor drop the function.
 #include <stdint.h>
+
+static volatile uint64_t g;
 
 __attribute__((noinline)) static uint64_t leaf(uint64_t n) {
     volatile uint64_t x = 0;
@@ -8,11 +12,18 @@ __attribute__((noinline)) static uint64_t leaf(uint64_t n) {
     return x;
 }
 
-__attribute__((noinline)) static uint64_t mid(uint64_t n) { return leaf(n) + 1; }
+__attribute__((noinline)) static uint64_t mid(uint64_t n) {
+    uint64_t r = leaf(n) + 1;
+    g = r;
+    return r;
+}
 
-__attribute__((noinline)) static uint64_t top(uint64_t n) { return mid(n) + 2; }
+__attribute__((noinline)) static uint64_t top(uint64_t n) {
+    uint64_t r = mid(n) + 2;
+    g = r;
+    return r;
+}
 
 int main(void) {
-    uint64_t sink = 0;
-    for (;;) sink += top(100000000);
+    for (;;) g = top(100000000);
 }

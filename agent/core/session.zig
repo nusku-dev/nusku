@@ -5,7 +5,8 @@ const sys = @import("sys.zig");
 const times = @import("timer.zig");
 const procmaps = @import("procmaps.zig");
 const kernel = @import("kernel.zig");
-
+const unwind = @import("unwind");
+const tables = @import("tables.zig");
 const oncpu = ebpf.oncpu;
 
 pub const CpuWindow = oncpu.Window;
@@ -32,6 +33,15 @@ pub const Report = struct {
 
 pub const Session = struct {
     pid: u32,
+    allocator: std.mem.Allocator,
+    /// The unwind tables of every binary the target has mapped so far.
+    registry: unwind.registry.Registry,
+    /// The BPF maps that the tables and the target's mapping list are written to.
+    bpf_tables: ebpf.tablemaps.TableMaps,
+    /// The mapping list of the target as last written to the maps. On the heap, it is large.
+    entry: *tables.ProcessEntry,
+    /// Times the tables could not be refreshed. Unwinding keeps using the older ones.
+    table_failures: u32 = 0,
     cpu: ?oncpu.OnCpu,
     maps: procmaps.ProcessMaps,
     /// Owns the strings inside `kernel`.
@@ -52,16 +62,11 @@ pub const Session = struct {
             else => return error.MetricNotImplemented,
         };
 
-        // What the target looks like now. Read first, so even a very short-lived process leaves
-        // a table behind. A live process always has executable mappings (at least the vDSO),
-        // so an empty table means it does not exist (or is a zombie).
         var maps = procmaps.ProcessMaps.init(allocator, pid);
         errdefer maps.deinit();
-        {
-            var scratch = std.heap.ArenaAllocator.init(allocator);
-            defer scratch.deinit();
-            _ = try maps.read(scratch.allocator());
-        }
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        const regions = try maps.read(scratch.allocator());
         if (maps.table.len == 0) return error.ProcessNotFound;
 
         // The kernel's identity cannot change while we run, so read it once.
@@ -74,13 +79,29 @@ pub const Session = struct {
         var cpu: ?oncpu.OnCpu = null;
         errdefer if (cpu) |*c| c.deinit();
         if (metrics.contains(.cpu)) cpu = try oncpu.OnCpu.init(allocator);
-
+        // The tables go in before sampling starts, so even the first sample can be unwound.
+        var registry = unwind.registry.Registry.init(allocator, 262_144, 256);
+        errdefer registry.deinit();
+        var bpf_tables = try cpu.?.tables();
+        errdefer bpf_tables.deinit();
+        const entry = try allocator.create(tables.ProcessEntry);
+        errdefer allocator.destroy(entry);
+        {
+            const built = try tables.build(allocator, &registry, pid, regions);
+            try bpf_tables.writeModulesFrom(registry.set, 0);
+            try bpf_tables.writeProcess(pid, built.entry);
+            entry.* = built.entry;
+        }
         // The first window begins just before the attach, so it is never shorter than the sampling.
         const began_mono = times.monotonicNs();
         const began_unix = times.realtimeNs();
         if (cpu) |*c| try c.start(pid, sample_hz);
 
         return .{
+            .allocator = allocator,
+            .registry = registry,
+            .bpf_tables = bpf_tables,
+            .entry = entry,
             .pid = pid,
             .cpu = cpu,
             .maps = maps,
@@ -110,6 +131,10 @@ pub const Session = struct {
         }
         // After collecting: a library loaded before the last sample is then in the table.
         result.regions = try self.maps.read(arena);
+        // A failure here must not lose the window we just collected: the older tables stay in use.
+        self.refreshTables(result.regions) catch {
+            self.table_failures += 1;
+        };
 
         // Only now does the next window begin. If anything above failed, the next report
         // covers the whole span, so nothing is lost.
@@ -118,9 +143,24 @@ pub const Session = struct {
         return result;
     }
 
+    /// Loads the tables of binaries the target mapped since the last call, and rewrites its
+    /// mapping list when it changed. Binaries go in first, so the list never points at a missing one.
+    fn refreshTables(self: *Session, regions: []const procmaps.Region) !void {
+        const before = self.registry.set.modules.items.len;
+        const built = try tables.build(self.allocator, &self.registry, self.pid, regions);
+        try self.bpf_tables.writeModulesFrom(self.registry.set, before);
+        if (!std.mem.eql(u8, std.mem.asBytes(&built.entry), std.mem.asBytes(self.entry))) {
+            try self.bpf_tables.writeProcess(self.pid, built.entry);
+            self.entry.* = built.entry;
+        }
+    }
+
     /// Stops sampling and releases everything. Never fails.
     pub fn deinit(self: *Session) void {
+        self.bpf_tables.deinit();
+        self.registry.deinit();
         if (self.cpu) |*cpu| cpu.deinit();
+        self.allocator.destroy(self.entry);
         self.maps.deinit();
         self.kernel_arena.deinit();
         self.* = undefined;
@@ -198,4 +238,9 @@ test "session samples this process and reports one window per call (needs root, 
         first.cpu.?.samples,           second.cpu.?.samples,
         first.duration_ns / 1_000_000, second.duration_ns / 1_000_000,
     });
+
+    // With the tables loaded a stack has its callers, not just the instruction that was running.
+    const hottest = first.cpu.?.stacks[0];
+    std.debug.print("session: the hottest stack has {d} user frames and {d} samples\n", .{ hottest.user.len, hottest.samples });
+    try std.testing.expect(hottest.user.len >= 3);
 }

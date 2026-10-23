@@ -173,7 +173,7 @@ pub const OncpuProbe = struct {
         const value = std.mem.toBytes(@as(u32, @intCast(program_fd)));
         try progs.map.update(&index, &value);
 
-        const allStacks = try allocator.alloc(Stack, 4096);
+        const allStacks = try allocator.alloc(Stack, 1024);
         errdefer allocator.free(allStacks);
         const sink = try allocator.create(Sink);
         errdefer allocator.destroy(sink);
@@ -215,6 +215,7 @@ pub const OncpuProbe = struct {
 
     /// Starts sampling `pid` at `hz` on every CPU.
     pub fn begin(self: *OncpuProbe, pid: u32, hz: u32) !void {
+        if (self.attached != 0) return error.AlreadyStarted;
         try self.setTarget(pid);
         const ncpu = try sys.numPossibleCpus();
         const events = try self.allocator.alloc(perf.Event, ncpu);
@@ -258,6 +259,11 @@ pub const OncpuProbe = struct {
     /// Records that were malformed or did not fit in our buffer: both should stay 0.
     pub fn problems(self: *const OncpuProbe) usize {
         return self.sink.malformed + self.sink.overflow;
+    }
+
+    /// Forgets the stacks read so far, once the caller has copied what it needs.
+    pub fn clearStacks(self: *OncpuProbe) void {
+        self.sink.len = 0;
     }
 
     /// The counters of the program, added up over all CPUs.

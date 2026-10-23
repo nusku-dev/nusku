@@ -32,6 +32,11 @@ pub const Stack = struct {
     /// Return addresses, innermost first, exactly as the agent reports them.
     user: []const u64,
     kernel: []const u64,
+    /// Whether the innermost user address is a return address (the sample was inside a system
+    /// call) or the exact instruction that was running. Null means the agent did not say, and
+    /// then a sample with kernel frames is taken to be inside a system call.
+    leaf_is_return: ?bool = null,
+    stop: u8 = 0,
 };
 
 pub const Window = struct {
@@ -62,6 +67,7 @@ pub const SymbolizedStack = struct {
     samples: u64,
     /// Root first: the outermost user frame comes first and the innermost kernel frame last.
     frames: []const Frame,
+    stop: u8 = 0,
 };
 
 pub const Result = struct {
@@ -155,7 +161,8 @@ pub const Symbolizer = struct {
                 i -= 1;
                 // Only the innermost frame of a sample taken in user code is an exact
                 // instruction address; every other frame is a return address.
-                const is_return = i != 0 or stack.kernel.len != 0;
+                const leaf_return = stack.leaf_is_return orelse (stack.kernel.len != 0);
+                const is_return = i != 0 or leaf_return;
                 frames[n] = try self.userFrame(arena, window, stack.user[i], is_return);
                 n += 1;
             }
@@ -169,7 +176,7 @@ pub const Symbolizer = struct {
                 n += 1;
             }
 
-            dst.* = .{ .samples = stack.samples, .frames = frames };
+            dst.* = .{ .samples = stack.samples, .frames = frames, .stop = stack.stop };
             total += stack.samples;
         }
         return .{ .samples = total, .stacks = out };

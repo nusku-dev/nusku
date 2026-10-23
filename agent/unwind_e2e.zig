@@ -773,3 +773,68 @@ test "production walk: samples taken in the kernel carry their kernel frames" {
     try testing.expectEqual(@as(u64, 0), totals.dropped);
     try testing.expectEqual(@as(usize, 0), fixture.probe.problems());
 }
+
+test "collector: the windows deliver every sample with its frames, and the losses are named" {
+    const pid = sys.currentPid();
+    var prepared = try prepare(pid);
+    defer prepared.deinit();
+    var collector = ebpf.oncpu.OnCpu.init(testing.allocator) catch |e| return skipWithoutPrivilege(e);
+    defer collector.deinit();
+
+    var maps = try collector.tables();
+    defer maps.deinit();
+    try maps.writeModulesFrom(prepared.registry.set, 0);
+    try maps.writeProcess(pid, prepared.built.entry);
+    collector.start(pid, 999) catch |e| return skipWithoutPrivilege(e);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var delivered: u64 = 0;
+    var by_stop = [_]u64{0} ** 16;
+    var dropped: u64 = 0;
+    var map_full: u64 = 0;
+    var marker: u8 = 0;
+
+    for (0..6) |round| {
+        if (round < 5) {
+            std.mem.doNotOptimizeAway(deep(0, &marker, .spin));
+        } else {
+            // The last window is read with sampling off, so nothing is in flight.
+            try collector.probe.pause();
+        }
+        const window = try collector.collect(arena.allocator());
+
+        var sum: u64 = 0;
+        for (window.stacks, 0..) |stack, i| {
+            sum += stack.samples;
+            if (i > 0) try testing.expect(window.stacks[i - 1].samples >= stack.samples);
+            try testing.expect(stack.user.len > 0);
+        }
+        try testing.expectEqual(window.samples, sum);
+        var by_stop_sum: u64 = 0;
+        for (window.lost.by_stop) |n| by_stop_sum += n;
+        try testing.expectEqual(window.samples, by_stop_sum);
+        try testing.expectEqual(@as(u64, 0), window.lost.held_back);
+        try testing.expectEqual(@as(u64, 0), window.lost.bad_records);
+
+        delivered += window.samples;
+        dropped += window.lost.dropped;
+        map_full += window.lost.map_full;
+        for (window.lost.by_stop, 0..) |n, i| by_stop[i] += n;
+    }
+
+    const totals = try collector.probe.totals();
+    std.debug.print("collector: {d} walks, {d} samples delivered, dropped {d}, map full {d}; by stop:", .{ totals.walks, delivered, dropped, map_full });
+    for (by_stop, 0..) |n, i| {
+        if (n > 0) std.debug.print(" {s} {d}", .{ ebpf.oncpu.StackLoss.stopName(i), n });
+    }
+    std.debug.print("\n", .{});
+
+    try testing.expect(totals.walks >= 100);
+    try testing.expectEqual(totals.walks - totals.dropped - totals.map_full, delivered);
+    try testing.expectEqual(totals.dropped, dropped);
+    try testing.expectEqual(totals.map_full, map_full);
+    try testing.expectEqual(@as(u64, 0), dropped);
+    try testing.expect(by_stop[@intFromEnum(Stop.no_function)] * 10 >= delivered * 9);
+}

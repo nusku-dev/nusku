@@ -12,15 +12,15 @@ HZ = 99  # samples per second on each CPU, as the agent sets it
 
 oracle = json.load(open(sys.argv[1]))
 header = re.compile(r"^pid \d+\s+window (\d+) ms\s+(\d+) samples in (\d+) stacks")
-paused = re.compile(
-    r"sampling paused ([\d.]+) ms; stacks lost: user (\d+), kernel (\d+); no user stack: (\d+); other: (\d+)"
-)
+lost_re = re.compile(r"^\s+lost: dropped (\d+), map full (\d+), held back (\d+), bad records (\d+)")
+incomplete_re = re.compile(r"^\s+incomplete stacks: (\d+) of (\d+) samples \(([\d.]+)%\)(?::(.*))?$")
 
 total_samples = 0
 total_ms = 0
 windows = 0
-paused_ms = 0.0
 lost = collections.Counter()
+cut_by = collections.Counter()  # reason the walk stopped -> samples
+cut_total = 0
 user = collections.defaultdict(lambda: [0, 0])  # name -> [self, total] samples
 kernel = collections.defaultdict(lambda: [0, 0])
 
@@ -32,14 +32,17 @@ for line in open(sys.argv[2], errors="replace"):
         total_ms += int(m.group(1))
         total_samples += int(m.group(2))
         continue
-    m = paused.search(line)
+    m = lost_re.match(line)
     if m:
-        paused_ms += float(m.group(1))
-        lost["user"] += int(m.group(2))
-        lost["kernel"] += int(m.group(3))
-        lost["none"] += int(m.group(4))
-        lost["other"] += int(m.group(5))
+        for key, value in zip(("dropped", "map_full", "held_back", "bad_records"), m.groups()):
+            lost[key] += int(value)
         continue
+    m = incomplete_re.match(line)
+    if m:
+        cut_total += int(m.group(1))
+        for name, n in re.findall(r"(\w+) (\d+)", m.group(4) or ""):
+            cut_by[name] += int(n)
+        continue    
     if line.startswith("F\t"):
         parts = line.split("\t")
         if len(parts) < 7:
@@ -58,10 +61,11 @@ oracle_rate = oracle["process_cpu_s"] / oracle["wall_s"]
 print(f"\nnusku: {windows} windows, {seconds:.1f} s, {total_samples} samples")
 print(f"busy CPUs: nusku {nusku_rate:.3f}, the service's own clock {oracle_rate:.3f} "
       f"({100 * (nusku_rate / oracle_rate - 1):+.1f}%)")
-print(f"sampling was paused {paused_ms / 1000:.2f} s in total ({100 * paused_ms / total_ms:.2f}% of the time)")
-print(f"samples whose stack is missing: user {lost['user']}, kernel {lost['kernel']}, "
-      f"no stack {lost['none']}, other {lost['other']} ({100 * lost['user'] / total_samples:.2f}% user)")
-
+print(f"samples lost before they were counted: dropped {lost['dropped']}, map full {lost['map_full']}, "
+      f"held back {lost['held_back']}, bad records {lost['bad_records']}")
+print(f"incomplete stacks: {cut_total} of {total_samples} samples ({100 * cut_total / total_samples:.2f}%)")
+for name, n in cut_by.most_common():
+    print(f"  {name:<20} {n:>8}  {100 * n / total_samples:6.2f}%")
 in_some_function = sum(v[0] for v in user.values()) + sum(v[0] for v in kernel.values())
 print(f"samples inside some function: {in_some_function} of {total_samples} "
       f"({100 * in_some_function / total_samples:.2f}%)")

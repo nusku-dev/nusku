@@ -27,9 +27,14 @@ pub fn toWindow(arena: std.mem.Allocator, report: *const agent.Report) !symboliz
     const cpu_stacks: []const agent.StackSample = if (report.cpu) |cpu| cpu.stacks else &.{};
     const stacks = try arena.alloc(symbolizer.Stack, cpu_stacks.len);
     for (cpu_stacks, stacks) |src, *dst| {
-        dst.* = .{ .samples = src.samples, .user = src.user, .kernel = src.kernel };
+        dst.* = .{
+            .samples = src.samples,
+            .user = src.user,
+            .kernel = src.kernel,
+            .leaf_is_return = src.leaf_is_return,
+            .stop = src.stop,
+        };
     }
-
     return .{
         .pid = report.pid,
         .regions = regions,
@@ -161,7 +166,7 @@ test "toWindow copies the regions, the kernel identity and the stacks" {
         .{ .start = 0x1000, .end = 0x2000, .offset = 0x500, .inode = 7, .path = "/bin/app", .build_id = null },
     };
     var stacks = [_]agent.StackSample{
-        .{ .samples = 4, .user = &.{ 0x1010, 0x1020 }, .kernel = &.{0xffff0001} },
+        .{ .samples = 4, .user = &.{ 0x1010, 0x1020 }, .kernel = &.{0xffff0001}, .leaf_is_return = true },
     };
     const report = sampleReport(&stacks, &regions);
 
@@ -183,6 +188,7 @@ test "toWindow copies the regions, the kernel identity and the stacks" {
     try std.testing.expectEqual(@as(u64, 4), window.stacks[0].samples);
     try std.testing.expectEqual(@as(usize, 2), window.stacks[0].user.len);
     try std.testing.expectEqual(@as(u64, 0x1020), window.stacks[0].user[1]);
+    try std.testing.expectEqual(@as(?bool, true), window.stacks[0].leaf_is_return);
     try std.testing.expectEqual(@as(u64, 0xffff0001), window.stacks[0].kernel[0]);
 }
 
@@ -231,6 +237,8 @@ const Seen = struct {
     functions: usize = 0,
     inconsistent: usize = 0,
     paused_ns: u64 = 0,
+    /// Samples that landed in a function whose name contains "burn".
+    burn_self: u64 = 0,
 
     fn onReport(self: *Seen, report: *const CpuReport) void {
         self.reports += 1;
@@ -238,8 +246,16 @@ const Seen = struct {
         self.pid = report.pid;
         self.functions += report.functions.len;
         self.paused_ns += report.paused_ns;
+        if (self.reports == 1) {
+            for (report.functions[0..@min(report.functions.len, 3)]) |function| {
+                std.debug.print("  top function: {s} self {d} total {d} of {d}\n", .{ function.name orelse "(no name)", function.self, function.total, report.samples });
+            }
+        }
         for (report.functions) |function| {
             if (function.total < function.self or function.total > report.samples) self.inconsistent += 1;
+            if (function.name) |name| {
+                if (std.mem.indexOf(u8, name, "burn") != null) self.burn_self += function.self;
+            }
         }
         for (report.stacks) |stack| {
             for (stack.frames) |frame| {
@@ -283,9 +299,7 @@ test "profileCpu streams symbolized reports for a process (needs root, skipped o
         else => return err,
     };
 
-    std.debug.print("controller: {d} reports, {d} samples, {d} frames, {d} with a module\n", .{
-        seen.reports, seen.samples, seen.frames, seen.with_module,
-    });
+    std.debug.print("controller: {d} of {d} samples were in burn\n", .{ seen.burn_self, seen.samples });
     try std.testing.expectEqual(StopReason.duration, reason);
     try std.testing.expect(seen.reports >= 3 and seen.reports <= 5);
     try std.testing.expect(seen.samples >= 20);
@@ -293,5 +307,6 @@ test "profileCpu streams symbolized reports for a process (needs root, skipped o
     try std.testing.expect(seen.frames == 0 or seen.with_module > 0);
     try std.testing.expect(seen.functions > 0);
     try std.testing.expectEqual(@as(usize, 0), seen.inconsistent);
-    try std.testing.expect(seen.paused_ns > 0);
+    // One thread spends all its time in `burn`, so almost every sample must name it.
+    try std.testing.expect(seen.burn_self * 10 >= seen.samples * 8);
 }
