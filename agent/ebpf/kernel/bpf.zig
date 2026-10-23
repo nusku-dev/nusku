@@ -13,6 +13,14 @@ pub const BPF = struct {
             pub const ARRAY = 2;
             /// special BPF map for storing stack traces.
             pub const STACK_TRACE = 7;
+
+            pub const PROG_ARRAY = 3;
+
+            /// a ring buffer shared by all CPUs; the program copies records into it
+            pub const RINGBUF = 27;
+
+            /// like ARRAY, but every CPU has its own copy of every value
+            pub const PERCPU_ARRAY = 6;
         };
 
         /// FUNC: void *bpf_map_lookup_elem(struct bpf_map *map, const void *key)
@@ -69,6 +77,29 @@ pub const BPF = struct {
         ///        current_task->tgid << 32 |
         ///        current_task->pid.
         pub const CURRENT_PID_TGID = 14;
+
+        /// FUNC: u32 bpf_get_smp_processor_id(void)
+        pub const SMP_PROCESSOR_ID = 8;
+
+        /// FUNC: struct task_struct *bpf_get_current_task_btf(void)
+        /// Description: The current task as a pointer the verifier can follow (kernel BTF).
+        pub const CURRENT_TASK_BTF = 158;
+
+        /// FUNC: struct pt_regs *bpf_task_pt_regs(struct task_struct *task)
+        /// Description: The user-space registers saved when `task` entered the kernel (Linux 5.15+).
+        pub const TASK_PT_REGS = 175;
+
+        /// FUNC: long bpf_probe_read_user(void *dst, u32 size, const void *unsafe_ptr)
+        /// Description: Copies `size` bytes from a user-space address; fails instead of faulting.
+        pub const PROBE_READ_USER = 112;
+
+        /// FUNC: long bpf_tail_call(void *ctx, struct bpf_map *prog_array_map, u32 index)
+        /// Description: Jumps into the program stored at `index`; returns only if the jump fails.
+        pub const TAIL_CALL = 12;
+
+        /// FUNC: long bpf_ringbuf_output(void *ringbuf, void *data, u64 size, u64 flags)
+        /// Description: Copies `size` bytes into the ring buffer; fails with a negative number when it is full.
+        pub const RINGBUF_OUTPUT = 130;
     };
 
     pub const F = struct {

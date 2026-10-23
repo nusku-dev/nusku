@@ -149,18 +149,34 @@ test "this process: a raw address from our own code resolves to a file" {
     try std.testing.expect(hit.region.path.len > 0 and hit.region.path[0] == '/');
 }
 
-/// Right after fork the child still looks like us; wait until it has become `sleep`.
-fn waitForSleep(arena: std.mem.Allocator, pid: u32) !void {
+/// Right after fork the child still looks like us, and right after exec the dynamic loader
+/// is still mapping libraries. Wait until it runs `name` (a part of the executable's path) and
+/// its executable mappings have stopped changing.
+pub fn waitForProgram(arena: std.mem.Allocator, pid: u32, name: []const u8) !void {
     var tries: usize = 0;
-    while (tries < 80) : (tries += 1) {
-        for (try maps.readExecutable(arena, pid)) |m| {
-            if (std.mem.endsWith(u8, m.path, "/sleep")) return;
+    var last_count: usize = 0;
+    var stable: usize = 0;
+    while (tries < 120) : (tries += 1) {
+        var found = false;
+        const mappings = try maps.readExecutable(arena, pid);
+        for (mappings) |m| {
+            if (std.mem.indexOf(u8, m.path, name) != null) found = true;
         }
+        if (found and mappings.len == last_count) {
+            stable += 1;
+            if (stable >= 3) return; // same table on 3 reads in a row, 25 ms apart
+        } else {
+            stable = 0;
+        }
+        last_count = mappings.len;
         timer.sleepMs(25);
     }
-    return error.SleepDidNotStart;
+    return error.ProgramDidNotStart;
 }
 
+fn waitForSleep(arena: std.mem.Allocator, pid: u32) !void {
+    return waitForProgram(arena, pid, "/sleep");
+}
 test "another process: build IDs are read once and the table survives the process dying" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

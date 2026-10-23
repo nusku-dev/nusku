@@ -19,6 +19,14 @@ pub fn add(b: *std.Build, options: Options) *std.Build.Module {
         .optimize = options.optimize,
         .link_libc = true,
     });
+    const unwind_mod = b.createModule(.{
+        .root_source_file = b.path("unwind/root.zig"),
+        .target = options.target,
+        .optimize = options.optimize,
+        .link_libc = true,
+    });
+    ebpf.addImport("unwind", unwind_mod);
+
     addCLibraries(b, ebpf, options);
     addKernelProgram(b, ebpf, "oncpu", "agent/ebpf/kernel/oncpu.ebpf.zig");
 
@@ -29,6 +37,7 @@ pub fn add(b: *std.Build, options: Options) *std.Build.Module {
         .link_libc = true,
     });
     module.addImport("ebpf", ebpf);
+    module.addImport("unwind", unwind_mod);
 
     addTests(b, module, ebpf, options.test_step);
     return module;

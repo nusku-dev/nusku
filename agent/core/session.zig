@@ -8,7 +8,9 @@ const kernel = @import("kernel.zig");
 
 const oncpu = ebpf.oncpu;
 
-const CpuWindow = oncpu.Window;
+pub const CpuWindow = oncpu.Window;
+pub const StackSample = oncpu.StackSample;
+pub const StackLoss = oncpu.StackLoss;
 
 const sample_hz = 99;
 

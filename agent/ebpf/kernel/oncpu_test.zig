@@ -80,8 +80,11 @@ test "map relocations in the program reference all maps" {
     const code = try elf.readSectionData(program);
     const maps = try elf.findSection(".maps");
 
-    // There are three map definitions, each 16 bytes.
-    const map_count = 3;
+    // Eight map definitions, 16 bytes each, ordered by name by the linker. The profiler uses
+    // three of them; the rest belong to the probes.
+    const map_count = 18;
+    std.debug.assert(maps.size == map_count * 16);
+
     const map_size = 16;
     var seen = [_]bool{false} ** map_count;
 
@@ -122,7 +125,81 @@ test "map relocations in the program reference all maps" {
 
         seen[map_index] = true;
     }
+    const profiler_maps = [_][]const u8{ "counts", "stacks", "target_pid" };
+    const probe_maps = [_][]const u8{
+        "lookup_debug",
+        "regs_debug",
+        "unwind_modules",
+        "unwind_procs",
+        "unwind_rows",
+        "chain_progs",
+        "chain_debug",
+        "walk_progs",
+        "walk_debug",
+        "oncpu_state",
+        "oncpu_progs",
+    };
+    for (profiler_maps) |name| {
+        try std.testing.expect(seen[(try elf.findSymbol(name)).value / map_size]);
+    }
+    for (probe_maps) |name| {
+        try std.testing.expect(!seen[(try elf.findSymbol(name)).value / map_size]);
+    }
+}
 
-    // Every map must be referenced by the program at least once.
-    try std.testing.expect(std.mem.allEqual(bool, &seen, true));
+test "the register probe calls only the helpers we expect" {
+    const elf = try ELF.init(@embedFile("oncpu_bpf"));
+    const code = try elf.readSectionData(try elf.findSection("perf_event/regs"));
+
+    var seen = std.StaticBitSet(256).initEmpty();
+    var i: usize = 0;
+    while (i < code.len) : (i += 8) {
+        if (code[i] == 0x8d) return error.IndirectCall;
+        if (code[i] != 0x85) continue;
+        try std.testing.expectEqual(@as(u8, 0), code[i + 1] >> 4);
+        const helper = std.mem.readInt(i32, code[i + 4 ..][0..4], .little);
+        switch (helper) {
+            1, 8, 14, 158, 175 => seen.set(@intCast(helper)), // lookup, cpu id, pid_tgid, task_btf, pt_regs
+            else => return error.UnexpectedHelper,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 5), seen.count());
+}
+
+test "the chain probe calls only the helpers we expect" {
+    const elf = try ELF.init(@embedFile("oncpu_bpf"));
+    const code = try elf.readSectionData(try elf.findSection("perf_event/chain"));
+
+    var seen = std.StaticBitSet(256).initEmpty();
+    var i: usize = 0;
+    while (i < code.len) : (i += 8) {
+        if (code[i] == 0x8d) return error.IndirectCall;
+        if (code[i] != 0x85) continue;
+        try std.testing.expectEqual(@as(u8, 0), code[i + 1] >> 4);
+        const helper = std.mem.readInt(i32, code[i + 4 ..][0..4], .little);
+        switch (helper) {
+            1, 8, 12, 14 => seen.set(@intCast(helper)), // lookup, cpu id, pid_tgid, task_btf, pt_regs
+            else => return error.UnexpectedHelper,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 4), seen.count());
+}
+
+test "the walk probe calls only the helpers we expect" {
+    const elf = try ELF.init(@embedFile("oncpu_bpf"));
+    const code = try elf.readSectionData(try elf.findSection("perf_event/walk"));
+
+    var seen = std.StaticBitSet(256).initEmpty();
+    var i: usize = 0;
+    while (i < code.len) : (i += 8) {
+        if (code[i] == 0x8d) return error.IndirectCall;
+        if (code[i] != 0x85) continue;
+        try std.testing.expectEqual(@as(u8, 0), code[i + 1] >> 4);
+        const helper = std.mem.readInt(i32, code[i + 4 ..][0..4], .little);
+        switch (helper) {
+            1, 8, 12, 14, 112, 158, 175 => seen.set(@intCast(helper)), // lookup, cpu id, pid_tgid, task_btf, pt_regs
+            else => return error.UnexpectedHelper,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 7), seen.count());
 }

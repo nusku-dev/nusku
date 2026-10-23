@@ -35,3 +35,7 @@ pub fn main(init: std.process.Init) u8 {
         .version = "0.1.0",
     });
 }
+
+test {
+    _ = @import("clients/agent.zig");
+}

@@ -9,6 +9,9 @@ const buildid = @import("core/buildid.zig");
 const procmaps = @import("core/procmaps.zig");
 const canc = @import("core/cancel.zig");
 const kernel = @import("core/kernel.zig");
+const elfload = @import("core/elfload.zig");
+const tables = @import("core/tables.zig");
+const unwind_e2e = @import("unwind_e2e.zig");
 
 pub const Cancel = canc.Cancel;
 pub const StopReason = pro.StopReason;
@@ -16,7 +19,10 @@ pub const profile = pro.profile;
 pub const Options = cfg.Options;
 pub const Metric = cfg.Metric;
 pub const Report = session.Report;
+pub const CpuWindow = session.CpuWindow;
+pub const StackSample = session.StackSample;
 pub const Region = procmaps.Region;
+pub const StackLoss = session.StackLoss;
 pub const KernelIdentity = @import("core/kernel.zig").Identity;
 
 const Recorder = struct {
@@ -120,4 +126,7 @@ test {
     _ = canc;
     _ = timer;
     _ = kernel;
+    _ = elfload;
+    _ = tables;
+    _ = unwind_e2e;
 }

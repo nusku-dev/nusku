@@ -19,7 +19,10 @@ pub const Map = struct {
 
     /// Creates a map in the kernel. Needs root or CAP_BPF.
     pub fn create(name: [:0]const u8, spec: Spec) Error!Map {
-        std.debug.assert(spec.key_size > 0 and spec.value_size > 0 and spec.max_entries > 0);
+        // A ring buffer has no keys or values: its size is `max_entries`, in bytes.
+        const is_ring_buffer = spec.map_type == 27;
+        std.debug.assert(spec.max_entries > 0);
+        std.debug.assert(is_ring_buffer or (spec.key_size > 0 and spec.value_size > 0));
         const fd = c.bpf_map_create(spec.map_type, name.ptr, spec.key_size, spec.value_size, spec.max_entries, null);
         if (fd < 0) return fromErrno(-fd);
         return .{ .fd = fd, .key_size = spec.key_size, .value_size = spec.value_size };
@@ -40,6 +43,28 @@ pub const Map = struct {
     pub fn lookup(self: Map, key: []const u8, value: []u8) Error!bool {
         std.debug.assert(key.len == self.key_size and value.len == self.value_size);
         const rc = c.bpf_map_lookup_elem(self.fd, key.ptr, value.ptr);
+        if (rc == -c.ENOENT) return false;
+        if (rc < 0) return fromErrno(-rc);
+        return true;
+    }
+
+    /// For per-CPU maps: the value of every possible CPU, one after the other, each rounded up
+    /// to a multiple of 8 bytes. `values` has to be that long. Returns false when the key is
+    /// not in the map.
+    pub fn lookupPerCpu(self: Map, key: []const u8, values: []u8) Error!bool {
+        std.debug.assert(key.len == self.key_size);
+        std.debug.assert(values.len >= self.value_size and values.len % 8 == 0);
+        const rc = c.bpf_map_lookup_elem(self.fd, key.ptr, values.ptr);
+        if (rc == -c.ENOENT) return false;
+        if (rc < 0) return fromErrno(-rc);
+        return true;
+    }
+
+    /// Removes a key. Returns false when the key was not in the map. Only hash-like maps can
+    /// do this: an array map always holds every key, so deleting from one is an error.
+    pub fn delete(self: Map, key: []const u8) Error!bool {
+        std.debug.assert(key.len == self.key_size);
+        const rc = c.bpf_map_delete_elem(self.fd, key.ptr);
         if (rc == -c.ENOENT) return false;
         if (rc < 0) return fromErrno(-rc);
         return true;
@@ -84,6 +109,11 @@ pub fn TypedMap(comptime K: type, comptime V: type) type {
             var value: V = undefined;
             if (!try self.raw.lookup(std.mem.asBytes(&key), std.mem.asBytes(&value))) return null;
             return value;
+        }
+
+        /// Removes a key. Returns false when it was not in the map.
+        pub fn delete(self: Self, key: K) Error!bool {
+            return self.raw.delete(std.mem.asBytes(&key));
         }
 
         /// Walks the keys: pass null for the first one, the previous key after that.
@@ -229,4 +259,109 @@ test "map nextKey iterates array keys" {
 
     const previous_third = next;
     try testing.expect(!(try map.nextKey(&previous_third, &next)));
+}
+
+fn createTestHash(max_entries: u32) !Map {
+    return Map.create("nusku_test", .{
+        .map_type = c.BPF_MAP_TYPE_HASH,
+        .key_size = 4,
+        .value_size = 4,
+        .max_entries = max_entries,
+    }) catch |erro| {
+        if (erro == error.PermissionDenied or erro == error.NotSupported) return error.SkipZigTest;
+        return erro;
+    };
+}
+
+test "map delete removes a key and says whether it was there" {
+    var map = try createTestHash(4);
+    defer map.deinit();
+
+    const key = std.mem.toBytes(@as(u32, 7));
+    const value = std.mem.toBytes(@as(u32, 1));
+    var actual: [4]u8 = undefined;
+
+    try testing.expect(!(try map.delete(&key))); // nothing there yet
+    try map.update(&key, &value);
+    try testing.expect(try map.lookup(&key, &actual));
+    try testing.expect(try map.delete(&key));
+    try testing.expect(!(try map.lookup(&key, &actual)));
+    try testing.expect(!(try map.delete(&key))); // already gone
+}
+
+test "map delete only removes the key it is given" {
+    var map = try createTestHash(4);
+    defer map.deinit();
+
+    const one = std.mem.toBytes(@as(u32, 1));
+    const two = std.mem.toBytes(@as(u32, 2));
+    const value = std.mem.toBytes(@as(u32, 5));
+    try map.update(&one, &value);
+    try map.update(&two, &value);
+
+    try testing.expect(try map.delete(&one));
+
+    var actual: [4]u8 = undefined;
+    try testing.expect(!(try map.lookup(&one, &actual)));
+    try testing.expect(try map.lookup(&two, &actual));
+
+    var next: [4]u8 = undefined;
+    try testing.expect(try map.nextKey(null, &next));
+    try testing.expectEqual(@as(u32, 2), std.mem.bytesToValue(u32, &next));
+    const previous = next;
+    try testing.expect(!(try map.nextKey(&previous, &next))); // only one key is left
+}
+
+test "a full hash map takes new keys again after a delete" {
+    var map = try createTestHash(2);
+    defer map.deinit();
+
+    const value = std.mem.toBytes(@as(u32, 1));
+    const one = std.mem.toBytes(@as(u32, 1));
+    const two = std.mem.toBytes(@as(u32, 2));
+    const three = std.mem.toBytes(@as(u32, 3));
+    try map.update(&one, &value);
+    try map.update(&two, &value);
+
+    // The map is full, so a third key is refused. This is how the agent's tables fail today.
+    if (map.update(&three, &value)) |_| return error.TestUnexpectedResult else |_| {}
+
+    try testing.expect(try map.delete(&one));
+    try map.update(&three, &value);
+}
+
+test "draining: ask for the first key and delete it until the map is empty" {
+    var map = try createTestHash(8);
+    defer map.deinit();
+    const typed = try TypedMap(u32, u32).init(map);
+
+    for (1..6) |i| try typed.update(@intCast(i), @intCast(i * 10));
+
+    var sum: u32 = 0;
+    var count: usize = 0;
+    while (try typed.nextKey(null)) |key| {
+        const value = (try typed.lookup(key)) orelse return error.TestUnexpectedResult;
+        sum += value;
+        try testing.expect(try typed.delete(key));
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 5), count);
+    try testing.expectEqual(@as(u32, 150), sum); // 10 + 20 + 30 + 40 + 50
+    try testing.expect((try typed.nextKey(null)) == null);
+}
+
+test "after deleting a key, nextKey with that key starts over from the first key" {
+    var map = try createTestHash(8);
+    defer map.deinit();
+    const typed = try TypedMap(u32, u32).init(map);
+
+    for (1..4) |i| try typed.update(@intCast(i), 0);
+
+    // The kernel documents this: a key that is not in the map gives the first key. So a drain
+    // loop must never continue from a key it has just deleted.
+    const first = (try typed.nextKey(null)) orelse return error.TestUnexpectedResult;
+    try testing.expect(try typed.delete(first));
+    const again = (try typed.nextKey(first)) orelse return error.TestUnexpectedResult;
+    try testing.expect(again != first);
+    try testing.expect((try typed.lookup(again)) != null);
 }

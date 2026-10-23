@@ -55,6 +55,21 @@ pub fn sleepMs(ms: u64) void {
     _ = nanosleep(&req, null); // waking early because of a signal is fine
 }
 
+pub fn nowNs() u64 {
+    var ts: Timespec = undefined;
+    const rc = clock_gettime(CLOCK_MONOTONIC, &ts);
+    std.debug.assert(rc == 0); // CLOCK_MONOTONIC always exists on Linux
+    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+}
+
+pub fn sleepNs(ns: u64) void {
+    const req = Timespec{
+        .sec = @intCast(ns / 1_000_000_000),
+        .nsec = @intCast(ns % 1_000_000_000),
+    };
+    _ = nanosleep(&req, null); // waking early because of a signal is fine
+}
+
 pub fn currentPid() u32 {
     return @intCast(getpid());
 }

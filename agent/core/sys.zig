@@ -7,6 +7,9 @@ extern "c" fn close(fd: c_int) c_int;
 extern "c" fn pread(fd: c_int, buf: *anyopaque, count: usize, offset: i64) isize;
 extern "c" fn read(fd: c_int, buf: *anyopaque, count: usize) isize;
 extern "c" fn execv(path: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
+extern "c" fn mmap(addr: ?*anyopaque, len: usize, prot: c_int, flags: c_int, fd: c_int, offset: i64) ?*anyopaque;
+extern "c" fn munmap(addr: *anyopaque, len: usize) c_int;
+extern "c" fn lseek(fd: c_int, offset: i64, whence: c_int) i64;
 
 const SYS_pidfd_open = 434;
 
@@ -84,6 +87,12 @@ pub const File = struct {
         }
         return done;
     }
+    pub fn size(self: File) FileError!u64 {
+        const SEEK_END = 2;
+        const n = lseek(self.fd, 0, SEEK_END);
+        if (n < 0) return error.ReadFailed;
+        return @intCast(n);
+    }
 };
 
 pub fn readFd(fd: c_int, buf: *anyopaque, count: usize) !isize {
@@ -146,6 +155,30 @@ pub fn spawnSleeper() !u32 {
     return @intCast(pid);
 }
 
+/// A child that burns CPU in user mode and makes no system calls: a shell busy loop.
+pub fn spawnBusyUser() !u32 {
+    const pid = fork();
+    if (pid < 0) return error.ForkFailed;
+    if (pid == 0) {
+        const argv = [_]?[*:0]const u8{ "dash", "-c", "while :; do :; done", null };
+        _ = execv("/usr/bin/dash", &argv);
+        _exit(127);
+    }
+    return @intCast(pid);
+}
+
+/// A child that spends nearly all its time in system calls: dd between two devices.
+pub fn spawnBusyKernel() !u32 {
+    const pid = fork();
+    if (pid < 0) return error.ForkFailed;
+    if (pid == 0) {
+        const argv = [_]?[*:0]const u8{ "dd", "if=/dev/zero", "of=/dev/null", null };
+        _ = execv("/usr/bin/dd", &argv);
+        _exit(127);
+    }
+    return @intCast(pid);
+}
+
 pub fn reap(pid: u32) void {
     _ = kill(@intCast(pid), 9); // SIGKILL; harmless if it already exited
     _ = waitpid(@intCast(pid), null, 0);
@@ -153,6 +186,20 @@ pub fn reap(pid: u32) void {
 
 pub fn kill9(pid: u32) void {
     _ = kill(@intCast(pid), 9);
+}
+
+/// Address space only: a page costs memory when it is written, and reads give zeros.
+/// Anonymous memory, so unlike a mapped file it can never raise SIGBUS.
+pub fn reserve(len: usize) error{OutOfMemory}![]u8 {
+    const PROT_READ_WRITE = 3;
+    const MAP_PRIVATE_ANONYMOUS_NORESERVE = 0x2 | 0x20 | 0x4000;
+    const p = mmap(null, len, PROT_READ_WRITE, MAP_PRIVATE_ANONYMOUS_NORESERVE, -1, 0) orelse return error.OutOfMemory;
+    if (@intFromPtr(p) == std.math.maxInt(usize)) return error.OutOfMemory; // MAP_FAILED
+    return @as([*]u8, @ptrCast(p))[0..len];
+}
+
+pub fn release(bytes: []u8) void {
+    _ = munmap(@ptrCast(bytes.ptr), bytes.len);
 }
 
 test "readFile reads /proc files and enforces the size limit" {

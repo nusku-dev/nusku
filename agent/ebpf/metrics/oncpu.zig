@@ -20,7 +20,7 @@ const StackKey = extern struct {
 };
 const StackTrace = [MAX_STACK_DEPTH]u64;
 
-const StackSample = struct {
+pub const StackSample = struct {
     /// How many samples hit exactly this pair of stacks in the window.
     samples: u64,
     /// Return addresses, innermost first. Empty if the kernel could not capture the stack
@@ -34,7 +34,63 @@ pub const Window = struct {
     samples: u64,
     /// Most frequent first.
     stacks: []StackSample,
+
+    /// How long sampling was switched off to read and empty the kernel tables. Samples that
+    /// would have come in that time are missing, so counts are low by about this much of
+    /// the window.
+    paused_ns: u64 = 0,
+    /// Samples counted above whose stack is missing, and why. A client can use this to see
+    /// how far to trust the window.
+    lost: StackLoss = .{},
 };
+
+/// How long to wait after switching sampling off, for a sample that was already running on
+/// another CPU. One sample takes a few microseconds, so this is far more than enough.
+const settle_ns = 200 * std.time.ns_per_us;
+
+/// More than any table can hold. It only stops a loop that would otherwise never end if the
+/// kernel behaved unexpectedly.
+const drain_limit = 1 << 20;
+
+/// Why a stack could not be recorded, from the error the kernel gave in place of a stack id.
+const StackError = enum { none, no_stack, collision, other };
+
+fn stackError(id: i32) StackError {
+    if (id >= 0) return .none;
+    return switch (-@as(i64, id)) {
+        14 => .no_stack, // EFAULT: there was no stack to read
+        17 => .collision, // EEXIST: the table's slot already holds a different stack
+        else => .other,
+    };
+}
+
+/// How many samples of a window have a stack that is missing, and why. Those samples are
+/// still counted in `Window.samples`; only their frames are missing.
+pub const StackLoss = struct {
+    /// The user stack was lost because the kernel's table already held a different stack in its slot.
+    user_collisions: u64 = 0,
+    /// The same for the kernel stack.
+    kernel_collisions: u64 = 0,
+    /// There was no user stack to read, for example because the sample was in a kernel thread.
+    no_user_stack: u64 = 0,
+    /// Any other error from the kernel. A sample with two such stacks is counted twice.
+    other: u64 = 0,
+};
+
+fn countLoss(lost: *StackLoss, key: StackKey, samples: u64) void {
+    switch (stackError(key.user_stack_id)) {
+        .none => {},
+        .no_stack => lost.no_user_stack += samples,
+        .collision => lost.user_collisions += samples,
+        .other => lost.other += samples,
+    }
+    // A sample taken in user code has no kernel stack at all, which is normal, not a loss.
+    switch (stackError(key.kernel_stack_id)) {
+        .none, .no_stack => {},
+        .collision => lost.kernel_collisions += samples,
+        .other => lost.other += samples,
+    }
+}
 
 pub const OnCpu = struct {
     allocator: std.mem.Allocator,
@@ -46,8 +102,8 @@ pub const OnCpu = struct {
     /// One perf event per online CPU: the first `attached` entries are live.
     events: []perf.Event,
     attached: usize,
-    /// Totals as of the previous collect(), so each window reports only new samples.
-    previous: std.AutoHashMapUnmanaged(StackKey, u64),
+    /// The process being sampled; what sampling is switched back to after a pause.
+    pid: u32,
 
     pub fn init(allocator: std.mem.Allocator) Error!OnCpu {
         const elf = try ELF.init(@embedFile("oncpu_bpf"));
@@ -80,7 +136,7 @@ pub const OnCpu = struct {
             .counts = typed_counts,
             .events = &.{},
             .attached = 0,
-            .previous = .empty,
+            .pid = 0,
         };
     }
     /// Loads the program and starts sampling `pid` at `hz` samples per second on every CPU.
@@ -91,9 +147,9 @@ pub const OnCpu = struct {
         std.debug.assert(sys.isValidPid(pid));
 
         // Set the target before attaching: until then every sample is ignored.
-        const slot = std.mem.toBytes(@as(u32, 0));
-        const target = std.mem.toBytes(pid);
-        try self.target_pid.map.update(&slot, &target);
+        self.pid = pid;
+        try self.setTarget(pid);
+
         const ncpu = try sys.numPossibleCpus();
         const events = try self.allocator.alloc(perf.Event, ncpu);
         errdefer self.allocator.free(events);
@@ -121,54 +177,88 @@ pub const OnCpu = struct {
     }
 
     /// What was sampled since the previous call (or since start). Everything in the result
-    /// lives in `arena`; release it by resetting or deinitializing the arena.
+    /// lives in `result_allocator`; release it by resetting or deinitializing that arena.
+    ///
+    /// Sampling is switched off while the kernel tables are read and emptied, so nothing can
+    /// use a stack id while it is being deleted. Emptying them every window is what keeps them
+    /// from filling up: a full table silently loses every stack that is new.
     pub fn collect(self: *OnCpu, result_allocator: std.mem.Allocator) !Window {
-        var list: std.ArrayList(StackSample) = .empty;
-        var updates: std.ArrayList(struct {
-            key: StackKey,
-            value: u64,
-        }) = .empty;
+        const paused_at = sys.nowNs();
+        try self.setTarget(0);
+        sys.sleepNs(settle_ns);
 
+        var window = self.drain(result_allocator) catch |err| {
+            // Never leave sampling off because reading failed.
+            self.setTarget(self.pid) catch {};
+            return err;
+        };
+        try self.setTarget(self.pid);
+
+        window.paused_ns = sys.nowNs() - paused_at;
+        return window;
+    }
+
+    fn setTarget(self: *OnCpu, pid: u32) !void {
+        const slot = std.mem.toBytes(@as(u32, 0));
+        const target = std.mem.toBytes(pid);
+        try self.target_pid.map.update(&slot, &target);
+    }
+
+    /// Reads every counter and every stack, then deletes them all. Sampling must be off.
+    fn drain(self: *OnCpu, result_allocator: std.mem.Allocator) !Window {
+        var list: std.ArrayList(StackSample) = .empty;
         var total: u64 = 0;
+
+        // Walking forward from the previous key is cheap. Asking for the first key every time
+        // is not: the kernel looks for it from the start of the table on each call. So
+        // nothing is deleted while walking; the keys are collected and deleted afterwards.
+        var count_keys: std.ArrayList(StackKey) = .empty;
+        defer count_keys.deinit(self.allocator);
+
+        var steps: usize = 0;
         var prev: ?StackKey = null;
+        var lost: StackLoss = .{};
 
         while (try self.counts.nextKey(prev)) |key| {
             prev = key;
+            steps += 1;
+            if (steps > drain_limit) return error.Unexpected;
 
-            const now = (try self.counts.lookup(key)) orelse continue;
-            const before = self.previous.get(key) orelse 0;
-            if (now <= before) continue;
+            try count_keys.append(self.allocator, key);
+            const count = (try self.counts.lookup(key)) orelse 0;
+            if (count == 0) continue;
+            countLoss(&lost, key, count);
 
             const user = try self.readStack(result_allocator, key.user_stack_id);
             const kernel = try self.readStack(result_allocator, key.kernel_stack_id);
-
             try list.append(result_allocator, .{
-                .samples = now - before,
+                .samples = count,
                 .user = user,
                 .kernel = kernel,
             });
-
-            try updates.append(result_allocator, .{
-                .key = key,
-                .value = now,
-            });
-
-            total += now - before;
+            total += count;
         }
 
-        // Commit the new counter values only after building the result.
-        for (updates.items) |update| {
-            try self.previous.put(self.allocator, update.key, update.value);
+        // Every stack in the table, including ones no counter points to (a counter that could
+        // not be stored), so nothing is left behind to fill the table.
+        var stack_ids: std.ArrayList(u32) = .empty;
+        defer stack_ids.deinit(self.allocator);
+
+        steps = 0;
+        var prev_id: ?u32 = null;
+        while (try self.stacks.nextKey(prev_id)) |id| {
+            prev_id = id;
+            steps += 1;
+            if (steps > drain_limit) return error.Unexpected;
+            try stack_ids.append(self.allocator, id);
         }
+
+        for (count_keys.items) |key| _ = try self.counts.delete(key);
+        for (stack_ids.items) |id| _ = try self.stacks.delete(id);
 
         std.mem.sort(StackSample, list.items, {}, moreSamples);
-
-        return .{
-            .samples = total,
-            .stacks = list.items,
-        };
+        return .{ .samples = total, .stacks = list.items, .lost = lost };
     }
-
     fn moreSamples(_: void, a: StackSample, b: StackSample) bool {
         return a.samples > b.samples;
     }
@@ -188,7 +278,6 @@ pub const OnCpu = struct {
         self.target_pid.map.deinit();
         self.counts.raw.deinit();
         self.stacks.raw.deinit();
-        self.previous.deinit(self.allocator);
         self.* = undefined;
     }
 };
@@ -250,15 +339,6 @@ test "collect reports only what is new since the previous call (needs root, skip
     // 300 ms at 99 Hz is about 30 samples per window.
     try std.testing.expect(first.samples >= 5);
     try std.testing.expect(second.samples >= 5);
-
-    // Nothing is lost or counted twice: the two windows add up to the kernel's own total.
-    var kernel_total: u64 = 0;
-    var prev: ?StackKey = null;
-    while (try cpu.counts.nextKey(prev)) |key| {
-        prev = key;
-        kernel_total += (try cpu.counts.lookup(key)) orelse 0;
-    }
-    try std.testing.expectEqual(kernel_total, first.samples + second.samples);
 
     std.debug.print("window 1: {d} samples in {d} stacks; window 2: {d} samples in {d} stacks\n", .{
         first.samples, first.stacks.len, second.samples, second.stacks.len,
@@ -343,4 +423,95 @@ test "the kernel verifier accepts the program (needs root, skipped otherwise)" {
     defer oncpu.deinit();
 
     try testing.expect(oncpu.loader.program.?.fd >= 0);
+}
+
+test "draining empties both kernel tables (needs root, skipped otherwise)" {
+    var cpu = OnCpu.init(testing.allocator) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer cpu.deinit();
+
+    cpu.start(sys.currentPid(), 99) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    burn(300);
+
+    // Stop sampling first, so nothing can arrive while we look at the tables.
+    try cpu.setTarget(0);
+    sys.sleepNs(settle_ns);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const window = try cpu.drain(arena.allocator());
+    try expectConsistent(window);
+    try testing.expect(window.samples >= 5);
+
+    try testing.expect((try cpu.counts.nextKey(null)) == null);
+    try testing.expect((try cpu.stacks.nextKey(null)) == null);
+
+    // And sampling works again afterwards, through the public path.
+    try cpu.setTarget(cpu.pid);
+    burn(300);
+    var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena2.deinit();
+    const next = try cpu.collect(arena2.allocator());
+    try expectConsistent(next);
+    try testing.expect(next.samples >= 5);
+}
+
+test "collect reports how long sampling was off, and it stays short (needs root, skipped otherwise)" {
+    var cpu = OnCpu.init(testing.allocator) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer cpu.deinit();
+
+    cpu.start(sys.currentPid(), 99) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    burn(300);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const window = try cpu.collect(arena.allocator());
+
+    std.debug.print("sampling was off for {d} us\n", .{window.paused_ns / 1000});
+    try testing.expect(window.paused_ns >= settle_ns);
+    try testing.expect(window.paused_ns < 50 * std.time.ns_per_ms);
+}
+
+fn keyOf(user: i32, kernel: i32) StackKey {
+    return .{ .tgid = 1, .user_stack_id = user, .kernel_stack_id = kernel };
+}
+
+test "stackError tells apart the failures that matter" {
+    try testing.expectEqual(StackError.none, stackError(0));
+    try testing.expectEqual(StackError.none, stackError(16383));
+    try testing.expectEqual(StackError.no_stack, stackError(-14));
+    try testing.expectEqual(StackError.collision, stackError(-17));
+    try testing.expectEqual(StackError.other, stackError(-12));
+    try testing.expectEqual(StackError.other, stackError(std.math.minInt(i32)));
+}
+
+test "countLoss counts what is missing and not a kernel stack that was never there" {
+    var lost = StackLoss{};
+
+    countLoss(&lost, keyOf(5, -14), 10); // user code: no kernel stack is normal
+    try testing.expectEqual(StackLoss{}, lost);
+
+    countLoss(&lost, keyOf(-17, -14), 3);
+    countLoss(&lost, keyOf(5, -17), 2);
+    countLoss(&lost, keyOf(-14, 7), 4);
+    countLoss(&lost, keyOf(-12, 7), 1);
+    countLoss(&lost, keyOf(-17, -17), 6); // both stacks lost
+    try testing.expectEqual(StackLoss{
+        .user_collisions = 9,
+        .kernel_collisions = 8,
+        .no_user_stack = 4,
+        .other = 1,
+    }, lost);
 }

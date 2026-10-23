@@ -52,7 +52,10 @@ pub const Loader = struct {
 
         const license = try self.elf.readSectionData(try self.elf.findSection("license"));
 
-        const program = try Program.load(kind, function_name, code, license, &log);
+        const program = Program.load(kind, function_name, code, license, &log) catch |e| {
+            std.debug.print("verifier: {s}\n", .{std.mem.sliceTo(&log, 0)});
+            return e;
+        };
         self.program = program;
 
         return program.fd;
