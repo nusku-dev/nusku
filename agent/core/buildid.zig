@@ -185,9 +185,7 @@ test "real file: the build ID of /bin/ls" {
 
     const ls = maps.Mapping{ .start = 0, .end = 0, .offset = 0, .inode = 0, .path = "/bin/ls", .deleted = false };
     const id = (try forMapping(arena.allocator(), sys.currentPid(), ls)) orelse {
-        std.debug.print("build id of /bin/ls: none\n", .{});
         return;
     };
-    std.debug.print("build id of /bin/ls: {x}\n", .{id});
     try std.testing.expect(id.len >= 16 and id.len <= 64);
 }

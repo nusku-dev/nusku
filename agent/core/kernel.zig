@@ -127,10 +127,6 @@ test "this machine: reads the kernel identity" {
     defer arena.deinit();
 
     const id = try read(arena.allocator());
-    std.debug.print("kernel {s}\n", .{id.release});
-    if (id.build_id) |b| std.debug.print("  build id {x}\n", .{b}) else std.debug.print("  build id: none\n", .{});
-    if (id.text_address) |t| std.debug.print("  _text at 0x{x}\n", .{t}) else std.debug.print("  _text: hidden or unreadable\n", .{});
-
     try std.testing.expect(id.release.len > 0 and id.release[0] >= '0' and id.release[0] <= '9');
     if (id.build_id) |b| try std.testing.expect(b.len >= 16 and b.len <= 64);
 }

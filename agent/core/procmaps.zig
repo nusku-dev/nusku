@@ -180,7 +180,6 @@ test "another process: build IDs are read once and the table survives the proces
     }
     const sleep = sleep_region orelse return error.TestUnexpectedResult;
     try std.testing.expect(sleep.build_id != null);
-    std.debug.print("sleep: {s} build id {x}\n", .{ sleep.path, sleep.build_id.? });
 
     // A second read has nothing new to look up.
     const lookups = pm.lookups;
