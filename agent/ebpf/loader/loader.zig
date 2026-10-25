@@ -35,6 +35,8 @@ pub const Loader = struct {
         function_name: [:0]const u8,
         maps: []const MapRef,
     ) Error!c_int {
+        std.debug.assert(maps.len > 0);
+
         const section = try self.elf.findSection(section_name);
         const func = try self.elf.findSymbol(function_name);
         const section_bytes = try self.elf.readSectionData(section);
@@ -52,7 +54,10 @@ pub const Loader = struct {
 
         const license = try self.elf.readSectionData(try self.elf.findSection("license"));
 
-        const program = try Program.load(kind, function_name, code, license, &log);
+        const program = Program.load(kind, function_name, code, license, &log) catch |e| {
+            std.debug.print("verifier: {s}\n", .{std.mem.sliceTo(&log, 0)});
+            return e;
+        };
         self.program = program;
 
         return program.fd;
@@ -122,8 +127,7 @@ pub const Loader = struct {
 const testing = std.testing;
 
 test "creates the three maps in the kernel" {
-    const bytes = @embedFile("oncpu_bpf");
-    const elf = try ELF.init(bytes);
+    const elf = try ELF.init(@embedFile("oncpu_testing_bpf"));
 
     var loader = Loader.init(testing.allocator, elf);
     defer loader.deinit();
@@ -156,7 +160,7 @@ test "creates the three maps in the kernel" {
 }
 
 test "patchMaps fills in the descriptors and touches nothing else" {
-    const elf = try ELF.init(@embedFile("oncpu_bpf"));
+    const elf = try ELF.init(@embedFile("oncpu_testing_bpf"));
     const program = try elf.findSection("perf_event");
     const original = try elf.readSectionData(program);
 
@@ -204,7 +208,7 @@ test "patchMaps fills in the descriptors and touches nothing else" {
 }
 
 test "patchMaps fails when a map is missing from the list" {
-    const elf = try ELF.init(@embedFile("oncpu_bpf"));
+    const elf = try ELF.init(@embedFile("oncpu_testing_bpf"));
     const program = try elf.findSection("perf_event");
 
     const code = try std.testing.allocator.dupe(u8, try elf.readSectionData(program));
@@ -221,7 +225,7 @@ test "patchMaps fails when a map is missing from the list" {
 }
 
 test "a rejected program comes with the verifier's explanation (needs root, skipped otherwise)" {
-    const elf = try ELF.init(@embedFile("oncpu_bpf"));
+    const elf = try ELF.init(@embedFile("oncpu_testing_bpf"));
     const section = try elf.findSection("perf_event");
     const bytes = try elf.readSectionData(section);
     const license = try elf.readSectionData(try elf.findSection("license"));

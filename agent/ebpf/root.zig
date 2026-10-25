@@ -1,7 +1,8 @@
 const std = @import("std");
-const oncpu_test = @import("kernel/oncpu_test.zig");
-const loader = @import("loader/loader.zig");
-pub const oncpu = @import("metrics/oncpu.zig");
+
+const onCpu = @import("metrics/oncpu/oncpu.zig");
+
+pub const OnCpu = onCpu.OnCpu;
 
 test "BPF object file exists and is not empty" {
     const oncpu_bpf_bytes = @embedFile("oncpu_bpf");
@@ -9,7 +10,9 @@ test "BPF object file exists and is not empty" {
 }
 
 test {
-    _ = oncpu_test;
-    _ = loader;
-    _ = oncpu;
+    _ = onCpu;
+    _ = @import("kernel/oncpu_test.zig");
+    _ = @import("loader/loader.zig");
+    _ = @import("metrics/oncpu/ring_buffer.zig");
+    _ = @import("metrics/oncpu/maps.zig");
 }

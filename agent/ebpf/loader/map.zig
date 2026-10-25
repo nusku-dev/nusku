@@ -19,7 +19,12 @@ pub const Map = struct {
 
     /// Creates a map in the kernel. Needs root or CAP_BPF.
     pub fn create(name: [:0]const u8, spec: Spec) Error!Map {
-        std.debug.assert(spec.key_size > 0 and spec.value_size > 0 and spec.max_entries > 0);
+        // A ring buffer has no keys or values: its size is `max_entries`, in bytes.
+        const is_ring_buffer = spec.map_type == 27; // BPF_MAP_TYPE_RINGBUF
+        std.debug.assert(spec.max_entries > 0);
+        std.debug.assert(is_ring_buffer or (spec.key_size > 0 and spec.value_size > 0));
+        if (is_ring_buffer) std.debug.assert(spec.key_size == 0 and spec.value_size == 0);
+
         const fd = c.bpf_map_create(spec.map_type, name.ptr, spec.key_size, spec.value_size, spec.max_entries, null);
         if (fd < 0) return fromErrno(-fd);
         return .{ .fd = fd, .key_size = spec.key_size, .value_size = spec.value_size };
