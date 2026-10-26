@@ -1,6 +1,6 @@
 const std = @import("std");
-const c = @import("libc/import.zig").clibs;
-const err = @import("libc/error.zig");
+const c = @import("import.zig").clibs;
+const err = @import("error.zig");
 
 const Err = err.Error;
 const fromErrno = err.fromErrno;

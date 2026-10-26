@@ -4,12 +4,20 @@ const ELF = @import("../../elf/parser.zig").ELF;
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const sys = @import("../../libc/sys.zig");
 const l = @import("../../loader/loader.zig");
+const m = @import("../../loader/map.zig");
+
 const stack_record = @import("../../kernel/shared/stack_record.zig");
 
 const Error = l.Error;
 const Loader = l.Loader;
 
 const Slot = stack_record.OnCpuStackState;
+const CountKey = stack_record.StackCountKey;
+
+pub const CountEntry = struct {
+    key: CountKey,
+    count: u64,
+};
 
 /// The counters of all CPUs added up.
 pub const Totals = struct {
@@ -48,6 +56,7 @@ pub const OnCpu = struct {
         const ring_buffer = try RingBuffer.init(gpa, ring.map.fd);
 
         return OnCpu{
+            .gpa = gpa,
             .loader = loader,
             .maps = maps,
             .program_fd = program_fd,
@@ -83,6 +92,18 @@ pub const OnCpu = struct {
             for (slot.stop_reason_counts, 0..) |n, s| out.stops[s] += n;
         }
         return out;
+    }
+
+    pub fn snapshot(self: *OnCpu, gpa: std.mem.Allocator, out: *std.ArrayList(CountEntry)) !void {
+        const countsMap = self.maps.get(.oncpu_stack_counts).map;
+        const counts = try m.TypedMap(CountKey, u64).init(countsMap);
+        var prev: ?CountKey = null;
+        while (try counts.nextKey(prev)) |key| {
+            prev = key;
+            if (try counts.lookup(key)) |count| {
+                try out.append(gpa, .{ .key = key, .count = count });
+            }
+        }
     }
 
     pub fn deinit(self: *OnCpu) void {

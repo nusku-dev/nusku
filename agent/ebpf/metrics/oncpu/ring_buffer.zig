@@ -36,8 +36,17 @@ pub const RingBuffer = struct {
         };
     }
     /// Reads everything that is in the ring now. Returns how many records it read.
-    pub fn consume(self: RingBuffer) !u32 {
+    pub fn consume(self: *RingBuffer) !u32 {
         return try self.c_ring_buf.consume();
+    }
+
+    /// Every stack read so far, in the order they came out of the ring
+    pub fn getStacks(self: RingBuffer) []const Stack {
+        return self.sink.filled();
+    }
+    /// Records that were malformed or did not fit in our buffer: both should stay 0.
+    pub fn problems(self: *const RingBuffer) u64 {
+        return self.sink.malformed + self.sink.overflow;
     }
 
     fn record_callback(context: ?*anyopaque, data: ?*anyopaque, size: usize) callconv(.c) c_int {

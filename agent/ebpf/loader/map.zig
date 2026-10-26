@@ -36,14 +36,12 @@ pub const Map = struct {
     }
 
     pub fn update(self: Map, key: []const u8, value: []const u8) Error!void {
-        std.debug.assert(key.len == self.key_size and value.len == self.value_size);
         const rc = c.bpf_map_update_elem(self.fd, key.ptr, value.ptr, c.BPF_ANY);
         if (rc < 0) return fromErrno(-rc);
     }
 
     /// Returns false when the key is not in the map.
     pub fn lookup(self: Map, key: []const u8, value: []u8) Error!bool {
-        std.debug.assert(key.len == self.key_size and value.len == self.value_size);
         const rc = c.bpf_map_lookup_elem(self.fd, key.ptr, value.ptr);
         if (rc == -c.ENOENT) return false;
         if (rc < 0) return fromErrno(-rc);

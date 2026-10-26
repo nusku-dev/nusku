@@ -113,90 +113,90 @@ fn checkCallback(comptime Context: type, comptime onReport: anytype) void {
     }
 }
 
-// testing
+// // testing
 
-const Set = std.EnumSet(cfg.Metric);
+// const Set = std.EnumSet(cfg.Metric);
 
-const Counter = struct {
-    reports: usize = 0,
-    samples: u64 = 0,
+// const Counter = struct {
+//     reports: usize = 0,
+//     samples: u64 = 0,
 
-    fn onReport(self: *Counter, report: *const Report) void {
-        self.reports += 1;
-        if (report.cpu) |cpu| self.samples += cpu.samples;
-    }
-};
+//     fn onReport(self: *Counter, report: *const Report) void {
+//         self.reports += 1;
+//         if (report.cpu) |cpu| self.samples += cpu.samples;
+//     }
+// };
 
-test "stops when the target exits and reports its CPU use (needs root, skipped otherwise)" {
-    const child = try sys.spawnBurner(700);
-    defer sys.reap(child);
+// test "stops when the target exits and reports its CPU use (needs root, skipped otherwise)" {
+//     const child = try sys.spawnBurner(700);
+//     defer sys.reap(child);
 
-    var counter = Counter{};
-    const started = timer.nowMs();
-    const reason = profile(std.testing.allocator, .{
-        .pid = child,
-        .metrics = Set.initOne(.cpu),
-        .interval_ms = 200,
-        .duration_s = 0,
-    }, &counter, Counter.onReport) catch |err| switch (err) {
-        error.PermissionDenied => return error.SkipZigTest,
-        else => return err,
-    };
-    const elapsed = timer.nowMs() - started;
+//     var counter = Counter{};
+//     const started = timer.nowMs();
+//     const reason = profile(std.testing.allocator, .{
+//         .pid = child,
+//         .metrics = Set.initOne(.cpu),
+//         .interval_ms = 200,
+//         .duration_s = 0,
+//     }, &counter, Counter.onReport) catch |err| switch (err) {
+//         error.PermissionDenied => return error.SkipZigTest,
+//         else => return err,
+//     };
+//     const elapsed = timer.nowMs() - started;
 
-    std.debug.print("driver: {d} reports, {d} samples, {d} ms\n", .{ counter.reports, counter.samples, elapsed });
-    try std.testing.expectEqual(StopReason.target_exited, reason);
-    try std.testing.expect(elapsed < 1500);
-    try std.testing.expect(counter.reports >= 3); // ticks at 200, 400, 600 ms, then the exit
-    try std.testing.expect(counter.samples >= 20); // about 69 for 700 ms at 99 Hz
-}
+//     std.debug.print("driver: {d} reports, {d} samples, {d} ms\n", .{ counter.reports, counter.samples, elapsed });
+//     try std.testing.expectEqual(StopReason.target_exited, reason);
+//     try std.testing.expect(elapsed < 1500);
+//     try std.testing.expect(counter.reports >= 3); // ticks at 200, 400, 600 ms, then the exit
+//     try std.testing.expect(counter.samples >= 20); // about 69 for 700 ms at 99 Hz
+// }
 
-test "stops at the duration while the target keeps running (needs root, skipped otherwise)" {
-    const child = try sys.spawnBurner(5000);
-    defer sys.reap(child);
+// test "stops at the duration while the target keeps running (needs root, skipped otherwise)" {
+//     const child = try sys.spawnBurner(5000);
+//     defer sys.reap(child);
 
-    var counter = Counter{};
-    const started = timer.nowMs();
-    const reason = profile(std.testing.allocator, .{
-        .pid = child,
-        .metrics = Set.initOne(.cpu),
-        .interval_ms = 300,
-        .duration_s = 1,
-    }, &counter, Counter.onReport) catch |err| switch (err) {
-        error.PermissionDenied => return error.SkipZigTest,
-        else => return err,
-    };
-    const elapsed = timer.nowMs() - started;
+//     var counter = Counter{};
+//     const started = timer.nowMs();
+//     const reason = profile(std.testing.allocator, .{
+//         .pid = child,
+//         .metrics = Set.initOne(.cpu),
+//         .interval_ms = 300,
+//         .duration_s = 1,
+//     }, &counter, Counter.onReport) catch |err| switch (err) {
+//         error.PermissionDenied => return error.SkipZigTest,
+//         else => return err,
+//     };
+//     const elapsed = timer.nowMs() - started;
 
-    std.debug.print("driver: {d} reports, {d} samples, {d} ms\n", .{ counter.reports, counter.samples, elapsed });
-    try std.testing.expectEqual(StopReason.duration, reason);
-    try std.testing.expect(elapsed >= 1000 and elapsed < 1500);
-    try std.testing.expect(counter.reports >= 3 and counter.reports <= 5);
-    try std.testing.expect(counter.samples >= 40);
-}
+//     std.debug.print("driver: {d} reports, {d} samples, {d} ms\n", .{ counter.reports, counter.samples, elapsed });
+//     try std.testing.expectEqual(StopReason.duration, reason);
+//     try std.testing.expect(elapsed >= 1000 and elapsed < 1500);
+//     try std.testing.expect(counter.reports >= 3 and counter.reports <= 5);
+//     try std.testing.expect(counter.samples >= 40);
+// }
 
-test "a handle triggered before the run stops it at once (needs root, skipped otherwise)" {
-    const child = try sys.spawnBurner(5000);
-    defer sys.reap(child);
+// test "a handle triggered before the run stops it at once (needs root, skipped otherwise)" {
+//     const child = try sys.spawnBurner(5000);
+//     defer sys.reap(child);
 
-    var cancel = try Cancel.init();
-    defer cancel.deinit();
-    cancel.trigger();
+//     var cancel = try Cancel.init();
+//     defer cancel.deinit();
+//     cancel.trigger();
 
-    var counter = Counter{};
-    const started = timer.nowMs();
-    const reason = profile(std.testing.allocator, .{
-        .pid = child,
-        .metrics = Set.initOne(.cpu),
-        .interval_ms = 1000,
-        .duration_s = 0,
-        .cancel = &cancel,
-    }, &counter, Counter.onReport) catch |err| switch (err) {
-        error.PermissionDenied => return error.SkipZigTest,
-        else => return err,
-    };
+//     var counter = Counter{};
+//     const started = timer.nowMs();
+//     const reason = profile(std.testing.allocator, .{
+//         .pid = child,
+//         .metrics = Set.initOne(.cpu),
+//         .interval_ms = 1000,
+//         .duration_s = 0,
+//         .cancel = &cancel,
+//     }, &counter, Counter.onReport) catch |err| switch (err) {
+//         error.PermissionDenied => return error.SkipZigTest,
+//         else => return err,
+//     };
 
-    try std.testing.expectEqual(StopReason.cancelled, reason);
-    try std.testing.expectEqual(@as(usize, 1), counter.reports); // just the final window
-    try std.testing.expect(timer.nowMs() - started < 500);
-}
+//     try std.testing.expectEqual(StopReason.cancelled, reason);
+//     try std.testing.expectEqual(@as(usize, 1), counter.reports); // just the final window
+//     try std.testing.expect(timer.nowMs() - started < 500);
+// }

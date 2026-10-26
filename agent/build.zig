@@ -22,6 +22,9 @@ pub fn add(b: *std.Build, options: Options) *std.Build.Module {
     addCLibraries(b, ebpf, options);
     addKernelProgram(b, ebpf, "oncpu", "agent/ebpf/kernel/oncpu.ebpf.zig");
 
+    // for testing only
+    addKernelProgram(b, ebpf, "oncpu_testing", "agent/ebpf/kernel/oncpu.ebpf_testing.zig");
+
     const module = b.createModule(.{
         .root_source_file = b.path("agent/root.zig"),
         .target = options.target,

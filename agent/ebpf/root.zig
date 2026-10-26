@@ -3,6 +3,7 @@ const std = @import("std");
 const onCpu = @import("metrics/oncpu/oncpu.zig");
 
 pub const OnCpu = onCpu.OnCpu;
+pub const CountEntry = onCpu.CountEntry;
 
 test "BPF object file exists and is not empty" {
     const oncpu_bpf_bytes = @embedFile("oncpu_bpf");
