@@ -56,7 +56,7 @@ pub const Window = struct {
     lost: StackLoss = .{},
 };
 
-const OncpuSession = struct {
+pub const OncpuSession = struct {
     gpa: std.mem.Allocator,
     oncpu: OnCpu,
     attached: usize,

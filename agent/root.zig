@@ -1,5 +1,5 @@
 const std = @import("std");
-const session = @import("core/session.zig");
+const session = @import("sessions/session.zig");
 const cfg = @import("core/config.zig");
 const sys = @import("core/sys.zig");
 const timer = @import("core/timer.zig");
