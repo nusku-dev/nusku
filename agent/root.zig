@@ -10,6 +10,7 @@ const procmaps = @import("core/procmaps.zig");
 const canc = @import("core/cancel.zig");
 const kernel = @import("core/kernel.zig");
 const oncpu = @import("sessions/oncpu/oncpu.zig");
+const unwind = @import("unwind/root.zig");
 
 pub const Cancel = canc.Cancel;
 pub const StopReason = pro.StopReason;
@@ -30,4 +31,5 @@ test {
     _ = canc;
     _ = timer;
     _ = kernel;
+    _ = unwind;
 }
