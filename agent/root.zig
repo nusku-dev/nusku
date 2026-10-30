@@ -54,6 +54,7 @@ test {
     _ = @import("target/kernel.zig");
     _ = @import("target/process_maps.zig");
     _ = @import("target/regions.zig");
+    _ = @import("target/vdso.zig");
 
     _ = @import("unwind/cfi.zig");
     _ = @import("unwind/cfi_machine.zig");
@@ -74,4 +75,7 @@ test {
 
     _ = session_file;
     _ = profile_file;
+
+    // Test-only code lives under testing/: end-to-end tests, and the child processes they run.
+    _ = @import("testing/e2e/vdso_unwind.zig");
 }

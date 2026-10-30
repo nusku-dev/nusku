@@ -184,6 +184,7 @@ pub const Session = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
+const child_process = @import("testing/process.zig");
 
 fn wait_for_zombie(pid: u32) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -228,11 +229,11 @@ test "init refuses no metrics, unknown metrics, and invalid pids, before loading
 }
 
 test "init on a zombie fails, and leaks nothing" {
-    const child = try process.sleeper_spawn();
+    const child = try child_process.sleeper_spawn();
     var reaped = false;
-    defer if (!reaped) process.child_reap(child);
+    defer if (!reaped) child_process.child_reap(child);
 
-    process.child_kill(child);
+    child_process.child_kill(child);
     try wait_for_zombie(child);
 
     // The errdefers must free the arenas, or testing.allocator reports a leak.
@@ -241,7 +242,7 @@ test "init on a zombie fails, and leaks nothing" {
         .pid = child,
         .metrics = Set.initOne(.cpu),
     }));
-    process.child_reap(child);
+    child_process.child_reap(child);
     reaped = true;
 }
 
@@ -256,7 +257,7 @@ test "this process: one window per report, with deep stacks (needs root, skipped
     });
     defer session.deinit(testing.allocator);
 
-    process.cpu_burn(300);
+    child_process.cpu_burn(300);
     try session.tick();
     const first = try session.report(testing.allocator);
     const first_cpu = first.cpu orelse return error.TestUnexpectedResult;
@@ -294,7 +295,7 @@ test "this process: one window per report, with deep stacks (needs root, skipped
     const complete = first_cpu.stops[@intFromEnum(collector_file.StopReason.end)];
     try testing.expect(complete * 2 >= first_samples); // Most stacks are complete.
 
-    process.cpu_burn(300);
+    child_process.cpu_burn(300);
     const second = try session.report(testing.allocator);
     // The second window begins where the first ended, within 5 ms.
     const gap = @as(i64, @intCast(second.start_unix_ns)) - @as(i64, @intCast(first_end));

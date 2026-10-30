@@ -176,6 +176,7 @@ fn callback_check(comptime Context: type, comptime on_report: anytype) void {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
+const child_process = @import("testing/process.zig");
 const Set = std.EnumSet(Metric);
 
 const Counter = struct {
@@ -197,8 +198,8 @@ test "the timeout reaches the deadline, and none means wait for ever" {
 }
 
 test "stops when the target exits and reports its CPU use (needs root, skipped otherwise)" {
-    const child = try process.burner_spawn(700);
-    defer process.child_reap(child);
+    const child = try child_process.burner_spawn(700);
+    defer child_process.child_reap(child);
 
     var counter = Counter{};
     const started_ns = timer.monotonic_ns();
@@ -223,8 +224,8 @@ test "stops when the target exits and reports its CPU use (needs root, skipped o
 }
 
 test "stops at the duration while the target keeps running (needs root, skipped otherwise)" {
-    const child = try process.burner_spawn(5000);
-    defer process.child_reap(child);
+    const child = try child_process.burner_spawn(5000);
+    defer child_process.child_reap(child);
 
     var counter = Counter{};
     const started_ns = timer.monotonic_ns();
@@ -248,8 +249,8 @@ test "stops at the duration while the target keeps running (needs root, skipped 
 }
 
 test "a cancel triggered before the run stops it at once (needs root, skipped otherwise)" {
-    const child = try process.burner_spawn(5000);
-    defer process.child_reap(child);
+    const child = try child_process.burner_spawn(5000);
+    defer child_process.child_reap(child);
 
     var cancel = try Cancel.init();
     defer cancel.deinit();

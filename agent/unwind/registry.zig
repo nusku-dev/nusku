@@ -33,6 +33,8 @@ pub const Cause = enum {
     unreadable,
     /// The file at the mapped path is not the one the process mapped.
     wrong_file,
+    /// The target's [vdso] is not the agent's own image (a 32-bit target, for one).
+    vdso_unknown,
 };
 
 pub const Outcome = union(enum) {

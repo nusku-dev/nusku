@@ -241,6 +241,7 @@ pub const Collector = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
+const child_process = @import("../testing/process.zig");
 const process = @import("../os/process.zig");
 
 const Fixture = struct {
@@ -309,7 +310,7 @@ test "every walk lands in exactly one window, across several (needs root, skippe
     var samples_total: u64 = 0;
     var round: u32 = 0;
     while (round < 4) : (round += 1) {
-        process.cpu_burn(300);
+        child_process.cpu_burn(300);
         try fixture.collector.tick();
         const w = try fixture.report();
         try window_expect_consistent(&w);
@@ -346,7 +347,7 @@ test "without unwind tables, stacks are one frame and stop at no_mapping (needs 
     defer fixture.deinit();
 
     try fixture.collector.start(process.current_pid());
-    process.cpu_burn(500);
+    child_process.cpu_burn(500);
     fixture.collector.stop();
     const w = try fixture.report();
     try window_expect_consistent(&w);
@@ -365,10 +366,10 @@ test "another process is not sampled (needs root, skipped otherwise)" {
     defer fixture.deinit();
 
     // A child that only sleeps: the busy loop here must not be counted for it.
-    const sleeper = try process.sleeper_spawn();
-    defer process.child_reap(sleeper);
+    const sleeper = try child_process.sleeper_spawn();
+    defer child_process.child_reap(sleeper);
     try fixture.collector.start(sleeper);
-    process.cpu_burn(300);
+    child_process.cpu_burn(300);
     fixture.collector.stop();
     const w = try fixture.report();
     try testing.expectEqual(@as(u64, 0), w.samples);

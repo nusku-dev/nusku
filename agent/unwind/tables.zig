@@ -18,6 +18,7 @@ const unwind_wire = @import("../bpf/kernel/shared/unwind_wire.zig");
 const File = @import("../os/file.zig").File;
 const build_id = @import("../target/build_id.zig");
 const Region = @import("../target/regions.zig").Region;
+const vdso = @import("../target/vdso.zig");
 const elf_file = @import("elf_file.zig");
 const process_table = @import("process_table.zig");
 const registry_file = @import("registry.zig");
@@ -61,6 +62,8 @@ pub const Tables = struct {
     modules_written: u32,
     /// Where `sync` reads the start of a file to check its build ID.
     prefix_buffer: []u8,
+    /// The agent's own vDSO, the source of every target's [vdso] table. Null without one.
+    vdso_image: ?vdso.Image,
     coverage: Coverage,
 
     pub fn init(tables: *Tables, gpa: std.mem.Allocator) !void {
@@ -71,6 +74,7 @@ pub const Tables = struct {
             .entry_next = undefined,
             .modules_written = 0,
             .prefix_buffer = &.{},
+            .vdso_image = null,
             .coverage = .{},
         };
 
@@ -84,6 +88,10 @@ pub const Tables = struct {
         tables.prefix_buffer = try gpa.alloc(u8, build_id_prefix_size);
         errdefer gpa.free(tables.prefix_buffer);
 
+        tables.vdso_image = try vdso.read(gpa);
+        errdefer if (tables.vdso_image) |*image| image.deinit(gpa);
+        if (tables.vdso_image == null) log.warn("no vDSO: its frames will lose their callers", .{});
+
         try maps_create(&tables.maps);
         // The row value is written straight from the set: it has exactly the map's size.
         assert(tables.registry.set.rows.len == unwind_wire.rows_max);
@@ -91,6 +99,7 @@ pub const Tables = struct {
 
     pub fn deinit(tables: *Tables, gpa: std.mem.Allocator) void {
         for (&tables.maps.values) |*map| map.deinit();
+        if (tables.vdso_image) |*image| image.deinit(gpa);
         gpa.free(tables.prefix_buffer);
         tables.registry.deinit(gpa);
         tables.* = undefined;
@@ -114,6 +123,7 @@ pub const Tables = struct {
             .gpa = gpa,
             .registry = &tables.registry,
             .prefix_buffer = tables.prefix_buffer,
+            .vdso_image = if (tables.vdso_image) |*image| image else null,
             .pid = pid,
         }, regions, &tables.entry_next);
 
@@ -173,6 +183,7 @@ const BuildContext = struct {
     registry: *Registry,
     /// Where the start of a file is read to check its build ID.
     prefix_buffer: []u8,
+    vdso_image: ?*const vdso.Image,
     pid: u32,
 };
 
@@ -202,7 +213,8 @@ fn entry_build(context: BuildContext, regions: []const Region, entry: *ProcessEn
 
 /// The table of the binary behind `region`: remembered, or built now.
 fn outcome_for(context: BuildContext, region: *const Region) !Outcome {
-    // [vdso] and anonymous code (JIT) have no file to read.
+    if (std.mem.eql(u8, region.path, vdso.path)) return outcome_for_vdso(context, region);
+    // Anonymous code (JIT) and the other special mappings have no file to read.
     if (region.path.len == 0) return .{ .unavailable = .unreadable };
     if (region.path[0] != '/') return .{ .unavailable = .unreadable };
 
@@ -238,6 +250,27 @@ fn outcome_for(context: BuildContext, region: *const Region) !Outcome {
 
     return context.registry.add(context.gpa, identity, .{
         .file = loaded.bytes,
+        .start = region.start,
+        .end = region.end,
+        .offset = region.offset,
+    });
+}
+
+/// The target's vDSO is the agent's own image, if their sizes agree (see target/vdso.zig).
+fn outcome_for_vdso(context: BuildContext, region: *const Region) !Outcome {
+    assert(std.mem.eql(u8, region.path, vdso.path));
+    const image = context.vdso_image orelse return .{ .unavailable = .vdso_unknown };
+    if (!image.matches(region.end - region.start)) return .{ .unavailable = .vdso_unknown };
+
+    // The vDSO has no inode: without a build ID, its path names it.
+    const identity: Identity = if (image.build_id) |id|
+        .{ .build_id = id }
+    else
+        .{ .file = .{ .inode = 0, .path = vdso.path } };
+    if (context.registry.lookup(identity)) |known| return known;
+
+    return context.registry.add(context.gpa, identity, .{
+        .file = image.bytes,
         .start = region.start,
         .end = region.end,
         .offset = region.offset,
@@ -302,6 +335,7 @@ fn entry_build_testing(
     registry: *Registry,
     entry: *ProcessEntry,
     regions: []const Region,
+    vdso_image: ?*const vdso.Image,
 ) !Coverage {
     const prefix_buffer = try testing.allocator.alloc(u8, build_id_prefix_size);
     defer testing.allocator.free(prefix_buffer);
@@ -309,6 +343,7 @@ fn entry_build_testing(
         .gpa = testing.allocator,
         .registry = registry,
         .prefix_buffer = prefix_buffer,
+        .vdso_image = vdso_image,
         .pid = process.current_pid(),
     }, regions, entry);
 }
@@ -329,7 +364,7 @@ test "this process: the registry finds the table row of one of our own functions
     defer registry.deinit(testing.allocator);
 
     var entry: ProcessEntry = undefined;
-    const coverage = try entry_build_testing(&registry, &entry, regions);
+    const coverage = try entry_build_testing(&registry, &entry, regions, null);
     try testing.expectEqual(@as(u32, @intCast(regions.len)), entry.count);
     try testing.expect(registry.set.modules_count > 0);
 
@@ -348,9 +383,70 @@ test "this process: the registry finds the table row of one of our own functions
     // A second pass has nothing new to build, and gives the same entry.
     const modules_count = registry.set.modules_count;
     var again: ProcessEntry = undefined;
-    _ = try entry_build_testing(&registry, &again, regions);
+    _ = try entry_build_testing(&registry, &again, regions, null);
     try testing.expectEqual(modules_count, registry.set.modules_count);
     try testing.expectEqualSlices(u8, std.mem.asBytes(&entry), std.mem.asBytes(&again));
+}
+
+test "this process: the vDSO gets a table, with a row for nearly every byte of its code" {
+    var image = (try vdso.read(testing.allocator)) orelse return error.SkipZigTest;
+    defer image.deinit(testing.allocator);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const pid = process.current_pid();
+    const mappings = try process_maps.read(arena.allocator(), pid);
+    const regions = try regions_file.build(arena.allocator(), mappings, pid, &.{});
+
+    var registry: Registry = undefined;
+    try registry.init(testing.allocator, options_small_testing);
+    defer registry.deinit(testing.allocator);
+
+    // Only the vDSO's region: the other binaries are not this test's business.
+    const region = for (regions) |*region| {
+        if (std.mem.eql(u8, region.path, vdso.path)) break region;
+    } else return error.TestUnexpectedResult;
+    var entry: ProcessEntry = undefined;
+    const coverage = try entry_build_testing(&registry, &entry, region[0..1], &image);
+    try testing.expectEqual(@as(u32, 0), coverage.unavailable.get(.vdso_unknown));
+    try testing.expectEqual(@as(u32, 1), registry.set.modules_count);
+
+    const mapping = entry.mappings[0];
+    try testing.expect(mapping.module != unwind_wire.module_none);
+
+    // Every address of .text, as the kernel will see it, against the table.
+    const elf_sections = @import("elf_sections.zig");
+    const text = (try elf_sections.find(image.bytes, ".text")) orelse
+        return error.TestUnexpectedResult;
+    var covered: u64 = 0;
+    var address = region.start + text.vaddr;
+    while (address < region.start + text.vaddr + text.size) : (address += 1) {
+        if (registry.set.find(mapping.module, address -% mapping.bias) != null) covered += 1;
+    }
+    std.debug.print("vdso: {d} of {d} bytes of .text have a row\n", .{ covered, text.size });
+    try testing.expect(covered * 10 >= text.size * 9);
+}
+
+test "a [vdso] of another size is not this agent's, and gets no table" {
+    var image = (try vdso.read(testing.allocator)) orelse return error.SkipZigTest;
+    defer image.deinit(testing.allocator);
+
+    var registry: Registry = undefined;
+    try registry.init(testing.allocator, options_small_testing);
+    defer registry.deinit(testing.allocator);
+
+    const regions = [_]Region{.{
+        .start = 0x7000_0000,
+        .end = 0x7000_0000 + image.bytes.len + 4096,
+        .offset = 0,
+        .inode = 0,
+        .path = vdso.path,
+        .build_id = null,
+    }};
+    var entry: ProcessEntry = undefined;
+    const coverage = try entry_build_testing(&registry, &entry, &regions, &image);
+    try testing.expectEqual(@as(u32, 1), coverage.unavailable.get(.vdso_unknown));
+    try testing.expectEqual(unwind_wire.module_none, entry.mappings[0].module);
 }
 
 test "a file that cannot be opened gives a mapping without a table, and is not remembered" {
@@ -367,7 +463,7 @@ test "a file that cannot be opened gives a mapping without a table, and is not r
         .build_id = null,
     }};
     var entry: ProcessEntry = undefined;
-    const coverage = try entry_build_testing(&registry, &entry, &regions);
+    const coverage = try entry_build_testing(&registry, &entry, &regions, null);
     try testing.expectEqual(@as(u32, 1), entry.count);
     try testing.expectEqual(unwind_wire.module_none, entry.mappings[0].module);
     try testing.expectEqual(@as(u32, 1), coverage.unavailable.get(.unreadable));
@@ -390,7 +486,7 @@ test "a file whose build ID is not the one the process mapped is refused, and no
         .build_id = &build_id_wrong,
     }};
     var entry: ProcessEntry = undefined;
-    const coverage = try entry_build_testing(&registry, &entry, &regions);
+    const coverage = try entry_build_testing(&registry, &entry, &regions, null);
     if (coverage.unavailable.get(.unreadable) == 1) return error.SkipZigTest; // No /usr/bin/ls.
     try testing.expectEqual(@as(u32, 1), coverage.unavailable.get(.wrong_file));
     try testing.expectEqual(unwind_wire.module_none, entry.mappings[0].module);
