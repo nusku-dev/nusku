@@ -139,7 +139,8 @@ test "a process with no executable mappings finds nothing" {
 }
 
 test "more mappings than fit: the first ones are kept and the rest are counted" {
-    var inputs: [200]Input = undefined;
+    const dropped = 72;
+    var inputs: [mappings_max + dropped]Input = undefined;
     for (&inputs, 0..) |*input, i| {
         const start: u64 = 0x10000 + @as(u64, i) * 0x2000;
         input.* = .{
@@ -152,10 +153,11 @@ test "more mappings than fit: the first ones are kept and the rest are counted" 
     var entry: ProcessEntry = undefined;
     try build(&entry, &inputs);
     try testing.expectEqual(@as(u32, mappings_max), entry.count);
-    try testing.expectEqual(@as(u32, 72), entry.dropped);
-    try testing.expectEqual(@as(u32, 127), find(&entry, 0x10000 + 127 * 0x2000).?.module);
-    // The first one that did not fit.
-    try testing.expect(find(&entry, 0x10000 + 128 * 0x2000) == null);
+    try testing.expectEqual(@as(u32, dropped), entry.dropped);
+    // The last one that fit, and the first one that did not.
+    const last_kept = mappings_max - 1;
+    try testing.expectEqual(last_kept, find(&entry, 0x10000 + last_kept * 0x2000).?.module);
+    try testing.expect(find(&entry, 0x10000 + @as(u64, mappings_max) * 0x2000) == null);
 }
 
 test "input that is not sorted, overlaps, or has an empty range is refused" {

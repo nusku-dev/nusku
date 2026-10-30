@@ -15,11 +15,14 @@ pub const row_search_steps_max: u32 = 19;
 pub const modules_max: u32 = 256;
 
 /// Executable mappings remembered for one process. More are counted in `ProcessEntry.dropped`.
-pub const mappings_max: u32 = 128;
-pub const mapping_search_steps_max: u32 = 8;
+/// Most libraries map their code once, so this is about the number of libraries: a JVM maps
+/// about a hundred, a browser two or three hundred.
+pub const mappings_max: u32 = 512;
+pub const mapping_search_steps_max: u32 = 10;
 
-/// Processes with an entry in the process map.
-pub const processes_max: u32 = 1024;
+/// Processes with an entry in the process map. The map is preallocated: 256 entries of 16 KiB
+/// is 4 MiB of kernel memory. The agent profiles one target today.
+pub const processes_max: u32 = 256;
 
 /// The module of a mapping that has executable code but no table: frame pointers unwind it.
 pub const module_none: u32 = 0xffff_ffff;

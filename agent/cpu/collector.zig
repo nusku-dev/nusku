@@ -15,6 +15,7 @@ const assert = std.debug.assert;
 const cpu_wire = @import("../bpf/kernel/shared/cpu_wire.zig");
 const RingBuffer = @import("../bpf/ring_buffer.zig").RingBuffer;
 const PerfEvent = @import("../os/perf_event.zig").PerfEvent;
+const cpus = @import("../os/cpus.zig");
 const Tables = @import("../unwind/tables.zig").Tables;
 const frame_cache = @import("frame_cache.zig");
 const sampler_file = @import("sampler.zig");
@@ -49,9 +50,10 @@ pub const Collector = struct {
     sampler: Sampler,
     cache: FrameCache,
     records: Records,
-    /// One event per CPU that was online at start. `events[0..events_count]` are open.
-    events: []PerfEvent,
-    events_count: u32,
+    /// One slot per possible CPU: the event sampling it, or null while the CPU is offline.
+    events: []?PerfEvent,
+    /// Which CPUs were online at the last `cpus_sync`. One per possible CPU, like `events`.
+    cpus_online: []bool,
 
     sample_hz: u32,
     /// The target: 0 before `start`.
@@ -82,7 +84,7 @@ pub const Collector = struct {
             .cache = undefined,
             .records = undefined,
             .events = &.{},
-            .events_count = 0,
+            .cpus_online = &.{},
             .sample_hz = options.sample_hz,
             .tgid = 0,
             .generation = 0,
@@ -110,8 +112,11 @@ pub const Collector = struct {
     }
 
     fn buffers_allocate(collector: *Collector, gpa: std.mem.Allocator) !void {
-        collector.events = try gpa.alloc(PerfEvent, collector.sampler.states.len);
+        collector.events = try gpa.alloc(?PerfEvent, collector.sampler.states.len);
         errdefer gpa.free(collector.events);
+        @memset(collector.events, null);
+        collector.cpus_online = try gpa.alloc(bool, collector.sampler.states.len);
+        errdefer gpa.free(collector.cpus_online);
         collector.count_keys = try gpa.alloc(CountKey, cpu_wire.counts_max);
         errdefer gpa.free(collector.count_keys);
         collector.count_values = try gpa.alloc(u64, cpu_wire.counts_max);
@@ -124,6 +129,7 @@ pub const Collector = struct {
         gpa.free(collector.stacks);
         gpa.free(collector.count_values);
         gpa.free(collector.count_keys);
+        gpa.free(collector.cpus_online);
         gpa.free(collector.events);
         collector.records.deinit();
         collector.cache.deinit(gpa);
@@ -134,37 +140,80 @@ pub const Collector = struct {
     /// Starts sampling `tgid` on every online CPU.
     pub fn start(collector: *Collector, tgid: u32) !void {
         assert(tgid > 0);
-        assert(collector.events_count == 0);
+        assert(collector.tgid == 0);
+        for (collector.events) |event| assert(event == null);
+
         collector.tgid = tgid;
         try collector.sampler.config_write(.{ .tgid = tgid, .generation = collector.generation });
         errdefer collector.stop();
 
-        var cpu: u32 = 0;
-        while (cpu < collector.events.len) : (cpu += 1) {
-            var event = PerfEvent.cpu_clock_open(cpu, collector.sample_hz) catch |err| {
-                switch (err) {
-                    // A CPU that comes online later is not sampled: hotplug is not handled yet.
-                    error.CpuOffline => continue,
-                    else => return err,
-                }
-            };
-            errdefer event.deinit();
-            try event.program_attach(collector.sampler.program.fd);
-            try event.enable();
-            collector.events[collector.events_count] = event;
-            collector.events_count += 1;
-        }
-        if (collector.events_count == 0) return error.NoCpuOnline;
+        try collector.cpus_sync();
+        const events_open = collector.events_open_count();
+        if (events_open == 0) return error.NoCpuOnline;
         log.debug("sampling tgid {d} at {d} Hz on {d} CPUs", .{
-            tgid, collector.sample_hz, collector.events_count,
+            tgid, collector.sample_hz, events_open,
         });
     }
 
     /// Closes every perf event, so no new sample starts. Safe to call more than once. The
     /// program and its maps stay, so the counts of the run can still be collected.
     pub fn stop(collector: *Collector) void {
-        for (collector.events[0..collector.events_count]) |*event| event.deinit();
-        collector.events_count = 0;
+        for (collector.events) |*slot| {
+            if (slot.*) |*event| event.deinit();
+            slot.* = null;
+        }
+        collector.tgid = 0;
+    }
+
+    /// Opens an event on every CPU that came online since the last call, and closes the events
+    /// of CPUs that went offline. Runs at start and at every report: a CPU that comes online
+    /// during a run is sampled from the next report on.
+    ///
+    /// A CPU that goes offline and comes back between two reports keeps its old event, and
+    /// whether the kernel keeps a CPU's events across that is not something the agent relies
+    /// on knowing: such a CPU may go unsampled until it goes offline at a report again.
+    fn cpus_sync(collector: *Collector) !void {
+        assert(collector.tgid > 0);
+        cpus.online_read(collector.cpus_online) catch |err| {
+            // Without the list, try every possible CPU: an offline one refuses its event.
+            log.warn("cannot read the online CPUs ({s}): trying all of them", .{@errorName(err)});
+            @memset(collector.cpus_online, true);
+        };
+
+        for (collector.events, collector.cpus_online, 0..) |*slot, online, cpu| {
+            if (online) {
+                if (slot.* == null) slot.* = try collector.event_open(@intCast(cpu));
+            } else {
+                if (slot.*) |*event| {
+                    event.deinit();
+                    slot.* = null;
+                    log.debug("cpu {d} went offline", .{cpu});
+                }
+            }
+        }
+    }
+
+    /// The event sampling `cpu`, or null when it is offline after all (it went offline since
+    /// the list was read).
+    fn event_open(collector: *const Collector, cpu: u32) !?PerfEvent {
+        var event = PerfEvent.cpu_clock_open(cpu, collector.sample_hz) catch |err| {
+            switch (err) {
+                error.CpuOffline => return null,
+                else => return err,
+            }
+        };
+        errdefer event.deinit();
+        try event.program_attach(collector.sampler.program.fd);
+        try event.enable();
+        return event;
+    }
+
+    fn events_open_count(collector: *const Collector) u32 {
+        var count: u32 = 0;
+        for (collector.events) |event| {
+            if (event != null) count += 1;
+        }
+        return count;
     }
 
     /// Reads the ring buffer into the frame cache, so it never fills up between reports.
@@ -176,6 +225,7 @@ pub const Collector = struct {
     /// the frame cache forgets the epoch no window can need any more.
     pub fn generation_advance(collector: *Collector) !void {
         assert(!collector.generation_advanced);
+        if (collector.tgid > 0) try collector.cpus_sync();
         collector.generation +%= 1;
         try collector.sampler.config_write(.{
             .tgid = collector.tgid,

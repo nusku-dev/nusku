@@ -110,6 +110,30 @@ noinline fn clock_read_loop(duration_ms: u64, clock_gettime: ClockGettime) void 
     }
 }
 
+/// Restricts process `pid` to `cpu`, so every sample of it is taken on that CPU.
+pub fn cpu_pin(pid: u32, cpu: u32) !void {
+    assert(cpu < linux.CPU_SETSIZE * 8);
+    var set = std.mem.zeroes(linux.cpu_set_t);
+    const word_bits = @bitSizeOf(usize);
+    set[cpu / word_bits] |= @as(usize, 1) << @intCast(cpu % word_bits);
+    try linux.sched_setaffinity(@intCast(pid), &set);
+}
+
+/// Takes `cpu` offline or brings it back, through sysfs. Needs root. CPU 0 often cannot go
+/// offline at all. This changes the machine for every process on it: only an opt-in test uses
+/// it, and it must always bring the CPU back.
+pub fn cpu_online_set(cpu: u32, online: bool) !void {
+    assert(cpu > 0);
+    var path_buffer: [64]u8 = undefined;
+    const path_format = "/sys/devices/system/cpu/cpu{d}/online";
+    const path = try std.fmt.bufPrintZ(&path_buffer, path_format, .{cpu});
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .WRONLY, .CLOEXEC = true });
+    if (fd < 0) return error.CpuOnlineOpenFailed;
+    defer _ = std.c.close(fd);
+    const value: []const u8 = if (online) "1" else "0";
+    if (std.c.write(fd, value.ptr, value.len) != 1) return error.CpuOnlineWriteFailed;
+}
+
 /// Kills the child, without waiting for it.
 pub fn child_kill(pid: u32) void {
     assert(process.pid_valid(pid));

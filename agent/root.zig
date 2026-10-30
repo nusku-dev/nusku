@@ -36,6 +36,7 @@ pub const cpu = struct {
 test {
     _ = @import("os/anonymous_memory.zig");
     _ = @import("os/cancel.zig");
+    _ = @import("os/cpus.zig");
     _ = @import("os/file.zig");
     _ = @import("os/perf_event.zig");
     _ = @import("os/pidfd.zig");
@@ -78,4 +79,5 @@ test {
 
     // Test-only code lives under testing/: end-to-end tests, and the child processes they run.
     _ = @import("testing/e2e/vdso_unwind.zig");
+    _ = @import("testing/e2e/cpu_hotplug.zig");
 }
