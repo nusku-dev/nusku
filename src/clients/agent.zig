@@ -42,48 +42,11 @@ pub const Agent = struct {
     /// Profiles the target until the duration ends or it exits, printing a report per interval.
     pub fn run(self: *Agent, allocator: std.mem.Allocator, stdout: *std.Io.Writer) !void {
         const pid = self.pid orelse return error.NoProcess;
+        _ = allocator;
+        _ = stdout;
 
         // prof.zig has validated these already; the casts only fail on a programming mistake.
-        const options = agent.Options{
-            .pid = std.math.cast(u32, pid) orelse return error.InvalidPid,
-            .metrics = self.metrics,
-            .interval_ms = std.math.cast(u32, self.interval) orelse return error.InvalidInterval,
-            .duration_s = std.math.cast(u32, self.duration) orelse return error.InvalidDuration,
-        };
-
-        var printer = Printer{ .out = stdout };
         slog.info("agent started", .{ .pid = pid });
-        const reason = agent.profile(allocator, options, &printer, Printer.onReport) catch |err| {
-            slog.err("profiling failed", .{ .pid = pid, .cause = err, .hint = hint(err) });
-            return err;
-        };
-        slog.info("agent stopped", .{ .pid = pid, .reason = @tagName(reason) });
-    }
-};
-
-/// Prints each report as text on stdout. A write error (a closed pipe) stops the profile.
-const Printer = struct {
-    out: *std.Io.Writer,
-
-    fn onReport(self: *Printer, report: *const agent.Report) !void {
-        const cpu = report.cpu orelse return;
-        const w = self.out;
-        try w.print("pid {d}  window {d} ms  cpu {d} samples  {d} stacks  {d} regions\n", .{
-            report.pid,
-            report.duration_ns / std.time.ns_per_ms,
-            cpu.samples,
-            cpu.stacks.len,
-            report.regions.len,
-        });
-        for (cpu.stacks[0..@min(cpu.stacks.len, 5)]) |stack| {
-            try w.print("  {d:>4}  user", .{stack.samples});
-            for (stack.user[0..@min(stack.user.len, 4)]) |address| try printFrame(w, report.regions, address);
-            try w.writeAll("  kernel");
-            for (stack.kernel[0..@min(stack.kernel.len, 3)]) |address| try w.print(" 0x{x}", .{address});
-            try w.writeAll("\n");
-        }
-        // Flush so every window shows up as it happens, not when the buffer fills.
-        try w.flush();
     }
 };
 

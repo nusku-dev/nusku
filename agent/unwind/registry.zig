@@ -147,6 +147,11 @@ fn key_of(gpa: std.mem.Allocator, identity: Identity) error{OutOfMemory}![]u8 {
     }
 }
 
+/// The bias of a mapping of a file whose `delta` is known: runtime address = file address + bias.
+pub fn biasOf(delta: u64, start: u64, offset: u64) u64 {
+    return start -% offset -% delta;
+}
+
 const testing = std.testing;
 
 test "a file that cannot be used is remembered, and not parsed again" {

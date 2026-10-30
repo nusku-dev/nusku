@@ -1,9 +1,45 @@
 const std = @import("std");
 const oncpu = @import("ebpf");
 const Event = @import("../../clibs/event.zig").Event;
+const unwind = @import("../../unwind/root.zig");
+
+const Row = unwind.compact.Row;
+const Module = unwind.tableset.Module;
+const TableSet = unwind.tableset.TableSet;
+const ProcessEntry = unwind.procmap.ProcessEntry;
 
 const OnCpu = oncpu.OnCpu;
 const CountEntry = oncpu.CountEntry;
+
+pub const TableMaps = struct {
+    image: []Row,
+    unwind_maps: oncpu.OnCpu.UnwindMaps(Module, ProcessEntry),
+    owns_maps: bool,
+
+    pub fn deinit(self: *TableMaps, gpa: std.mem.Allocator) void {
+        self.unwind_maps.deinit();
+        gpa.free(self.image);
+    }
+
+    /// Writes modules `from` and later, the ones the kernel does not have yet: first the rows
+    /// (the whole image, whose earlier rows have not changed), then the descriptors, so a
+    /// descriptor never points at rows that are not there yet.
+    pub fn writeModulesFrom(self: TableMaps, set: TableSet, from: usize) !void {
+        if (from >= set.modules.len) return;
+        const first: usize = set.modules[from].row_start;
+        const end = set.rows.len;
+        if (end > self.image.len) return error.TableFull;
+        @memcpy(self.image[first..end], set.rows[first..end]);
+        const key = std.mem.toBytes(@as(u32, 0));
+        try self.unwind_maps.rows.update(&key, std.mem.sliceAsBytes(self.image));
+        for (from..set.modules.len) |id| try self.unwind_maps.modules.update(@intCast(id), set.modules[id]);
+    }
+
+    /// Call after the modules the entry names have been written.
+    pub fn writeProcess(self: TableMaps, pid: u32, entry: ProcessEntry) !void {
+        try self.unwind_maps.processes.update(pid, entry);
+    }
+};
 
 /// What is remembered about a stack for as long as the collector runs.
 const Known = struct {
@@ -121,7 +157,7 @@ pub const OncpuSession = struct {
         self.attached = attached;
     }
 
-    fn collect(self: *OncpuSession, area: std.mem.Allocator) !Window {
+    pub fn collect(self: *OncpuSession, area: std.mem.Allocator) !Window {
         var snapshot: std.ArrayList(CountEntry) = .empty;
         defer snapshot.deinit(self.gpa);
         try self.oncpu.snapshot(self.gpa, &snapshot);
@@ -189,6 +225,23 @@ pub const OncpuSession = struct {
                 .kernel = kernel,
             });
         }
+    }
+
+    pub fn build_unwind_maps(self: *OncpuSession, gpa: std.mem.Allocator) !TableMaps {
+        const unwind_maps = try self.oncpu.get_unwind_maps(Module, ProcessEntry);
+        if (unwind_maps.rows.key_size != @sizeOf(u32) or unwind_maps.rows.value_size == 0 or unwind_maps.rows.value_size % @sizeOf(Row) != 0) {
+            return error.InvalidArgument;
+        }
+
+        const image = try gpa.alloc(Row, unwind_maps.rows.value_size / @sizeOf(Row));
+        errdefer gpa.free(image);
+        @memset(image, std.mem.zeroes(Row));
+
+        return .{
+            .unwind_maps = unwind_maps,
+            .image = image,
+            .owns_maps = false,
+        };
     }
 };
 

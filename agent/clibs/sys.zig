@@ -1,4 +1,5 @@
 const std = @import("std");
+const t = @import("timer.zig");
 
 extern "c" fn fork() c_int;
 extern "c" fn getpid() c_int;
@@ -28,4 +29,17 @@ pub fn reap(pid: u32) void {
 
 pub fn kill9(pid: u32) void {
     _ = kill(@intCast(pid), 9);
+}
+
+pub fn spawnBurner(ms: u64) !u32 {
+    const pid = fork();
+    if (pid < 0) return error.ForkFailed;
+    if (pid == 0) {
+        const until = t.nowMs() + ms;
+        var x: u64 = 0;
+        while (t.nowMs() < until) x +%= 1;
+        std.mem.doNotOptimizeAway(x);
+        std.c._exit(0);
+    }
+    return @intCast(pid);
 }

@@ -94,6 +94,37 @@ pub const OnCpu = struct {
         return out;
     }
 
+    pub fn get_unwind_maps(self: *OnCpu, comptime Modules: type, comptime ProcessEntry: type) !UnwindMaps(Modules, ProcessEntry) {
+        var rows = self.maps.get(.unwind_rows).map;
+        errdefer rows.deinit();
+
+        var modules = self.maps.get(.unwind_modules).map;
+        errdefer modules.deinit();
+
+        var procs = self.maps.get(.unwind_procs).map;
+        errdefer procs.deinit();
+
+        return .{
+            .rows = rows,
+            .modules = try m.TypedMap(u32, Modules).init(modules),
+            .processes = try m.TypedMap(u32, ProcessEntry).init(procs),
+        };
+    }
+
+    pub fn UnwindMaps(comptime Modules: type, comptime ProcessEntry: type) type {
+        return struct {
+            rows: m.Map,
+            modules: m.TypedMap(u32, Modules),
+            processes: m.TypedMap(u32, ProcessEntry),
+
+            const Self = @This();
+
+            pub fn deinit(self: *Self) void {
+                self.rows.deinit();
+            }
+        };
+    }
+
     pub fn snapshot(self: *OnCpu, gpa: std.mem.Allocator, out: *std.ArrayList(CountEntry)) !void {
         const countsMap = self.maps.get(.oncpu_stack_counts).map;
         const counts = try m.TypedMap(CountKey, u64).init(countsMap);

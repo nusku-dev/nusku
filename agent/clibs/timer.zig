@@ -4,6 +4,8 @@ extern "c" fn clock_gettime(clock: c_int, ts: *Timespec) c_int;
 extern "c" fn timerfd_settime(fd: c_int, flags: c_int, new: *const Itimerspec, old: ?*Itimerspec) c_int;
 extern "c" fn timerfd_create(clock: c_int, flags: c_int) c_int;
 extern "c" fn nanosleep(req: *const Timespec, rem: ?*Timespec) c_int;
+extern "c" fn close(fd: c_int) c_int;
+extern "c" fn read(fd: c_int, buf: *anyopaque, count: usize) isize;
 
 const CLOCK_MONOTONIC = 1;
 const CLOCK_REALTIME = 0;
@@ -57,21 +59,36 @@ pub fn sleepMs(ms: u64) void {
     _ = nanosleep(&req, null); // waking early because of a signal is fine
 }
 
-pub fn configTimer(interval_ms: u32, timer_fd: c_int) !void {
-    const interval = msToTimespec(interval_ms);
+pub const Timer = struct {
+    fd: c_int,
 
-    const armed = Itimerspec{
-        .interval = interval,
-        .value = interval,
-    };
-    if (timerfd_settime(timer_fd, 0, &armed, null) != 0) return error.Unexpected;
-}
+    pub fn init() !Timer {
+        const timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        if (timer_fd < 0) return error.Unexpected;
+        return .{ .fd = timer_fd };
+    }
 
-pub fn createTimerfd() !c_int {
-    const timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    if (timer_fd < 0) return error.Unexpected;
-    return timer_fd;
-}
+    pub fn drain(self: Timer) !u64 {
+        var expirations: u64 = undefined;
+        const n = read(self.fd, &expirations, @sizeOf(u64));
+        if (n < 0) return error.ReadFailed;
+        return expirations;
+    }
+
+    pub fn config(self: Timer, interval_ms: u32) !void {
+        const interval = msToTimespec(interval_ms);
+
+        const armed = Itimerspec{
+            .interval = interval,
+            .value = interval,
+        };
+        if (timerfd_settime(self.fd, 0, &armed, null) != 0) return error.Unexpected;
+    }
+
+    pub fn deinit(self: Timer) void {
+        _ = close(self.fd);
+    }
+};
 
 test "both clocks advance, and the wall clock is a real date" {
     const mono = monotonicNs();

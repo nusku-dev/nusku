@@ -1,16 +1,24 @@
 const std = @import("std");
-const s = @import("core/session.zig");
-const cfg = @import("core/config.zig");
-const sys = @import("core/sys.zig");
-const po = @import("core/poll.zig");
-const timer = @import("core/timer.zig");
-const Cancel = @import("core/cancel.zig").Cancel;
+const Metric = @import("sessions/session.zig").Metric;
+const Cancel = @import("clibs/cancel.zig").Cancel;
+const Report = @import("sessions/session.zig").Report;
+const Poll = @import("clibs/poll.zig").Poll;
+const PidFd = @import("clibs/sysCall.zig").PidFd;
+const Session = @import("sessions/session.zig").Session;
+const sys = @import("clibs/sys.zig");
+const t = @import("clibs/timer.zig");
 
-const Poll = po.Poll;
-const Session = s.Session;
-const Report = s.Report;
+const Timer = t.Timer;
 
 pub const StopReason = enum { duration, target_exited, cancelled };
+
+pub const Options = struct {
+    pid: u32,
+    metrics: std.EnumSet(Metric),
+    interval_ms: u32,
+    duration_s: u32,
+    cancel: ?*const Cancel = null,
+};
 
 /// Profiles one process from start to finish and returns why it stopped.
 ///
@@ -27,37 +35,34 @@ pub const StopReason = enum { duration, target_exited, cancelled };
 /// - Needs root, or CAP_BPF and CAP_PERFMON. CAP_SYSLOG is also needed for the kernel text
 ///   address in `Report.kernel`; without it that field is null and kernel frames cannot be placed.
 pub fn profile(
-    allocator: std.mem.Allocator,
-    options: cfg.Options,
+    gpa: std.mem.Allocator,
+    options: Options,
     context: anytype,
     comptime onReport: anytype,
 ) !StopReason {
     comptime checkCallback(@TypeOf(context), onReport);
-
-    if (!sys.isValidPid(options.pid)) return error.InvalidPid;
     if (options.interval_ms == 0) return error.InvalidInterval;
     if (options.metrics.count() == 0) return error.NoMetrics;
 
-    const pid_fd = try sys.openPidfd(options.pid);
-    defer sys.fdClose(pid_fd);
+    var pid = try PidFd.init(options.pid);
+    defer pid.deinit();
 
-    const timer_fd = try timer.createTimerfd();
-    defer sys.fdClose(timer_fd);
+    const timer = try Timer.init();
+    defer timer.deinit();
 
-    var session = try Session.init(allocator, options.metrics, options.pid);
+    var session = try Session.init(gpa, options.metrics, options.pid);
     defer session.deinit();
 
-    try timer.configTimer(options.interval_ms, timer_fd);
+    try timer.config(options.interval_ms);
 
-    const started = timer.nowMs();
+    const started = t.nowMs();
     const deadline: ?u64 = if (options.duration_s == 0) null else started + @as(u64, options.duration_s) * 1000;
-
-    var poll = Poll.init(timer_fd, pid_fd, options.cancel);
+    var poll = Poll.init(timer.fd, pid.fd, options.cancel);
 
     while (true) {
         // Wake up for the deadline too, even if no descriptor is ready.
         const timeout: c_int = if (deadline) |d| blk: {
-            const now = timer.nowMs();
+            const now = t.nowMs();
             break :blk if (now >= d) 0 else @intCast(@min(d - now, std.math.maxInt(c_int)));
         } else -1;
 
@@ -65,26 +70,27 @@ pub fn profile(
             error.Interrupted => continue,
             else => return err,
         };
+
         var reported = false;
         if (event.timer) {
-            var expirations: u64 = undefined;
-            _ = try sys.readFd(timer_fd, &expirations, @sizeOf(u64));
-            try deliver(allocator, &session, context, onReport);
+            _ = try timer.drain();
+            try deliver(gpa, &session, context, onReport);
             reported = true;
         }
 
-        const finished = if (deadline) |d| timer.nowMs() >= d else false;
+        const finished = if (deadline) |d| t.nowMs() >= d else false;
         if (event.exited or event.cancelled or finished) {
-            if (!reported) try deliver(allocator, &session, context, onReport); // the last, partial window
+            if (!reported) try deliver(gpa, &session, context, onReport);
             const reason: StopReason = if (event.cancelled) .cancelled else if (event.exited) .target_exited else .duration;
             return reason;
         }
     }
 }
+
 /// Takes one report and hands it to the caller. The report lives in an arena that is freed
 /// right after the callback returns.
-fn deliver(allocator: std.mem.Allocator, session: *Session, context: anytype, comptime onReport: anytype) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
+fn deliver(gpa: std.mem.Allocator, session: *Session, context: anytype, comptime onReport: anytype) !void {
+    var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const report = try session.report(arena.allocator());
 
@@ -113,90 +119,90 @@ fn checkCallback(comptime Context: type, comptime onReport: anytype) void {
     }
 }
 
-// // testing
+// testing
 
-// const Set = std.EnumSet(cfg.Metric);
+const Set = std.EnumSet(Metric);
 
-// const Counter = struct {
-//     reports: usize = 0,
-//     samples: u64 = 0,
+const Counter = struct {
+    reports: usize = 0,
+    samples: u64 = 0,
 
-//     fn onReport(self: *Counter, report: *const Report) void {
-//         self.reports += 1;
-//         if (report.cpu) |cpu| self.samples += cpu.samples;
-//     }
-// };
+    fn onReport(self: *Counter, report: *const Report) void {
+        self.reports += 1;
+        if (report.cpu) |cpu| self.samples += cpu.samples;
+    }
+};
 
-// test "stops when the target exits and reports its CPU use (needs root, skipped otherwise)" {
-//     const child = try sys.spawnBurner(700);
-//     defer sys.reap(child);
+test "stops when the target exits and reports its CPU use (needs root, skipped otherwise)" {
+    const child = try sys.spawnBurner(700);
+    defer sys.reap(child);
 
-//     var counter = Counter{};
-//     const started = timer.nowMs();
-//     const reason = profile(std.testing.allocator, .{
-//         .pid = child,
-//         .metrics = Set.initOne(.cpu),
-//         .interval_ms = 200,
-//         .duration_s = 0,
-//     }, &counter, Counter.onReport) catch |err| switch (err) {
-//         error.PermissionDenied => return error.SkipZigTest,
-//         else => return err,
-//     };
-//     const elapsed = timer.nowMs() - started;
+    var counter = Counter{};
+    const started = t.nowMs();
+    const reason = profile(std.testing.allocator, .{
+        .pid = child,
+        .metrics = Set.initOne(.cpu),
+        .interval_ms = 200,
+        .duration_s = 0,
+    }, &counter, Counter.onReport) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    const elapsed = t.nowMs() - started;
 
-//     std.debug.print("driver: {d} reports, {d} samples, {d} ms\n", .{ counter.reports, counter.samples, elapsed });
-//     try std.testing.expectEqual(StopReason.target_exited, reason);
-//     try std.testing.expect(elapsed < 1500);
-//     try std.testing.expect(counter.reports >= 3); // ticks at 200, 400, 600 ms, then the exit
-//     try std.testing.expect(counter.samples >= 20); // about 69 for 700 ms at 99 Hz
-// }
+    std.debug.print("driver: {d} reports, {d} samples, {d} ms\n", .{ counter.reports, counter.samples, elapsed });
+    try std.testing.expectEqual(StopReason.target_exited, reason);
+    try std.testing.expect(elapsed < 1500);
+    try std.testing.expect(counter.reports >= 3); // ticks at 200, 400, 600 ms, then the exit
+    try std.testing.expect(counter.samples >= 20); // about 69 for 700 ms at 99 Hz
+}
 
-// test "stops at the duration while the target keeps running (needs root, skipped otherwise)" {
-//     const child = try sys.spawnBurner(5000);
-//     defer sys.reap(child);
+test "stops at the duration while the target keeps running (needs root, skipped otherwise)" {
+    const child = try sys.spawnBurner(5000);
+    defer sys.reap(child);
 
-//     var counter = Counter{};
-//     const started = timer.nowMs();
-//     const reason = profile(std.testing.allocator, .{
-//         .pid = child,
-//         .metrics = Set.initOne(.cpu),
-//         .interval_ms = 300,
-//         .duration_s = 1,
-//     }, &counter, Counter.onReport) catch |err| switch (err) {
-//         error.PermissionDenied => return error.SkipZigTest,
-//         else => return err,
-//     };
-//     const elapsed = timer.nowMs() - started;
+    var counter = Counter{};
+    const started = t.nowMs();
+    const reason = profile(std.testing.allocator, .{
+        .pid = child,
+        .metrics = Set.initOne(.cpu),
+        .interval_ms = 300,
+        .duration_s = 1,
+    }, &counter, Counter.onReport) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    const elapsed = t.nowMs() - started;
 
-//     std.debug.print("driver: {d} reports, {d} samples, {d} ms\n", .{ counter.reports, counter.samples, elapsed });
-//     try std.testing.expectEqual(StopReason.duration, reason);
-//     try std.testing.expect(elapsed >= 1000 and elapsed < 1500);
-//     try std.testing.expect(counter.reports >= 3 and counter.reports <= 5);
-//     try std.testing.expect(counter.samples >= 40);
-// }
+    std.debug.print("driver: {d} reports, {d} samples, {d} ms\n", .{ counter.reports, counter.samples, elapsed });
+    try std.testing.expectEqual(StopReason.duration, reason);
+    try std.testing.expect(elapsed >= 1000 and elapsed < 1500);
+    try std.testing.expect(counter.reports >= 3 and counter.reports <= 5);
+    try std.testing.expect(counter.samples >= 40);
+}
 
-// test "a handle triggered before the run stops it at once (needs root, skipped otherwise)" {
-//     const child = try sys.spawnBurner(5000);
-//     defer sys.reap(child);
+test "a handle triggered before the run stops it at once (needs root, skipped otherwise)" {
+    const child = try sys.spawnBurner(5000);
+    defer sys.reap(child);
 
-//     var cancel = try Cancel.init();
-//     defer cancel.deinit();
-//     cancel.trigger();
+    var cancel = try Cancel.init();
+    defer cancel.deinit();
+    cancel.trigger();
 
-//     var counter = Counter{};
-//     const started = timer.nowMs();
-//     const reason = profile(std.testing.allocator, .{
-//         .pid = child,
-//         .metrics = Set.initOne(.cpu),
-//         .interval_ms = 1000,
-//         .duration_s = 0,
-//         .cancel = &cancel,
-//     }, &counter, Counter.onReport) catch |err| switch (err) {
-//         error.PermissionDenied => return error.SkipZigTest,
-//         else => return err,
-//     };
+    var counter = Counter{};
+    const started = t.nowMs();
+    const reason = profile(std.testing.allocator, .{
+        .pid = child,
+        .metrics = Set.initOne(.cpu),
+        .interval_ms = 1000,
+        .duration_s = 0,
+        .cancel = &cancel,
+    }, &counter, Counter.onReport) catch |err| switch (err) {
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
 
-//     try std.testing.expectEqual(StopReason.cancelled, reason);
-//     try std.testing.expectEqual(@as(usize, 1), counter.reports); // just the final window
-//     try std.testing.expect(timer.nowMs() - started < 500);
-// }
+    try std.testing.expectEqual(StopReason.cancelled, reason);
+    try std.testing.expectEqual(@as(usize, 1), counter.reports); // just the final window
+    try std.testing.expect(t.nowMs() - started < 500);
+}
