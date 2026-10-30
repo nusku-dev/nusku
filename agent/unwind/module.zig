@@ -1,10 +1,14 @@
-//! The unwind information of one loaded executable or library, ready to be searched by address.
-const std = @import("std");
-const ehframe = @import("core/ehframe.zig");
-const sections = @import("core/sections.zig");
+//! The unwind information of one mapped executable or library: its FDEs, sorted by address,
+//! and the bias that turns the file's addresses into the process's.
 
-/// One mapping of a file, as `/proc/<pid>/maps` gives it.
+const std = @import("std");
+const assert = std.debug.assert;
+const eh_frame = @import("eh_frame.zig");
+const elf_sections = @import("elf_sections.zig");
+
+/// One executable mapping of a file, as `/proc/<pid>/maps` gives it.
 pub const Mapping = struct {
+    /// The file's bytes, at their file offsets (see elf_file.zig).
     file: []const u8,
     start: u64,
     end: u64,
@@ -12,50 +16,33 @@ pub const Mapping = struct {
 };
 
 pub const Module = struct {
-    /// The executable mapping in the process: start <= pc < end.
-    start: u64,
-    end: u64,
-    /// The address in memory is the address written in the file plus this.
+    /// Runtime address = file address + bias.
     bias: u64,
-    /// Sorted by where they begin, without empty ranges, and assumed not to overlap (the
-    /// linker makes them so). They point into the file's bytes, which must outlive the module.
-    fdes: []const ehframe.Fde,
-    /// False for a mapping whose file has no unwind information. Addresses in it are still
-    /// known to be code.
-    has_unwind: bool = true,
-
-    /// The bytes of the file, for reading the code before a return address. Empty if unknown.
-    image: []const u8 = &.{},
-    /// The executable segment the mapping belongs to, as written in the file. Size 0 if unknown.
-    seg_offset: u64 = 0,
-    seg_vaddr: u64 = 0,
-    seg_size: u64 = 0,
+    /// Sorted by `pc_begin`, without empty ranges, and assumed not to overlap: the linker makes
+    /// them so, and table.zig refuses overlaps. They point into the file's bytes, which must
+    /// outlive the module.
+    fdes: []const eh_frame.Fde,
 
     pub fn load(module: *Module, gpa: std.mem.Allocator, mapping: Mapping) !void {
-        const section = (try sections.find(mapping.file, ".eh_frame")) orelse return error.NoUnwindInfo;
-        const bytes = sections.bytesOf(mapping.file, section) orelse return error.NoUnwindInfo;
-        const bias = (try sections.loadBias(mapping.file, mapping.start, mapping.offset)) orelse return error.NoUnwindInfo;
+        assert(mapping.start < mapping.end);
 
-        var list: std.ArrayList(ehframe.Fde) = .empty;
-        errdefer list.deinit(gpa);
-        var it = (ehframe.EhFrame{ .bytes = bytes, .vaddr = section.vaddr }).iterator();
-        while (try it.next()) |fde| {
+        const section = (try elf_sections.find(mapping.file, ".eh_frame")) orelse
+            return error.NoUnwindInfo;
+        const bytes = elf_sections.bytes_of(mapping.file, section) orelse
+            return error.NoUnwindInfo;
+        const bias_found = try elf_sections.load_bias(mapping.file, mapping.start, mapping.offset);
+        const bias = bias_found orelse return error.NoUnwindInfo;
+
+        var fdes: std.ArrayList(eh_frame.Fde) = .empty;
+        errdefer fdes.deinit(gpa);
+        var iterator = (eh_frame.EhFrame{ .bytes = bytes, .vaddr = section.vaddr }).iterator();
+        while (try iterator.next()) |fde| {
             // A function the linker dropped keeps an entry with an empty range.
-            if (fde.pc_end > fde.pc_begin) try list.append(gpa, fde);
+            if (fde.pc_end > fde.pc_begin) try fdes.append(gpa, fde);
         }
-        std.mem.sort(ehframe.Fde, list.items, {}, byBegin);
-        const seg = (try sections.mappedSegment(mapping.file, mapping.offset)) orelse return error.NoUnwindInfo;
+        std.mem.sortUnstable(eh_frame.Fde, fdes.items, {}, fde_less_than);
 
-        module.* = .{
-            .start = mapping.start,
-            .end = mapping.end,
-            .bias = bias,
-            .fdes = try list.toOwnedSlice(gpa),
-            .image = mapping.file,
-            .seg_offset = seg.offset,
-            .seg_vaddr = seg.vaddr,
-            .seg_size = seg.filesz,
-        };
+        module.* = .{ .bias = bias, .fdes = try fdes.toOwnedSlice(gpa) };
     }
 
     pub fn deinit(module: *Module, gpa: std.mem.Allocator) void {
@@ -64,6 +51,6 @@ pub const Module = struct {
     }
 };
 
-fn byBegin(_: void, a: ehframe.Fde, b: ehframe.Fde) bool {
+fn fde_less_than(_: void, a: eh_frame.Fde, b: eh_frame.Fde) bool {
     return a.pc_begin < b.pc_begin;
 }
