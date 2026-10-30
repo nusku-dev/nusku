@@ -24,6 +24,8 @@ pub const Report = session_file.Report;
 pub const Region = @import("target/regions.zig").Region;
 pub const KernelIdentity = @import("target/kernel.zig").Identity;
 pub const UnwindCoverage = @import("unwind/tables.zig").Coverage;
+/// Why a mapping has no unwind table: the keys of `UnwindCoverage.unavailable`.
+pub const UnwindCause = @import("unwind/registry.zig").Cause;
 
 /// The on-CPU metric's part of a report.
 pub const cpu = struct {
@@ -62,6 +64,7 @@ test {
     _ = @import("unwind/eh_frame.zig");
     _ = @import("unwind/elf_file.zig");
     _ = @import("unwind/elf_sections.zig");
+    _ = @import("unwind/go_pclntab.zig");
     _ = @import("unwind/module.zig");
     _ = @import("unwind/process_table.zig");
     _ = @import("unwind/registry.zig");
@@ -80,4 +83,7 @@ test {
     // Test-only code lives under testing/: end-to-end tests, and the child processes they run.
     _ = @import("testing/e2e/vdso_unwind.zig");
     _ = @import("testing/e2e/cpu_hotplug.zig");
+    _ = @import("testing/e2e/go_unwind.zig");
+    // The example of devlog Ep14, compiled with every test build so the guide cannot rot.
+    _ = @import("testing/examples/server_feed.zig");
 }

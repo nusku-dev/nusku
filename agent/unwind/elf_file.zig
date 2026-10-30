@@ -1,8 +1,8 @@
 //! Loads just enough of an ELF file to read its unwind information: the headers, the section
-//! names and the .eh_frame section. The result is as long as the file, so every offset in it is
-//! the real file offset, but only the parts that were read cost memory: the rest is anonymous
-//! address space that reads as zeros. Everything in the file is untrusted, so each offset is
-//! checked against the file size before it is used.
+//! names, and the .eh_frame section (or .gopclntab for a Go binary). The result is as long as
+//! the file, so every offset in it is the real file offset, but only the parts that were read
+//! cost memory: the rest is anonymous address space that reads as zeros. Everything in the file
+//! is untrusted, so each offset is checked against the file size before it is used.
 //!
 //! Sketch: libc is 2 MiB, of which about 60 KiB are headers and .eh_frame. Reading only those
 //! is 30 times less memory and disk traffic than reading the file.
@@ -78,9 +78,12 @@ pub fn load(file: *const File) !Loaded {
         const names_size = int_read(u64, bytes, names_header + 32);
         try range_read(file, bytes, names_offset, names_size, &read_size);
 
-        const eh_frame = elf_sections.find(bytes, ".eh_frame") catch return error.NotElf;
-        if (eh_frame) |section| {
-            try range_read(file, bytes, section.offset, section.size, &read_size);
+        // Go binaries carry their unwind information in .gopclntab instead (module.zig).
+        for ([_][]const u8{ ".eh_frame", ".gopclntab" }) |name| {
+            const found = elf_sections.find(bytes, name) catch return error.NotElf;
+            if (found) |section| {
+                try range_read(file, bytes, section.offset, section.size, &read_size);
+            }
         }
     }
     assert(read_size <= size);

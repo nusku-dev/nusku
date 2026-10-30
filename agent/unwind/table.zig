@@ -11,6 +11,7 @@ const assert = std.debug.assert;
 const cfi = @import("cfi.zig");
 const eh_frame = @import("eh_frame.zig");
 const cfi_machine = @import("cfi_machine.zig");
+const go_pclntab = @import("go_pclntab.zig");
 const unwind_wire = @import("../bpf/kernel/shared/unwind_wire.zig");
 
 const Machine = cfi_machine.Machine;
@@ -162,6 +163,93 @@ pub const Table = struct {
             .end = end,
             .rows = try rows.toOwnedSlice(gpa),
         };
+    }
+
+    /// The table of a Go binary, from its pclntab (see go_pclntab.zig) instead of .eh_frame.
+    pub fn init_go(
+        table: *Table,
+        gpa: std.mem.Allocator,
+        pclntab: *const go_pclntab.Pclntab,
+    ) !void {
+        if (pclntab.function_count == 0) {
+            table.* = .{ .base = 0, .end = 0, .rows = &.{} };
+            return;
+        }
+        const base = (try pclntab.function(0)).entry;
+
+        var rows: std.ArrayList(Row) = .empty;
+        errdefer rows.deinit(gpa);
+
+        var cursor = base;
+        var index: u32 = 0;
+        while (index < pclntab.function_count) : (index += 1) {
+            const function = try pclntab.function(index);
+            if (function.entry < cursor) return error.Overlap;
+            if (function.entry > cursor) try push(gpa, &rows, cursor - base, gap_row);
+            cursor = try go_function_push(gpa, &rows, base, &function);
+        }
+        try push(gpa, &rows, cursor - base, gap_row);
+        const end = std.math.cast(u32, cursor - base) orelse return error.TooLarge;
+
+        table.* = .{
+            .base = base,
+            .end = end,
+            .rows = try rows.toOwnedSlice(gpa),
+        };
+    }
+
+    /// Pushes the rows of one Go function, and returns where they end.
+    fn go_function_push(
+        gpa: std.mem.Allocator,
+        rows: *std.ArrayList(Row),
+        base: u64,
+        function: *const go_pclntab.Function,
+    ) !u64 {
+        assert(function.entry >= base);
+        if (function.flag & go_pclntab.flag_top_frame != 0) {
+            try push(gpa, rows, function.entry - base, end_row);
+            return function.next_entry;
+        }
+        // Without a pcsp table nothing says where the frame is; writing SP itself, the table
+        // cannot say it.
+        const sp_unknown = function.pcsp.len == 0;
+        if (sp_unknown or function.flag & go_pclntab.flag_sp_write != 0) {
+            try push(gpa, rows, function.entry - base, unsupported_row);
+            return function.next_entry;
+        }
+
+        var iterator = go_pclntab.PcspIterator{ .bytes = function.pcsp, .pc = function.entry };
+        var end = function.entry;
+        while (try iterator.next()) |range| {
+            if (range.end > function.next_entry) return error.Overlap;
+            // A pc delta of 0 makes an empty range: it holds for no instruction.
+            if (range.end == range.start) continue;
+            try push(gpa, rows, range.start - base, row_go(range.sp_delta));
+            end = range.end;
+        }
+        return end;
+    }
+
+    /// The row of a Go instruction `sp_delta` bytes below its function's entry stack pointer.
+    /// Go's prologue pushes rbp first (Go 1.21 and later), so once the frame has a word, the
+    /// caller's rbp is at CFA - 16. (Go 1.18 to 1.20 saved it one instruction later: for that
+    /// one instruction the recovered rbp is wrong, which only matters to a frame-pointer walk
+    /// further up.)
+    fn row_go(sp_delta: i32) Row {
+        if (sp_delta < 0) return unsupported_row;
+        const cfa_offset = std.math.add(i32, sp_delta, 8) catch return unsupported_row;
+        var row = Row{
+            .pc = 0,
+            .cfa_offset = cfa_offset,
+            .cfa_type = @intFromEnum(CfaType.rsp),
+            .rbp_type = @intFromEnum(RbpType.same),
+            .rbp_offset = 0,
+        };
+        if (sp_delta >= 8) {
+            row.rbp_type = @intFromEnum(RbpType.saved);
+            row.rbp_offset = -16;
+        }
+        return row;
     }
 
     fn push(gpa: std.mem.Allocator, rows: *std.ArrayList(Row), relative: u64, content: Row) !void {

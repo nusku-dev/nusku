@@ -65,18 +65,20 @@ pub fn profile(
     var pidfd = try PidFd.init(options.pid);
     defer pidfd.deinit();
 
-    var report_timer = try Timer.init(options.interval_ms);
-    defer report_timer.deinit();
-
-    var tick_timer = try Timer.init(@min(tick_ms_max, options.interval_ms));
-    defer tick_timer.deinit();
-
     // On the heap: it is large, and the collectors keep pointers into it.
     const session = try gpa.create(Session);
     defer gpa.destroy(session);
 
     try session.init(gpa, .{ .pid = options.pid, .metrics = options.metrics });
     defer session.deinit(gpa);
+
+    // Armed only now: loading the program and building the tables can take longer than an
+    // interval, and the first window must be a whole one, counted from when sampling began.
+    var report_timer = try Timer.init(options.interval_ms);
+    defer report_timer.deinit();
+
+    var tick_timer = try Timer.init(@min(tick_ms_max, options.interval_ms));
+    defer tick_timer.deinit();
 
     const deadline_ns: ?u64 = if (options.duration_s == 0)
         null
@@ -219,7 +221,9 @@ test "stops when the target exits and reports its CPU use (needs root, skipped o
     });
     try testing.expectEqual(StopReason.target_exited, reason);
     try testing.expect(elapsed_ms < 1500);
-    try testing.expect(counter.reports >= 3); // Reports at 200, 400 and 600 ms, then the exit.
+    // Reports every 200 ms from when sampling began (after the start-up), then one at the exit:
+    // at least one whole interval and the last window fit in the child's 700 ms.
+    try testing.expect(counter.reports >= 2);
     try testing.expect(counter.samples >= 20); // About 69 for 700 ms at 99 Hz.
 }
 

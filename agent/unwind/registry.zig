@@ -17,9 +17,9 @@ pub const Identity = union(enum) {
 
 /// Why a binary has no table. A walk through such a binary falls back to frame pointers.
 pub const Cause = enum {
-    /// The file has no .eh_frame section.
+    /// The file has neither a .eh_frame section nor Go's .gopclntab.
     no_unwind_info,
-    /// The .eh_frame section could not be read or converted.
+    /// The unwind information could not be read or converted (an unsupported Go version too).
     bad_unwind_info,
     /// One module has more rows than a bounded search can cover.
     table_too_large,
@@ -122,18 +122,13 @@ pub const Registry = struct {
         gpa: std.mem.Allocator,
         mapping: module_file.Mapping,
     ) error{OutOfMemory}!Outcome {
-        var module: module_file.Module = undefined;
-        module.load(gpa, mapping) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.NoUnwindInfo => return .{ .unavailable = .no_unwind_info },
-            else => return .{ .unavailable = .bad_unwind_info },
-        };
-        defer module.deinit(gpa);
-
         var module_table: table.Table = undefined;
-        module_table.init(gpa, module.fdes) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return .{ .unavailable = .bad_unwind_info },
+        const built = module_file.table_build(&module_table, gpa, mapping) catch |err| {
+            switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.NoUnwindInfo => return .{ .unavailable = .no_unwind_info },
+                else => return .{ .unavailable = .bad_unwind_info },
+            }
         };
         defer module_table.deinit(gpa);
 
@@ -144,8 +139,8 @@ pub const Registry = struct {
         };
         assert(module_id < registry.set.modules_count);
 
-        const delta = mapping.start -% mapping.offset -% module.bias;
-        assert(bias_of(delta, mapping.start, mapping.offset) == module.bias);
+        const delta = mapping.start -% mapping.offset -% built.bias;
+        assert(bias_of(delta, mapping.start, mapping.offset) == built.bias);
         return .{ .loaded = .{ .id = module_id, .delta = delta } };
     }
 };
