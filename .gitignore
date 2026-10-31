@@ -6,3 +6,4 @@
 /zig-pkg
 /agent/out
 /agent/.zig-cache
+/server/.zig-cache

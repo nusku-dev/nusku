@@ -35,6 +35,8 @@ pub const cpu = struct {
     pub const StopReason = collector_file.StopReason;
 };
 
+pub const Message = @import("message.zig").Message;
+
 test {
     _ = @import("os/anonymous_memory.zig");
     _ = @import("os/cancel.zig");
@@ -76,6 +78,8 @@ test {
     _ = @import("cpu/frame_cache.zig");
     _ = @import("cpu/sampler.zig");
     _ = @import("cpu/window.zig");
+
+    _ = @import("message.zig");
 
     _ = session_file;
     _ = profile_file;

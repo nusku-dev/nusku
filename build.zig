@@ -1,5 +1,6 @@
 const std = @import("std");
 const agent = @import("agent/build.zig");
+const server = @import("server/build.zig");
 
 pub fn build(b: *std.Build) void {
     // musl by default: it is what makes a fully static binary possible.
@@ -31,6 +32,15 @@ pub fn build(b: *std.Build) void {
         .log = log_mod,
     });
 
+    // the server
+    const server_mod = server.add(b, .{
+        .target = target,
+        .optimize = optimize,
+        .test_step = test_step,
+        .log = log_mod,
+        .agent = agent_mod,
+    });
+
     const exe = b.addExecutable(.{
         .name = "nusku",
         .root_module = b.createModule(.{
@@ -41,7 +51,9 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("cli", cli_mod);
     exe.root_module.addImport("log", log_mod);
+    //todo: remove this
     exe.root_module.addImport("agent", agent_mod);
+    exe.root_module.addImport("server", server_mod);
 
     b.installArtifact(exe);
 
