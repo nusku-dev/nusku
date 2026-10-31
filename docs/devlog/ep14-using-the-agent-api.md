@@ -195,7 +195,7 @@ Two details matter for correct names:
   without the JIT's help (perf map files), those addresses stay addresses.
 
 **A Go binary**, even stripped with `-s -w`, keeps `.gopclntab`, the table the agent already
-reads to unwind it (Ep15). It also holds every function's name and its file and line tables, so
+reads to unwind it (Ep16). It also holds every function's name and its file and line tables, so
 the symbolizer can name the frames of stripped Go binaries too.
 
 **A kernel address.** `report.kernel.text_address` is where `_text` is at run time. The kernel

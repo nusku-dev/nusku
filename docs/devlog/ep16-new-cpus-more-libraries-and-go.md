@@ -2,7 +2,7 @@
 date: 2026-10-31
 ---
 
-# Ep15: New CPUs, More Libraries, and Go
+# Ep16: New CPUs, More Libraries, and Go
 
 Three accuracy steps for the on-CPU profiler, smaller than the last ones but each closing a
 real gap:
