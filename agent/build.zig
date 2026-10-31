@@ -8,6 +8,8 @@ pub const Options = struct {
     optimize: std.builtin.OptimizeMode,
     /// The agent's tests are added to this step, so one `zig build test` runs everything.
     test_step: *std.Build.Step,
+    /// The log library (logger/): the agent logs through it, as "agent".
+    log: *std.Build.Module,
 };
 
 /// Builds the agent and returns its module.
@@ -18,6 +20,7 @@ pub fn add(b: *std.Build, options: Options) *std.Build.Module {
         .optimize = options.optimize,
         .link_libc = true,
     });
+    module.addImport("log", options.log);
     add_c_libraries(b, module, options);
     add_kernel_program(b, module, "cpu", "agent/bpf/kernel/cpu.bpf.zig");
     // Only the loader's tests use this one.

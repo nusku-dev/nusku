@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .test_step = test_step,
+        .log = log_mod,
     });
 
     const exe = b.addExecutable(.{

@@ -10,6 +10,7 @@ const Object = @import("../bpf/object.zig").Object;
 const Program = @import("../bpf/program.zig").Program;
 const cpu_wire = @import("../bpf/kernel/shared/cpu_wire.zig");
 const Tables = @import("../unwind/tables.zig").Tables;
+const log = @import("../log.zig").agent;
 
 const Map = map_file.Map;
 const TypedMap = map_file.TypedMap;
@@ -76,6 +77,11 @@ pub const Sampler = struct {
         // Slot 0 of the program array is the program itself, so a walk can continue.
         const walk_next = try TypedMap(u32, u32).init(sampler.maps.getPtrConst(.cpu_walk_next));
         try walk_next.update(0, &@as(u32, @intCast(sampler.program.fd)));
+        log.debug("cpu sampler loaded", .{
+            .cpus_possible = cpu_possible_count,
+            .counts_max = cpu_wire.counts_max,
+            .ring_kib = cpu_wire.records_bytes / 1024,
+        });
     }
 
     /// Call after every perf event that runs the program is closed.

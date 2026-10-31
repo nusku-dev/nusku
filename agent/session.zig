@@ -14,6 +14,7 @@ const regions_file = @import("target/regions.zig");
 const kernel = @import("target/kernel.zig");
 const tables_file = @import("unwind/tables.zig");
 const collector_file = @import("cpu/collector.zig");
+const log = @import("log.zig").agent;
 
 const Region = regions_file.Region;
 const Tables = tables_file.Tables;
@@ -86,6 +87,12 @@ pub const Session = struct {
         errdefer session.arenas_deinit();
 
         session.kernel = try kernel.read(session.kernel_arena.allocator());
+        if (session.kernel.text_address == null) {
+            // kptr_restrict hides kernel addresses from a process without CAP_SYSLOG.
+            log.warn("kernel addresses are hidden: kernel frames cannot be named", .{
+                .needs = "CAP_SYSLOG",
+            });
+        }
         // Without a first table of regions there is nothing to unwind against.
         if (!try session.regions_refresh_read()) return error.ProcessNotFound;
 
@@ -103,6 +110,11 @@ pub const Session = struct {
         session.window_start_monotonic_ns = timer.monotonic_ns();
         session.window_start_unix_ns = timer.realtime_ns();
         if (session.cpu) |*cpu| try cpu.start(session.pid);
+        log.debug("session ready", .{
+            .pid = session.pid,
+            .regions = session.regions.len,
+            .kernel = session.kernel.release,
+        });
     }
 
     /// Releases everything, in the reverse order of init. Never fails.
@@ -163,13 +175,20 @@ pub const Session = struct {
 
         const mappings = process_maps.read(arena.allocator(), session.pid) catch |err| {
             switch (err) {
-                error.NotFound, error.ProcessNotFound => return false,
+                error.NotFound, error.ProcessNotFound => {
+                    log.debug("target is gone: keeping its last regions", .{ .pid = session.pid });
+                    return false;
+                },
                 else => return err,
             }
         };
         // A zombie has no mappings left.
-        if (mappings.len == 0) return false;
+        if (mappings.len == 0) {
+            log.debug("target has exited: keeping its last regions", .{ .pid = session.pid });
+            return false;
+        }
 
+        const regions_count_before = session.regions.len;
         session.regions = try regions_file.build(
             arena.allocator(),
             mappings,
@@ -177,6 +196,13 @@ pub const Session = struct {
             session.regions,
         );
         session.regions_current = spare;
+        // The target loaded or unloaded code (dlopen, a plugin, a JIT region).
+        if (regions_count_before != 0 and session.regions.len != regions_count_before) {
+            log.debug("target regions changed", .{
+                .before = regions_count_before,
+                .now = session.regions.len,
+            });
+        }
         return true;
     }
 };

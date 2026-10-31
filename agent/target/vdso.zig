@@ -16,6 +16,7 @@ const assert = std.debug.assert;
 const process = @import("../os/process.zig");
 const process_maps = @import("process_maps.zig");
 const build_id = @import("build_id.zig");
+const log = @import("../log.zig").agent;
 
 /// The vDSO is two pages today. Far more would mean the mapping is not what we think it is.
 const image_size_max = 64 * 1024;
@@ -58,7 +59,10 @@ pub fn read(gpa: std.mem.Allocator) !?Image {
     } else return null;
 
     // Two sources must agree before memory is read: the kernel's auxiliary vector and our maps.
-    if (mapping.start != header_address) return null;
+    if (mapping.start != header_address) {
+        log.warn("vdso: the auxiliary vector and /proc/self/maps disagree, not reading it", .{});
+        return null;
+    }
     const size = mapping.end - mapping.start;
     if (size > image_size_max) return null;
     assert(size > 0);
@@ -69,7 +73,12 @@ pub fn read(gpa: std.mem.Allocator) !?Image {
 
     const bytes = try gpa.dupe(u8, memory[0..@intCast(size)]);
     // Points into `bytes`, which the image owns.
-    return .{ .bytes = bytes, .build_id = build_id.from_prefix(bytes) };
+    const image = Image{ .bytes = bytes, .build_id = build_id.from_prefix(bytes) };
+    log.debug("vdso image copied", .{
+        .size = bytes.len,
+        .build_id_found = image.build_id != null,
+    });
+    return image;
 }
 
 test "this process has a vDSO, a whole ELF file with unwind information" {

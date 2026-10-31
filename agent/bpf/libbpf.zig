@@ -2,6 +2,7 @@
 //! ring buffer reader. Everything else in the agent talks to the kernel through std.os.linux.
 
 const std = @import("std");
+const log = @import("../log.zig").agent;
 
 pub const c = @cImport({
     @cInclude("errno.h");
@@ -33,7 +34,7 @@ pub fn error_from_errno(code: c_int) Error {
         c.ENOENT => error.NotFound,
         c.EOPNOTSUPP, c.ENOSYS => error.NotSupported,
         else => blk: {
-            std.log.scoped(.bpf).warn("unexpected errno {d}", .{code});
+            log.warn("unexpected error from a bpf system call", .{ .errno = code });
             break :blk error.Unexpected;
         },
     };

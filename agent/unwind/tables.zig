@@ -31,7 +31,7 @@ const Cause = registry_file.Cause;
 const ProcessEntry = unwind_wire.ProcessEntry;
 const Module = unwind_wire.Module;
 
-const log = std.log.scoped(.unwind);
+const log = @import("../log.zig").agent;
 
 /// Every binary remembered, with a table or without. Four times the modules, because many
 /// mapped files (the vDSO, data-only libraries) never get one.
@@ -90,7 +90,9 @@ pub const Tables = struct {
 
         tables.vdso_image = try vdso.read(gpa);
         errdefer if (tables.vdso_image) |*image| image.deinit(gpa);
-        if (tables.vdso_image == null) log.warn("no vDSO: its frames will lose their callers", .{});
+        if (tables.vdso_image == null) {
+            log.warn("no vDSO image: samples inside it will lose their callers", .{});
+        }
 
         try maps_create(&tables.maps);
         // The row value is written straight from the set: it has exactly the map's size.
@@ -134,6 +136,7 @@ pub const Tables = struct {
             std.mem.asBytes(&tables.entry_written),
         );
         if (entry_changed) try tables.process_write(pid);
+        if (!std.meta.eql(coverage, tables.coverage)) coverage_log(&coverage);
         tables.coverage = coverage;
     }
 
@@ -156,8 +159,10 @@ pub const Tables = struct {
         while (module_id < set.modules_count) : (module_id += 1) {
             try modules.update(module_id, &set.modules[module_id]);
         }
-        log.debug("modules {d}..{d} written, {d} rows in use", .{
-            tables.modules_written, set.modules_count, set.rows_count,
+        log.debug("unwind tables written to the kernel", .{
+            .modules_first = tables.modules_written,
+            .modules_count = set.modules_count,
+            .rows_used = set.rows_count,
         });
         tables.modules_written = set.modules_count;
     }
@@ -176,6 +181,25 @@ pub const Tables = struct {
         tables.entry_written = tables.entry_next;
     }
 };
+
+/// How much of the target can be unwound, logged when it changes: at the start, and when the
+/// target maps or unmaps code.
+fn coverage_log(coverage: *const Coverage) void {
+    var without_table: u32 = 0;
+    for (coverage.unavailable.values) |count| without_table += count;
+    log.info("unwind coverage", .{
+        .mappings = coverage.mappings,
+        .with_table = coverage.mappings - without_table,
+        .without_table = without_table,
+        .dropped = coverage.mappings_dropped,
+    });
+    if (coverage.mappings_dropped > 0) {
+        log.warn("the target maps more code than fits: frames there cannot be unwound", .{
+            .mappings_max = unwind_wire.mappings_max,
+            .dropped = coverage.mappings_dropped,
+        });
+    }
+}
 
 /// What building an entry needs besides the regions.
 const BuildContext = struct {
@@ -244,16 +268,41 @@ fn outcome_for(context: BuildContext, region: *const Region) !Outcome {
 
     var loaded = elf_file.load(&file) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return .{ .unavailable = .unreadable },
+        else => {
+            log.debug("binary not readable as ELF", .{ .path = region.path, .cause = err });
+            return .{ .unavailable = .unreadable };
+        },
     };
     defer loaded.deinit();
+    // Only the headers and the unwind sections are read: this says how much that saved.
+    log.debug("binary read for unwinding", .{
+        .path = region.path,
+        .file_kib = loaded.bytes.len / 1024,
+        .read_kib = loaded.read_size / 1024,
+    });
 
-    return context.registry.add(context.gpa, identity, .{
+    const outcome = try context.registry.add(context.gpa, identity, .{
         .file = loaded.bytes,
         .start = region.start,
         .end = region.end,
         .offset = region.offset,
     });
+    outcome_log(region, outcome);
+    return outcome;
+}
+
+/// Logged once per binary: the registry remembers the outcome, so it is not built again.
+fn outcome_log(region: *const Region, outcome: Outcome) void {
+    switch (outcome) {
+        .loaded => |loaded| log.debug("unwind table ready", .{
+            .path = region.path,
+            .module = loaded.id,
+        }),
+        .unavailable => |cause| log.debug("no unwind table: frame pointers only", .{
+            .path = region.path,
+            .cause = cause,
+        }),
+    }
 }
 
 /// The target's vDSO is the agent's own image, if their sizes agree (see target/vdso.zig).
@@ -269,12 +318,14 @@ fn outcome_for_vdso(context: BuildContext, region: *const Region) !Outcome {
         .{ .file = .{ .inode = 0, .path = vdso.path } };
     if (context.registry.lookup(identity)) |known| return known;
 
-    return context.registry.add(context.gpa, identity, .{
+    const outcome = try context.registry.add(context.gpa, identity, .{
         .file = image.bytes,
         .start = region.start,
         .end = region.end,
         .offset = region.offset,
     });
+    outcome_log(region, outcome);
+    return outcome;
 }
 
 fn identity_of(region: *const Region) Identity {

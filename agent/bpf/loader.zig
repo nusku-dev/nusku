@@ -17,7 +17,7 @@ const Program = program_file.Program;
 
 pub const Error = libbpf.Error || object_file.Error || error{ UnknownMap, MapMismatch };
 
-const log = std.log.scoped(.bpf);
+const log = @import("../log.zig").agent;
 
 /// R_BPF_64_64: the relocation kind of a map reference.
 const relocation_map: u32 = 1;
@@ -89,7 +89,7 @@ pub fn program_load(gpa: std.mem.Allocator, object: *const Object, options: Load
     const verifier_log = try gpa.alloc(u8, 64 * 1024);
     defer gpa.free(verifier_log);
 
-    return Program.load(.{
+    const program = Program.load(.{
         .kind = options.kind,
         .name = options.function,
         .instructions = code,
@@ -97,13 +97,20 @@ pub fn program_load(gpa: std.mem.Allocator, object: *const Object, options: Load
         .log = verifier_log,
     }) catch |err| {
         if (err == error.VerifierRejected) {
-            log.err("the verifier refused {s}:\n{s}", .{
-                options.function,
-                std.mem.sliceTo(verifier_log, 0),
+            // The whole explanation as one field: the last lines say what the verifier refused.
+            log.err("the kernel's verifier refused the BPF program", .{
+                .program = options.function,
+                .verifier_log = std.mem.sliceTo(verifier_log, 0),
             });
         }
         return err;
     };
+    log.debug("bpf program loaded", .{
+        .program = options.function,
+        .instructions = code.len / program_file.instruction_size,
+        .maps = options.maps.len,
+    });
+    return program;
 }
 
 /// Fills in the map descriptors in a copy of a program's code. For each relocation, the ld_imm64

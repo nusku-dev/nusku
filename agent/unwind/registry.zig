@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const table = @import("table.zig");
 const module_file = @import("module.zig");
 const table_set = @import("table_set.zig");
+const log = @import("../log.zig").agent;
 
 /// What makes two mappings the same binary. A build ID when the file has one; otherwise its
 /// inode and path, which is weaker (a file rewritten in place keeps both).
@@ -138,6 +139,13 @@ pub const Registry = struct {
             error.TooManyModules => return .{ .unavailable = .too_many_modules },
         };
         assert(module_id < registry.set.modules_count);
+        log.debug("unwind rows built", .{
+            .module = module_id,
+            .source = built.source,
+            .rows = module_table.rows.len,
+            .rows_used = registry.set.rows_count,
+            .rows_max = registry.set.rows.len,
+        });
 
         const delta = mapping.start -% mapping.offset -% built.bias;
         assert(bias_of(delta, mapping.start, mapping.offset) == built.bias);

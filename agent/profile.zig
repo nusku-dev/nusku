@@ -12,6 +12,7 @@ const PidFd = @import("os/pidfd.zig").PidFd;
 const Cancel = @import("os/cancel.zig").Cancel;
 const poll_file = @import("os/poll.zig");
 const session_file = @import("session.zig");
+const log = @import("log.zig").agent;
 
 const Timer = timer.Timer;
 const Poll = poll_file.Poll;
@@ -58,6 +59,8 @@ pub fn profile(
     comptime on_report: anytype,
 ) !StopReason {
     comptime callback_check(@TypeOf(context), on_report);
+    // One line saying why a run failed, for a host that only reads the log.
+    errdefer |err| log.err("profiling failed", .{ .pid = options.pid, .cause = err });
     if (options.interval_ms == 0) return error.InvalidInterval;
     if (options.metrics.count() == 0) return error.NoMetrics;
     if (!process.pid_valid(options.pid)) return error.InvalidPid;
@@ -92,27 +95,72 @@ pub fn profile(
         .cancel = if (options.cancel) |cancel| cancel.fd else -1,
     }));
 
-    // An event loop: it does not count its rounds. It ends only by a stop condition below,
-    // and every round waits on poll, so it cannot spin.
+    log.info("profiling started", .{
+        .pid = options.pid,
+        .interval_ms = options.interval_ms,
+        .duration_s = options.duration_s,
+    });
+
+    const started_ns = timer.monotonic_ns();
+    const run = try loop_run(gpa, session, .{
+        .poll = &poll,
+        .report_timer = &report_timer,
+        .tick_timer = &tick_timer,
+        .deadline_ns = deadline_ns,
+    }, context, on_report);
+
+    log.info("profiling stopped", .{
+        .pid = options.pid,
+        .reason = run.stop,
+        .reports = run.reports,
+        .seconds = (timer.monotonic_ns() - started_ns) / std.time.ns_per_s,
+    });
+    return run.stop;
+}
+
+/// What the loop waits on.
+const LoopSources = struct {
+    poll: *Poll,
+    report_timer: *const Timer,
+    tick_timer: *const Timer,
+    deadline_ns: ?u64,
+};
+
+const LoopResult = struct { stop: StopReason, reports: u64 };
+
+/// The event loop: it ends only by a stop condition, and every round waits on poll, so it
+/// cannot spin.
+fn loop_run(
+    gpa: std.mem.Allocator,
+    session: *Session,
+    sources: LoopSources,
+    context: anytype,
+    comptime on_report: anytype,
+) !LoopResult {
+    var reports: u64 = 0;
     while (true) {
-        const ready = try poll.wait(timeout_ms(deadline_ns));
+        const ready = try sources.poll.wait(timeout_ms(sources.deadline_ns));
 
         if (ready.contains(.tick_timer)) {
-            _ = try tick_timer.expirations_read();
+            _ = try sources.tick_timer.expirations_read();
             try session.tick();
         }
         var reported = false;
         if (ready.contains(.report_timer)) {
             // Missed periods are not made up: one late report covers them, its duration says so.
-            _ = try report_timer.expirations_read();
+            _ = try sources.report_timer.expirations_read();
             try report_deliver(gpa, session, context, on_report);
+            reports += 1;
             reported = true;
         }
 
-        const stop = stop_reason(ready, deadline_ns) orelse continue;
+        const stop = stop_reason(ready, sources.deadline_ns) orelse continue;
         // The last, partial window.
-        if (!reported) try report_deliver(gpa, session, context, on_report);
-        return stop;
+        if (!reported) {
+            try report_deliver(gpa, session, context, on_report);
+            reports += 1;
+        }
+        return .{ .stop = stop, .reports = reports };
     }
 }
 

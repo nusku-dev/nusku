@@ -6,6 +6,7 @@ const File = @import("../os/file.zig").File;
 const assert = std.debug.assert;
 
 const build_id = @import("build_id.zig");
+const log = @import("../log.zig").agent;
 
 pub const Identity = struct {
     /// For example "6.8.0-45-generic". Empty if it could not be read.
@@ -38,6 +39,11 @@ pub fn read(arena: std.mem.Allocator) !Identity {
         identity.text_address = text_address_scan(16 * 1024, &file);
     } else |_| {}
 
+    log.debug("kernel identity", .{
+        .release = identity.release,
+        .build_id_found = identity.build_id != null,
+        .text_address_found = identity.text_address != null,
+    });
     return identity;
 }
 

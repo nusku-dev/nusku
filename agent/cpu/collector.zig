@@ -26,7 +26,7 @@ const Sampler = sampler_file.Sampler;
 const Counters = sampler_file.Counters;
 const CountKey = cpu_wire.CountKey;
 
-const log = std.log.scoped(.cpu);
+const log = @import("../log.zig").agent;
 
 pub const Window = window.Window;
 pub const Stack = window.Stack;
@@ -147,11 +147,13 @@ pub const Collector = struct {
         try collector.sampler.config_write(.{ .tgid = tgid, .generation = collector.generation });
         errdefer collector.stop();
 
-        try collector.cpus_sync();
+        try collector.cpus_sync(.start);
         const events_open = collector.events_open_count();
         if (events_open == 0) return error.NoCpuOnline;
-        log.debug("sampling tgid {d} at {d} Hz on {d} CPUs", .{
-            tgid, collector.sample_hz, events_open,
+        log.info("cpu sampling started", .{
+            .pid = tgid,
+            .sample_hz = collector.sample_hz,
+            .cpus = events_open,
         });
     }
 
@@ -172,22 +174,28 @@ pub const Collector = struct {
     /// A CPU that goes offline and comes back between two reports keeps its old event, and
     /// whether the kernel keeps a CPU's events across that is not something the agent relies
     /// on knowing: such a CPU may go unsampled until it goes offline at a report again.
-    fn cpus_sync(collector: *Collector) !void {
+    fn cpus_sync(collector: *Collector, moment: enum { start, report }) !void {
         assert(collector.tgid > 0);
         cpus.online_read(collector.cpus_online) catch |err| {
             // Without the list, try every possible CPU: an offline one refuses its event.
-            log.warn("cannot read the online CPUs ({s}): trying all of them", .{@errorName(err)});
+            log.warn("cannot read the online CPUs: trying all of them", .{ .cause = err });
             @memset(collector.cpus_online, true);
         };
 
         for (collector.events, collector.cpus_online, 0..) |*slot, online, cpu| {
             if (online) {
-                if (slot.* == null) slot.* = try collector.event_open(@intCast(cpu));
+                if (slot.* == null) {
+                    slot.* = try collector.event_open(@intCast(cpu));
+                    // At start every CPU is new: only a change during the run is news.
+                    if (moment == .report and slot.* != null) {
+                        log.info("cpu came online: sampling it", .{ .cpu = cpu });
+                    }
+                }
             } else {
                 if (slot.*) |*event| {
                     event.deinit();
                     slot.* = null;
-                    log.debug("cpu {d} went offline", .{cpu});
+                    log.info("cpu went offline", .{ .cpu = cpu });
                 }
             }
         }
@@ -225,7 +233,7 @@ pub const Collector = struct {
     /// the frame cache forgets the epoch no window can need any more.
     pub fn generation_advance(collector: *Collector) !void {
         assert(!collector.generation_advanced);
-        if (collector.tgid > 0) try collector.cpus_sync();
+        if (collector.tgid > 0) try collector.cpus_sync(.report);
         collector.generation +%= 1;
         try collector.sampler.config_write(.{
             .tgid = collector.tgid,
@@ -257,13 +265,15 @@ pub const Collector = struct {
             &collector.cache,
         );
         const loss = try collector.loss_since_previous(built.frames_missing);
-        return .{
+        const result = Window{
             .sample_hz = collector.sample_hz,
             .samples = built.samples,
             .stacks = built.stacks,
             .stops = built.stops,
             .loss = loss,
         };
+        window_log(&result);
+        return result;
     }
 
     fn loss_since_previous(collector: *Collector, frames_missing: u64) !window.Loss {
@@ -287,6 +297,32 @@ pub const Collector = struct {
         return loss;
     }
 };
+
+/// One line per window at debug, and a warning or an error only when samples were lost.
+fn window_log(result: *const Window) void {
+    const complete = result.stops[@intFromEnum(window.StopReason.end)];
+    log.debug("cpu window", .{
+        .samples = result.samples,
+        .stacks = result.stacks.len,
+        .complete_percent = if (result.samples == 0) 100 else complete * 100 / result.samples,
+    });
+
+    const loss = result.loss;
+    if (loss.ring_full + loss.counts_full + loss.frames_missing > 0) {
+        log.warn("cpu samples lost in this window", .{
+            .ring_full = loss.ring_full,
+            .counts_full = loss.counts_full,
+            .frames_missing = loss.frames_missing,
+        });
+    }
+    // Both mean a bug in the agent or its kernel program, not a busy machine.
+    if (loss.records_malformed + loss.walks_abandoned > 0) {
+        log.err("cpu sampler inconsistency: please report it", .{
+            .records_malformed = loss.records_malformed,
+            .walks_abandoned = loss.walks_abandoned,
+        });
+    }
+}
 
 // ------------------------------------------------------------------------------------- tests
 
