@@ -28,6 +28,25 @@ pub fn file_open(pid: u32, path: []const u8) error{Unreadable}!File {
     return File.open(full) catch error.Unreadable;
 }
 
+/// The file mapped at `start` .. `end` in process `pid`, whose path there is `path`. First the
+/// path as the process sees it, as `file_open`; when that fails, the mapping itself
+/// (/proc/<pid>/map_files), which reaches the file whatever the process's root: a sandbox
+/// that chroots into an empty directory (Chrome's renderers) hides every path, not its
+/// mappings. That second way needs CAP_SYS_ADMIN. The caller closes it.
+pub fn mapping_open(pid: u32, path: []const u8, start: u64, end: u64) error{Unreadable}!File {
+    if (file_open(pid, path)) |file| return file else |_| {}
+    if (start >= end) return error.Unreadable; // No mapping to go through.
+
+    // "/proc/4294967295/map_files/" and two addresses of 16 hex digits.
+    var path_buffer: [64]u8 = undefined;
+    const mapping = std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/map_files/{x}-{x}", .{
+        pid,
+        start,
+        end,
+    }) catch unreachable;
+    return File.open(mapping) catch error.Unreadable;
+}
+
 test "pid_valid refuses the pids that mean more than one process" {
     try std.testing.expect(!pid_valid(0));
     try std.testing.expect(pid_valid(1));
@@ -39,4 +58,31 @@ test "file_open reads a file as the process sees it" {
     var file = try file_open(current_pid(), "/bin/sh");
     file.deinit();
     try std.testing.expectError(error.Unreadable, file_open(current_pid(), "/no/such/file"));
+}
+
+test "mapping_open finds a mapping by its addresses when its path does not open" {
+    const maps = @import("../target/process_maps.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const mappings = try maps.read(arena.allocator(), current_pid());
+    const own = for (mappings) |mapping| {
+        if (mapping.path.len > 0 and mapping.path[0] == '/') break mapping;
+    } else return error.SkipZigTest;
+
+    // The path as it is: opens like `file_open`.
+    var file = try mapping_open(current_pid(), own.path, own.start, own.end);
+    file.deinit();
+
+    // A path that is not there, as in a sandbox: only the mapping is left, and opening it
+    // needs CAP_SYS_ADMIN.
+    const hidden = mapping_open(current_pid(), "/no/such/file", own.start, own.end);
+    if (std.os.linux.geteuid() != 0) {
+        try std.testing.expectError(error.Unreadable, hidden);
+        return;
+    }
+    var through_mapping = try hidden;
+    defer through_mapping.deinit();
+    var magic: [4]u8 = undefined;
+    _ = try through_mapping.read_at(&magic, 0);
+    try std.testing.expectEqualSlices(u8, "\x7fELF", &magic);
 }

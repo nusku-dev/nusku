@@ -18,6 +18,12 @@ pub const Stats = query_file.Stats;
 pub const Controller = controller_file.Controller;
 pub const Spec = controller_file.Spec;
 
+/// What a run can profile, and why it stopped: the agent's, so a caller needs no other module.
+pub const Metric = @import("agent").Metric;
+pub const StopReason = @import("agent").StopReason;
+/// Stops a run from a signal handler: see `Controller.cancel_of`.
+pub const Cancel = @import("agent").Cancel;
+
 test {
     _ = @import("os/lock.zig");
     _ = @import("log.zig");

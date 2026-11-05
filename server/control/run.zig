@@ -23,6 +23,8 @@ pub const Run = struct {
     scratch: []align(8) u8,
     /// Written by the thread before it ends: read it after `join`.
     result: anyerror!agent.StopReason,
+    /// Set by the thread as its last act: whether `join` would return now.
+    finished: std.atomic.Value(bool),
 
     /// The hooks below have no allocator argument, so the run keeps the one it was started with.
     gpa: std.mem.Allocator,
@@ -33,6 +35,7 @@ pub const Run = struct {
 
     pub fn thread_main(run: *Run) void {
         run.result = agent.profile(run.gpa, run.options, run, on_report);
+        run.finished.store(true, .release);
     }
 
     /// Called by `agent.profile` on the run's thread, once per interval. An error stops the run.

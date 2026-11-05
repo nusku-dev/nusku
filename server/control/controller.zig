@@ -91,6 +91,7 @@ pub const Controller = struct {
             .upload = Upload.init(controller.upload_bytes_max),
             .ticket = null,
             .result = error.NotFinished,
+            .finished = .init(false),
         };
         errdefer run.active = false;
         run.thread = try std.Thread.spawn(.{}, Run.thread_main, .{run});
@@ -112,6 +113,20 @@ pub const Controller = struct {
         const run = controller.run_find(target) orelse return error.RunUnknown;
         run.cancel.trigger();
         return controller.finish(gpa, run);
+    }
+
+    /// Whether the run is still going: when it is not, `join` returns at once. For a caller that
+    /// does something else while it waits (shows the profile as it grows, say).
+    pub fn running(controller: *Controller, target: TargetId) bool {
+        const run = controller.run_find(target) orelse return false;
+        return !run.finished.load(.acquire);
+    }
+
+    /// What stops the run, for a caller that must stop it from where `stop` cannot be called:
+    /// a signal handler (`trigger` is one write). Good until `stop` or `join` returns.
+    pub fn cancel_of(controller: *Controller, target: TargetId) ?*const agent.Cancel {
+        const run = controller.run_find(target) orelse return null;
+        return &run.cancel;
     }
 
     /// Waits for the run to end by itself (duration reached, or the target exited).
@@ -251,4 +266,33 @@ test "a run profiles this process into the server until it is stopped (root)" {
     try testing.expect(samples >= 10);
     try testing.expect(ring.window_get(0).regions.len > 0);
     try testing.expectEqual(pid, ring.window_get(0).pid);
+}
+
+test "running is true while a run goes, false once it ended" {
+    var server: Server = undefined;
+    try server.init(testing.allocator, .{
+        .targets_max = 1,
+        .windows_per_target_max = 2,
+        .window_bytes_max = 1024,
+    });
+    defer server.deinit(testing.allocator);
+    var controller: Controller = undefined;
+    try controller.init(testing.allocator, &server, .{ .runs_max = 1 });
+    defer controller.deinit(testing.allocator);
+
+    // As root it profiles this process for a second; without root it fails at once. Either
+    // way it ends, and `running` says so before `join` is called.
+    const target = try controller.start(testing.allocator, .{
+        .pid = @intCast(std.os.linux.getpid()),
+        .metrics = std.EnumSet(agent.Metric).initOne(.cpu),
+        .interval_ms = 100,
+        .duration_s = 1,
+    });
+    var waited: u32 = 0;
+    while (controller.running(target)) : (waited += 1) {
+        if (waited > 300) return error.RunNeverEnded;
+        burn(10);
+    }
+    _ = controller.join(testing.allocator, target) catch {};
+    try testing.expect(!controller.running(target)); // Joined: no run of that id any more.
 }

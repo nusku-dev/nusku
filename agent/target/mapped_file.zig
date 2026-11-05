@@ -16,18 +16,19 @@ pub const Error = error{
 };
 
 /// The file of `region` in process `pid`'s view of the file system (/proc/<pid>/root), so
-/// files that exist only inside a container work too. When the region has a build ID, the
+/// files that exist only inside a container work too, or through the mapping itself when a
+/// sandbox hides the path (`process.mapping_open`). When the region has a build ID, the
 /// file must have the same one. `prefix_buffer` is where the start of the file is read to
 /// check it: `build_id.prefix_size` bytes. The caller closes the file.
 pub fn open(pid: u32, region: *const Region, prefix_buffer: []u8) Error!File {
     assert(prefix_buffer.len >= build_id.prefix_size);
 
-    var file = process.file_open(pid, region.path) catch return error.Unreadable;
+    var file = process.mapping_open(pid, region.path, region.start, region.end) catch
+        return error.Unreadable;
     errdefer file.deinit();
 
     if (region.build_id) |expected| {
-        const read = file.read_at(prefix_buffer, 0) catch return error.Unreadable;
-        const found = build_id.from_prefix(prefix_buffer[0..read]) orelse return error.WrongFile;
+        const found = build_id.from_file(&file, prefix_buffer) orelse return error.WrongFile;
         if (!std.mem.eql(u8, found, expected)) return error.WrongFile;
     }
     return file;

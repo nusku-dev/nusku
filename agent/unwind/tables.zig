@@ -403,7 +403,7 @@ test "this process: the registry finds the table row of one of our own functions
     defer registry.deinit(testing.allocator);
 
     var entry: ProcessEntry = undefined;
-    const coverage = try entry_build_testing(&registry, &entry, regions, null);
+    _ = try entry_build_testing(&registry, &entry, regions, null);
     try testing.expectEqual(@as(u32, @intCast(regions.len)), entry.count);
     try testing.expect(registry.set.modules_count > 0);
 
@@ -412,12 +412,6 @@ test "this process: the registry finds the table row of one of our own functions
     try testing.expect(mapping.module != unwind_wire.module_none);
     // The runtime address minus the mapping's bias is an address in the file's table.
     try testing.expect(registry.set.find(mapping.module, address -% mapping.bias) != null);
-    std.debug.print("tables: {d} mappings, {d} modules, {d} rows, without a table: {d}\n", .{
-        entry.count,
-        registry.set.modules_count,
-        registry.set.rows_count,
-        coverage.unavailable.get(.unreadable),
-    });
 
     // A second pass has nothing new to build, and gives the same entry.
     const modules_count = registry.set.modules_count;
@@ -462,7 +456,6 @@ test "this process: the vDSO gets a table, with a row for nearly every byte of i
     while (address < region.start + text.vaddr + text.size) : (address += 1) {
         if (registry.set.find(mapping.module, address -% mapping.bias) != null) covered += 1;
     }
-    std.debug.print("vdso: {d} of {d} bytes of .text have a row\n", .{ covered, text.size });
     try testing.expect(covered * 10 >= text.size * 9);
 }
 

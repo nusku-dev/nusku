@@ -61,8 +61,6 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("cli", cli_mod);
     exe.root_module.addImport("log", log_mod);
-    //todo: remove this
-    exe.root_module.addImport("agent", agent_mod);
     exe.root_module.addImport("server", server_mod);
 
     b.installArtifact(exe);

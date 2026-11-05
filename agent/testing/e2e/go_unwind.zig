@@ -19,6 +19,7 @@ const table = @import("../../unwind/table.zig");
 const File = @import("shared").File;
 const session_file = @import("../../session.zig");
 const collector_file = @import("../../cpu/collector.zig");
+const build_id = @import("../../target/build_id.zig");
 
 const source = @embedFile("go/frameless.go");
 
@@ -53,9 +54,6 @@ test "a Go binary's table comes from its pclntab, stripped or not, frameless fun
     var stripped_table: table.Table = undefined;
     _ = try table_of(stripped.binary, &stripped_table);
     defer stripped_table.deinit(testing.allocator);
-    std.debug.print("go: {d} rows plain, {d} rows stripped\n", .{
-        plain_table.rows.len, stripped_table.rows.len,
-    });
     // Stripping removes symbols and DWARF, never the pclntab: the rows are the same.
     try testing.expectEqualSlices(
         u8,
@@ -86,6 +84,20 @@ test "a Go binary's table comes from its pclntab, stripped or not, frameless fun
         }
     }
     try testing.expect(saved_rows > 0);
+}
+
+test "a Go binary has a build ID, though its note segment leaves it out" {
+    var plain = (try go_build.build(testing.allocator, source, "")) orelse return error.SkipZigTest;
+    defer plain.deinit(testing.allocator);
+
+    var file = try File.open(plain.binary);
+    defer file.deinit();
+    var prefix: [build_id.prefix_size]u8 = undefined;
+    // Go's note segment holds only Go's own note: the program headers do not lead to the ID.
+    const prefix_read = try file.read_at(&prefix, 0);
+    try testing.expect(build_id.from_prefix(prefix[0..prefix_read]) == null);
+    const id = build_id.from_file(&file, &prefix) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 20), id.len); // SHA-1, as Go writes it.
 }
 
 test "a running Go program: the caller of a frameless function is found (needs root)" {

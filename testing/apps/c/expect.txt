@@ -1,0 +1,9 @@
+# What the C app does, by design (see app.c), and so what its profile must show.
+samples   >300
+complete  >95            # unwound with .eh_frame, libc's included
+self  hot_leaf 50
+self  recurse  30
+total cold     20
+total compare  >1        # called from inside libc's qsort: the walk goes through libc
+total run      >95
+total main     >95

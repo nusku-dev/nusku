@@ -1,0 +1,10 @@
+# What the Zig app does, by design (see main.zig), and so what its profile must show. Names are
+# whole: Zig's own start code has functions of the same short names (start.main).
+samples   >300
+complete  >95                 # unwound with .eh_frame
+self  main.hot_leaf  50
+self  main.recurse   30
+total main.cold      20
+total main.compare   >1       # called from inside std.mem.sort
+total main.run       >95
+total main.main      >95

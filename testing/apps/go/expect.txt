@@ -1,0 +1,9 @@
+# What the Go app does, by design (see main.go), and so what its profile must show.
+samples   >300
+complete  >95                  # unwound with the pclntab
+self  main.hotLeaf     50
+self  main.recurse     30
+total main.cold        20
+total main.cold.func1  >1      # the less closure, called from inside sort.Slice
+total main.run         >95
+total main.main        >95
