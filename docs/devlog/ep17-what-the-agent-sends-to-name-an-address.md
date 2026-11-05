@@ -243,8 +243,12 @@ A failure (unreadable file, wrong file, a hook error) is logged, the binary is d
 rest of the run, and profiling goes on. Symbols are worth having, but they must never cost the
 profile.
 
-The vDSO is sent straight from the image the agent already holds: no file is opened and no copy
-is made.
+The vDSO is sent straight from the image the agent already holds: no file is opened. Its names
+need one extra step. The kernel exports each vDSO function as a one-instruction stub that jumps
+to the real body, and strips every other symbol, so the code that actually runs has no name.
+The agent follows each stub's jump and writes a small `.symtab` for the vDSO: the exported
+symbols, plus each body under its stub's name, sized by the vDSO's own unwind entry for it
+(`symbols/vdso_symbols.zig`).
 
 ## 5. How this fits the agent's flow
 

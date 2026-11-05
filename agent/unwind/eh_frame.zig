@@ -3,8 +3,13 @@
 //! binaries, because exceptions need it at run time.
 //!
 //! This file only splits the section into entries and finds the address range of each; what
-//! the instructions inside them mean is cfi_machine.zig's job. The `.debug_frame` section uses
-//! a slightly different layout and is not read here.
+//! the instructions inside them mean is cfi_machine.zig's job.
+//!
+//! It also reads `.debug_frame`, the same information in the layout of the DWARF standard. Code
+//! built without unwind tables (musl's C is, to stay small) has no `.eh_frame` entries, but an
+//! unstripped binary still has `.debug_frame` ones for it. The two differ in three places: how
+//! a CIE is marked, how an FDE points at its CIE, and that addresses are never pc-relative.
+
 const std = @import("std");
 
 pub const Error = error{ Truncated, Malformed, Unsupported };
@@ -37,12 +42,16 @@ pub const Fde = struct {
     instructions: []const u8,
 };
 
+pub const Format = enum { eh_frame, debug_frame };
+
 pub const EhFrame = struct {
     /// The bytes of the section.
     bytes: []const u8,
     /// The address of the section's first byte once loaded. Pointers inside it are written
     /// relative to where they are stored, so this is needed to turn them into addresses.
+    /// Unused for `.debug_frame`, which is not loaded and holds no relative pointers.
     vaddr: u64,
+    format: Format = .eh_frame,
 
     pub fn iterator(eh_frame: EhFrame) Iterator {
         return .{ .section = eh_frame };
@@ -73,9 +82,23 @@ pub const Iterator = struct {
 
             const id_pos = reader.pos;
             const id = try reader.int(u32);
-            if (id == 0) continue; // a CIE: it is read when an FDE points at it
-            if (id > id_pos) return error.Malformed;
-            const cie = try iterator.cie_at(id_pos - id);
+            // A CIE is read when an FDE points at it.
+            const cie_offset = switch (iterator.section.format) {
+                .eh_frame => offset: {
+                    if (id == 0) continue;
+                    // How far back from this field the CIE is.
+                    if (id > id_pos) return error.Malformed;
+                    break :offset id_pos - id;
+                },
+                .debug_frame => offset: {
+                    if (id == cie_id_debug_frame) continue;
+                    break :offset id; // From the start of the section.
+                },
+            };
+            const cie = try iterator.cie_at(cie_offset);
+            if (iterator.section.format == .debug_frame and cie.fde_encoding & 0x70 != 0) {
+                return error.Unsupported; // Relative to what? The section is not loaded.
+            }
 
             const pc_begin = try pointer_read(&reader, cie.fde_encoding, iterator.section.vaddr);
             const range = try formatted_read(&reader, cie.fde_encoding & 0x0f);
@@ -106,11 +129,19 @@ pub const Iterator = struct {
         const body_end = std.math.add(usize, reader.pos, length) catch return error.Malformed;
         if (body_end > bytes.len) return error.Truncated;
         reader.end = body_end;
-        if ((try reader.int(u32)) != 0) return error.Malformed; // the FDE does not point at a CIE
+        const format = iterator.section.format;
+        const cie_id: u32 = if (format == .eh_frame) 0 else cie_id_debug_frame;
+        if ((try reader.int(u32)) != cie_id) return error.Malformed; // Not a CIE.
 
         const version = try reader.int(u8);
-        if (version != 1 and version != 3) return error.Unsupported;
+        const version_4 = format == .debug_frame and version == 4;
+        if (version != 1 and version != 3 and !version_4) return error.Unsupported;
         const augmentation = try reader.cstring();
+        if (version_4) {
+            // DWARF 4 says how big an address is, and whether a segment comes before it.
+            if ((try reader.int(u8)) != 8) return error.Unsupported;
+            if ((try reader.int(u8)) != 0) return error.Unsupported;
+        }
 
         var cie = Cie{
             .offset = offset,
@@ -147,6 +178,9 @@ pub const Iterator = struct {
         return cie;
     }
 };
+
+/// What marks a CIE in `.debug_frame`: an FDE has its CIE's offset there instead.
+const cie_id_debug_frame = 0xffffffff;
 
 // What a DW_EH_PE value means: the low 4 bits say how the number is stored, bits 4 to 6 say what
 // it is relative to.
@@ -489,4 +523,54 @@ test "variable length numbers" {
     try testing.expectError(error.Malformed, reader.uleb());
     reader = Reader{ .bytes = &.{ 0x80, 0x80 }, .pos = 0, .end = 2 };
     try testing.expectError(error.Truncated, reader.uleb());
+}
+
+/// A `.debug_frame` section as LLVM writes it: a DWARF 4 CIE, then FDEs with absolute 8 byte
+/// addresses and the CIE's offset from the section start.
+fn debug_frame_two(b: *[128]u8) []const u8 {
+    @memset(b, 0);
+    const cie = [_]u8{
+        0x14, 0x00, 0x00, 0x00, // length 20
+        0xff, 0xff, 0xff, 0xff, // the CIE id of .debug_frame
+        0x04, // version 4
+        0x00, // no augmentation
+        0x08, 0x00, // address size 8, segment size 0
+        0x01, 0x78, 0x10, // code alignment 1, data alignment -8, return address register 16
+        0x0c, 0x07, 0x08, // DW_CFA_def_cfa: register 7, offset 8
+        0x90, 0x01, // DW_CFA_offset: register 16 at cfa-8
+        0x00, 0x00, 0x00, 0x00, // padding
+    };
+    @memcpy(b[0..cie.len], &cie);
+    var at: usize = cie.len;
+    for ([_][2]u64{ .{ 0x5000, 0x30 }, .{ 0x5030, 0x10 } }) |range| {
+        u32_put(b, at, 4 + 8 + 8 + 2); // length
+        u32_put(b, at + 4, 0); // the CIE at offset 0
+        u64_put(b, at + 8, range[0]);
+        u64_put(b, at + 16, range[1]);
+        b[at + 24] = 0x41; // DW_CFA_advance_loc 1
+        b[at + 25] = 0x00;
+        at += 4 + 4 + 8 + 8 + 2;
+    }
+    return b[0..at]; // No terminator: the section just ends.
+}
+
+test ".debug_frame: absolute addresses, CIEs found from the start of the section" {
+    var b: [128]u8 = undefined;
+    const bytes = debug_frame_two(&b);
+    const section = EhFrame{ .bytes = bytes, .vaddr = 0, .format = .debug_frame };
+    var it = section.iterator();
+
+    const first = (try it.next()) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(u64, 0x5000), first.pc_begin);
+    try testing.expectEqual(@as(u64, 0x5030), first.pc_end);
+    try testing.expectEqual(@as(i64, -8), first.cie.data_align);
+    try testing.expectEqual(@as(u64, 16), first.cie.ra_register);
+    try testing.expectEqualSlices(u8, &.{ 0x41, 0x00 }, first.instructions);
+    const second = (try it.next()) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(u64, 0x5040), second.pc_end);
+    try testing.expectEqual(@as(?Fde, null), try it.next());
+
+    // Read as .eh_frame, the same bytes are not valid: the CIE id is wrong for it.
+    var wrong = (EhFrame{ .bytes = bytes, .vaddr = 0 }).iterator();
+    try testing.expectError(error.Malformed, wrong.next());
 }

@@ -91,6 +91,7 @@ test {
     _ = binary_file;
     _ = @import("symbols/offer.zig");
     _ = @import("symbols/transfer.zig");
+    _ = @import("symbols/vdso_symbols.zig");
 
     _ = @import("message.zig");
 

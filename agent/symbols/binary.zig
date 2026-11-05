@@ -10,6 +10,7 @@ const mapped_file = @import("../target/mapped_file.zig");
 const vdso = @import("../target/vdso.zig");
 const Region = @import("../target/regions.zig").Region;
 const elf_file = @import("../unwind/elf_file.zig");
+const vdso_symbols = @import("vdso_symbols.zig");
 
 const elf = shared.elf;
 const File = shared.File;
@@ -74,14 +75,15 @@ pub const Binary = struct {
     origin: union(enum) {
         /// The file stays open, and chunks are read from it when asked for.
         file: File,
-        /// The vDSO has no file: this is the agent's own image, which outlives the binary.
-        image: []const u8,
+        /// The vDSO has no file: its sections are in memory, in the agent's own image (which
+        /// outlives the binary) or written for it (vdso_symbols.zig). `starts` is unused.
+        memory: std.EnumArray(Section, []const u8),
     },
 
     pub fn deinit(binary: *Binary) void {
         switch (binary.origin) {
             .file => |*file| file.deinit(),
-            .image => {},
+            .memory => {},
         }
         binary.* = undefined;
     }
@@ -101,16 +103,16 @@ pub const Binary = struct {
         if (offset >= size) return buffer[0..0];
 
         const wanted: usize = @intCast(@min(buffer.len, size - offset));
-        const start = binary.starts.get(section) + offset;
         switch (binary.origin) {
             .file => |*file| {
+                const start = binary.starts.get(section) + offset;
                 const got = try file.read_at(buffer[0..wanted], start);
                 if (got != wanted) return error.FileChanged;
             },
-            .image => |image| {
-                // `layout_read` checked that every section lies inside the image.
-                const from: usize = @intCast(start);
-                @memcpy(buffer[0..wanted], image[from..][0..wanted]);
+            .memory => |sections| {
+                const bytes = sections.get(section);
+                assert(bytes.len == size);
+                @memcpy(buffer[0..wanted], bytes[@intCast(offset)..][0..wanted]);
             },
         }
         return buffer[0..wanted];
@@ -156,12 +158,22 @@ fn open_vdso(
         if (!std.mem.eql(u8, expected, id)) return error.WrongFile;
     }
 
-    const layout = try layout_read(arena, id, vdso.path, image.bytes);
-    return .{
-        .header = layout.header,
-        .starts = layout.starts,
-        .origin = .{ .image = image.bytes },
-    };
+    var layout = try layout_read(arena, id, vdso.path, image.bytes);
+    // `layout_read` checked that every section lies inside the image.
+    var sections = std.EnumArray(Section, []const u8).initFill(&.{});
+    for (std.enums.values(Section)) |section| {
+        const start: usize = @intCast(layout.starts.get(section));
+        const size: usize = @intCast(layout.header.sizes.get(section));
+        sections.set(section, image.bytes[start..][0..size]);
+    }
+    // Its stripped symbols, written from its stubs: the code that runs gets a name.
+    if (try vdso_symbols.symbols(arena, image.bytes)) |written| {
+        sections.set(.symtab, written.symtab);
+        sections.set(.strtab, written.strtab);
+        layout.header.sizes.set(.symtab, written.symtab.len);
+        layout.header.sizes.set(.strtab, written.strtab.len);
+    }
+    return .{ .header = layout.header, .starts = layout.starts, .origin = .{ .memory = sections } };
 }
 
 const Layout = struct {

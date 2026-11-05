@@ -142,6 +142,7 @@ pub const Registry = struct {
         log.debug("unwind rows built", .{
             .module = module_id,
             .source = built.source,
+            .fdes_debug_frame = built.fdes_debug_frame,
             .rows = module_table.rows.len,
             .rows_used = registry.set.rows_count,
             .rows_max = registry.set.rows.len,

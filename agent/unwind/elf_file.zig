@@ -1,8 +1,9 @@
 //! Loads just enough of an ELF file to read its unwind information: the headers, the section
-//! names, and the .eh_frame section (or .gopclntab for a Go binary). The result is as long as
-//! the file, so every offset in it is the real file offset, but only the parts that were read
-//! cost memory: the rest is anonymous address space that reads as zeros. Everything in the file
-//! is untrusted, so each offset is checked against the file size before it is used.
+//! names, and the .eh_frame and .debug_frame sections (or .gopclntab for a Go binary). The
+//! result is as long as the file, so every offset in it is the real file offset, but only the
+//! parts that were read cost memory: the rest is anonymous address space that reads as zeros.
+//! Everything in the file is untrusted, so each offset is checked against the file size before
+//! it is used.
 //!
 //! Sketch: libc is 2 MiB, of which about 60 KiB are headers and .eh_frame. Reading only those
 //! is 30 times less memory and disk traffic than reading the file.
@@ -24,8 +25,9 @@ const machine_x86_64 = 62;
 /// so without a limit a hostile file could make the agent read gigabytes for its names.
 const names_size_max = 1 << 20;
 
-/// What the unwinder reads: the unwind information of ordinary and of Go binaries.
-pub const sections_unwind = [_][]const u8{ ".eh_frame", ".gopclntab" };
+/// What the unwinder reads: the unwind information of ordinary and of Go binaries, and the
+/// DWARF copy an unstripped binary has for code built without unwind tables.
+pub const sections_unwind = [_][]const u8{ ".eh_frame", ".gopclntab", ".debug_frame" };
 
 pub const Loaded = struct {
     /// As long as the file. The parts that were not read are zeros that cost nothing.
