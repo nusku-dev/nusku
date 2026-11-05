@@ -11,6 +11,7 @@ const Run = @import("run.zig").Run;
 const Server = @import("../server.zig").Server;
 const TargetId = @import("../store/store.zig").TargetId;
 const Upload = @import("../symbolize/upload.zig").Upload;
+const log = @import("../log.zig").server;
 
 const assert = std.debug.assert;
 
@@ -57,6 +58,7 @@ pub const Controller = struct {
     /// server files its reports under. Errors that only the agent can see (no permission, the
     /// process is gone) come out of `stop` or `join`, not from here.
     pub fn start(controller: *Controller, gpa: std.mem.Allocator, spec: Spec) !TargetId {
+        errdefer |err| log.err("run not started", .{ .pid = spec.pid, .cause = err });
         if (spec.pid == 0) return error.InvalidPid;
         if (spec.interval_ms == 0) return error.InvalidInterval;
         if (spec.metrics.count() == 0) return error.NoMetrics;
@@ -92,6 +94,12 @@ pub const Controller = struct {
         };
         errdefer run.active = false;
         run.thread = try std.Thread.spawn(.{}, Run.thread_main, .{run});
+        log.info("run started", .{
+            .target = target,
+            .pid = spec.pid,
+            .interval_ms = spec.interval_ms,
+            .duration_s = spec.duration_s,
+        });
         return target;
     }
 
@@ -129,6 +137,15 @@ pub const Controller = struct {
         run.binary_abort();
         run.upload.deinit(gpa);
         run.active = false;
+        if (result) |reason| {
+            log.info("run stopped", .{
+                .target = run.target,
+                .pid = run.options.pid,
+                .reason = reason,
+            });
+        } else |err| {
+            log.err("run failed", .{ .target = run.target, .pid = run.options.pid, .cause = err });
+        }
         return result;
     }
 

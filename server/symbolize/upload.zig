@@ -8,6 +8,8 @@ const std = @import("std");
 const agent = @import("agent");
 const elf = @import("shared").elf;
 const Received = @import("builder.zig").Received;
+const log_file = @import("../log.zig");
+const log = log_file.server;
 
 const assert = std.debug.assert;
 const Header = agent.binary.Header;
@@ -28,6 +30,8 @@ pub const Error = error{
 const id_bytes_max = @import("../store/id_set.zig").id_bytes_max;
 /// The agent sends at most 16 executable segments; more than this is not a real file.
 const segments_max = 64;
+/// The agent sends paths of at most 4096 bytes, the longest Linux has.
+const path_bytes_max = 4096;
 
 /// What the sections of `header` take together: what an upload of it allocates.
 pub fn bytes_of(header: *const Header) error{TooLarge}!u64 {
@@ -43,6 +47,8 @@ pub const Upload = struct {
     bytes_max: u64,
     receiving: bool,
     id: []u8,
+    /// For the logs: what a person recognizes the binary by. Never opened.
+    path: []u8,
     segments: []elf.Segment,
     /// The four sections one after the other.
     data: []u8,
@@ -55,6 +61,7 @@ pub const Upload = struct {
             .bytes_max = bytes_max,
             .receiving = false,
             .id = &.{},
+            .path = &.{},
             .segments = &.{},
             .data = &.{},
             .starts = .initFill(0),
@@ -71,11 +78,35 @@ pub const Upload = struct {
 
     /// Starts a binary. A begin while another upload is in progress is an error and drops it.
     pub fn begin(upload: *Upload, gpa: std.mem.Allocator, header: *const Header) Error!void {
+        upload.begin_checked(gpa, header) catch |err| {
+            const bytes = bytes_of(header) catch std.math.maxInt(u64);
+            switch (err) {
+                error.TooLarge => log.warn("binary refused: too big to receive", .{
+                    .path = header.path,
+                    .kib = log_file.kib(bytes),
+                    .kib_max = log_file.kib(upload.bytes_max),
+                }),
+                error.OutOfOrder => log.warn("binary refused: the last one never ended", .{
+                    .path = header.path,
+                }),
+                error.Malformed => log.warn("binary refused: its header is not valid", .{
+                    .path = header.path,
+                    .build_id_bytes = header.build_id.len,
+                    .segments = header.segments.len,
+                }),
+                error.OutOfMemory => {},
+            }
+            return err;
+        };
+    }
+
+    fn begin_checked(upload: *Upload, gpa: std.mem.Allocator, header: *const Header) Error!void {
         if (upload.receiving) {
             upload.abort(gpa);
             return error.OutOfOrder;
         }
         if (header.build_id.len == 0 or header.build_id.len > id_bytes_max) return error.Malformed;
+        if (header.path.len > path_bytes_max) return error.Malformed;
         if (header.segments.len > segments_max) return error.Malformed;
 
         const total = try bytes_of(header);
@@ -83,6 +114,8 @@ pub const Upload = struct {
 
         const id = try gpa.dupe(u8, header.build_id);
         errdefer gpa.free(id);
+        const path = try gpa.dupe(u8, header.path);
+        errdefer gpa.free(path);
         const segments = try gpa.dupe(elf.Segment, header.segments);
         errdefer gpa.free(segments);
         const data = try gpa.alloc(u8, @intCast(total));
@@ -103,6 +136,7 @@ pub const Upload = struct {
             .bytes_max = upload.bytes_max,
             .receiving = true,
             .id = id,
+            .path = path,
             .segments = segments,
             .data = data,
             .starts = starts,
@@ -115,14 +149,24 @@ pub const Upload = struct {
     /// header announced; otherwise the upload is dropped.
     pub fn chunk(upload: *Upload, gpa: std.mem.Allocator, part: *const Chunk) Error!void {
         if (!upload.receiving) return error.OutOfOrder;
-        errdefer upload.abort(gpa);
 
         const filled = upload.filled.get(part.section);
         const size = upload.sizes.get(part.section);
         assert(filled <= size);
-        if (part.bytes.len == 0) return error.Malformed;
-        if (part.offset != filled) return error.Malformed;
-        if (part.bytes.len > size - filled) return error.Malformed;
+        const fits = part.bytes.len > 0 and part.offset == filled and
+            part.bytes.len <= size - filled;
+        if (!fits) {
+            log.warn("binary dropped: a chunk does not fit its header", .{
+                .path = upload.path,
+                .section = part.section,
+                .offset = part.offset,
+                .bytes = part.bytes.len,
+                .section_filled = filled,
+                .section_size = size,
+            });
+            upload.abort(gpa);
+            return error.Malformed;
+        }
 
         const at = upload.starts.get(part.section) + filled;
         @memcpy(upload.data[at..][0..part.bytes.len], part.bytes);
@@ -134,13 +178,21 @@ pub const Upload = struct {
     /// them from then on. The upload is idle after this, whatever it returns.
     pub fn end(upload: *Upload, gpa: std.mem.Allocator) Error!Received {
         if (!upload.receiving) return error.OutOfOrder;
-        errdefer upload.abort(gpa);
 
         for (sections) |section| {
-            if (upload.filled.get(section) != upload.sizes.get(section)) return error.Malformed;
+            if (upload.filled.get(section) == upload.sizes.get(section)) continue;
+            log.warn("binary dropped: it ended before all of it arrived", .{
+                .path = upload.path,
+                .section = section,
+                .section_filled = upload.filled.get(section),
+                .section_size = upload.sizes.get(section),
+            });
+            upload.abort(gpa);
+            return error.Malformed;
         }
         const received = Received{
             .id = upload.id,
+            .path = upload.path,
             .segments = upload.segments,
             .data = upload.data,
             .starts = upload.starts,
@@ -156,11 +208,13 @@ pub const Upload = struct {
     pub fn abort(upload: *Upload, gpa: std.mem.Allocator) void {
         if (upload.receiving) {
             gpa.free(upload.id);
+            gpa.free(upload.path);
             gpa.free(upload.segments);
             gpa.free(upload.data);
         }
         upload.receiving = false;
         upload.id = &.{};
+        upload.path = &.{};
         upload.segments = &.{};
         upload.data = &.{};
         upload.verify();
@@ -169,7 +223,8 @@ pub const Upload = struct {
     /// An idle upload holds no buffers; a receiving one never has more than it announced.
     fn verify(upload: *const Upload) void {
         if (!upload.receiving) {
-            assert(upload.id.len == 0 and upload.segments.len == 0 and upload.data.len == 0);
+            assert(upload.id.len == 0 and upload.path.len == 0);
+            assert(upload.segments.len == 0 and upload.data.len == 0);
             return;
         }
         for (sections) |section| assert(upload.filled.get(section) <= upload.sizes.get(section));

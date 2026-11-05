@@ -20,6 +20,7 @@ pub const Spec = controller_file.Spec;
 
 test {
     _ = @import("os/lock.zig");
+    _ = @import("log.zig");
 
     _ = @import("store/store.zig");
     _ = @import("store/window_ring.zig");

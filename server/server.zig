@@ -13,6 +13,8 @@ const resolve = @import("symbolize/resolve.zig");
 const merge = @import("symbolize/merge.zig");
 const Binaries = @import("store/binaries.zig").Binaries;
 const id_set = @import("store/id_set.zig");
+const log_file = @import("log.zig");
+const log = log_file.server;
 const SymbolTable = @import("symbolize/symbol_table.zig").SymbolTable;
 
 const Lock = lock_file.Lock;
@@ -137,6 +139,7 @@ pub const Server = struct {
     builder_thread: std.Thread,
 
     pub fn init(server: *Server, gpa: std.mem.Allocator, options: Options) !void {
+        errdefer |err| log.err("server failed to start", .{ .cause = err });
         assert(options.targets_max > 0);
         assert(options.windows_per_target_max > 0);
         assert(options.window_bytes_max > 0);
@@ -167,14 +170,35 @@ pub const Server = struct {
         server.builds_stopping = false;
         // Last: the thread reads the server as soon as it runs.
         server.builder_thread = try std.Thread.spawn(.{}, builder_main, .{server});
+
+        log.info("server started", .{
+            .targets_max = options.targets_max,
+            .windows_per_target_max = options.windows_per_target_max,
+            .window_kib_max = options.window_bytes_max / 1024,
+            .binaries_max = options.binaries_max,
+            .binaries_mib_max = options.binaries_bytes_max / (1024 * 1024),
+            .uploads_mib_max = options.uploads_bytes_max / (1024 * 1024),
+        });
     }
 
     /// Registers a process the server will receive reports for. Allocates the target's
     /// windows: call it once per process, not per report. Safe to call from any thread.
     pub fn target_add(server: *Server, gpa: std.mem.Allocator, pid: u32) !TargetId {
-        server.lock.lock();
-        defer server.lock.unlock();
-        return server.store.target_add(gpa, pid);
+        const target = target: {
+            server.lock.lock();
+            defer server.lock.unlock();
+            break :target server.store.target_add(gpa, pid) catch |err| {
+                // Full: every target is still running, none can make room.
+                log.warn("process not tracked", .{
+                    .pid = pid,
+                    .targets_max = server.store.targets.len,
+                    .cause = err,
+                });
+                return err;
+            };
+        };
+        log.debug("target added", .{ .target = target, .pid = pid });
+        return target;
     }
 
     /// No more reports will come for the target. Its windows can still be queried, until its
@@ -183,6 +207,7 @@ pub const Server = struct {
         server.lock.lock();
         defer server.lock.unlock();
         try server.store.target_finish(target);
+        log.debug("target finished", .{ .target = target });
     }
 
     /// Drops the target and its windows now.
@@ -190,6 +215,7 @@ pub const Server = struct {
         server.lock.lock();
         defer server.lock.unlock();
         try server.store.target_remove(gpa, target);
+        log.debug("target removed", .{ .target = target });
     }
 
     /// A report the run could not copy: the target's profile counts it as lost.
@@ -197,6 +223,18 @@ pub const Server = struct {
         server.lock.lock();
         defer server.lock.unlock();
         try server.store.window_dropped(target);
+        server.window_lost_log(target);
+    }
+
+    /// The first window a target loses, too big for the run to copy or for the store to keep.
+    /// Once per target: the rest would repeat it every report, and profiles count every one
+    /// (`windows_rejected`). Holds the lock.
+    fn window_lost_log(server: *Server, target: TargetId) void {
+        if (server.store.target_find(target).?.windows_rejected != 1) return;
+        log.warn("window too big to keep: its samples are lost", .{
+            .target = target,
+            .window_kib_max = server.store.ring_options.window_bytes_max / 1024,
+        });
     }
 
     pub fn stats(server: *Server) Stats {
@@ -217,7 +255,10 @@ pub const Server = struct {
     pub fn ingest(server: *Server, target: TargetId, message: *const Message) !void {
         server.lock.lock();
         defer server.lock.unlock();
-        try server.store.ingest(target, message);
+        server.store.ingest(target, message) catch |err| {
+            if (err == error.WindowTooLarge) server.window_lost_log(target);
+            return err;
+        };
 
         // The tables this window will need count as used now, so the ones that go first
         // when room is short are those no recent window needs.
@@ -248,6 +289,7 @@ pub const Server = struct {
     pub fn upload_start(
         server: *Server,
         build_id: []const u8,
+        path: []const u8,
         bytes: u64,
     ) error{ Malformed, AlreadyKnown, UploadsFull }!Ticket {
         if (build_id.len == 0 or build_id.len > id_set.id_bytes_max) return error.Malformed;
@@ -255,10 +297,18 @@ pub const Server = struct {
         server.lock.lock();
         defer server.lock.unlock();
         if (server.binary_known_locked(build_id)) return error.AlreadyKnown;
-        if (bytes > server.uploads_bytes_max - server.uploads_bytes_used) {
+        const room = bytes <= server.uploads_bytes_max - server.uploads_bytes_used;
+        const slot = (if (room) server.claims.add(build_id) else null) orelse {
+            log.warn("binary refused: the server is receiving too much at once", .{
+                .path = path,
+                .kib = log_file.kib(bytes),
+                .uploads_kib = log_file.kib(server.uploads_bytes_used),
+                .uploads_kib_max = log_file.kib(server.uploads_bytes_max),
+                .uploads = server.claims.count(),
+                .uploads_max = uploads_max,
+            });
             return error.UploadsFull;
-        }
-        const slot = server.claims.add(build_id) orelse return error.UploadsFull;
+        };
         server.uploads_bytes_used += bytes;
         return .{ .slot = slot, .bytes = bytes };
     }
@@ -299,6 +349,10 @@ pub const Server = struct {
             return;
         }
         server.builds.push(owned) catch |err| {
+            log.warn("binary dropped: too many waiting for their symbol table", .{
+                .path = owned.path,
+                .waiting_max = builder.Queue.items_max,
+            });
             server.received_free(&owned);
             return err;
         };
@@ -342,15 +396,28 @@ pub const Server = struct {
             const built = received.build(server.gpa);
             server.lock.lock();
 
+            const functions = if (built) |table| table.count else |_| 0;
+            const kib = if (built) |table| log_file.kib(table.bytes()) else |_| 0;
             const kept = if (built) |table|
                 server.binaries.put(server.gpa, received.id, table)
             else |err|
                 err;
-            kept catch |err| {
+            if (kept) |_| {
+                log.debug("symbol table ready", .{
+                    .path = received.path,
+                    .functions = functions,
+                    .kib = kib,
+                });
+            } else |err| {
                 server.builds_failed += 1;
                 // Too big now is too big the next time: no run needs to send it again.
                 if (err == error.TooLarge) server.refused.add_over_oldest(received.id);
-            };
+                log.warn("no symbol table: its frames will stay unnamed", .{
+                    .path = received.path,
+                    .kib = kib,
+                    .cause = err,
+                });
+            }
             server.building = &.{};
             server.received_free(&received);
             server.builds_changed.broadcast();
@@ -403,6 +470,13 @@ pub const Server = struct {
         assert(filled == stacks.len);
 
         result.stacks = merge.stacks_merge(stacks);
+        log.debug("profile built", .{
+            .target = query.target,
+            .windows = windows.len,
+            .samples = result.samples,
+            .stacks_seen = stacks.len,
+            .stacks = result.stacks.len,
+        });
         return result;
     }
 
@@ -447,6 +521,14 @@ pub const Server = struct {
         server.lock.unlock();
         server.builder_thread.join();
 
+        log.info("server stopped", .{
+            .targets = server.store.count,
+            .binaries = server.binaries.count,
+            .binaries_mib = server.binaries.bytes_used / (1024 * 1024),
+            .builds_failed = server.builds_failed,
+            // Received, but the server stopped before their table was built.
+            .builds_dropped = server.builds.count,
+        });
         server.builds.deinit(gpa);
         server.store.deinit(gpa);
         server.binaries.deinit(gpa);
@@ -658,6 +740,7 @@ fn received_one(gpa: std.mem.Allocator, id: []const u8, name: *const [4]u8) !Rec
     const segments = [_]elf.Segment{.{ .offset = 0x1000, .vaddr = 0x401000, .filesz = 0x1000 }};
     return .{
         .id = try gpa.dupe(u8, id),
+        .path = try gpa.dupe(u8, "/bin/app"),
         .segments = try gpa.dupe(elf.Segment, &segments),
         .data = try std.mem.concat(gpa, u8, &.{ &sym, strtab }),
         .starts = starts,
@@ -720,10 +803,10 @@ test "uploads share one budget, held from the first chunk until the table is bui
     try server.init(testing.allocator, .{ .targets_max = 1, .uploads_bytes_max = 100 });
     defer server.deinit(testing.allocator);
 
-    const first = try server.upload_start("aa", 60);
-    try testing.expectError(error.UploadsFull, server.upload_start("bb", 41));
-    try testing.expectError(error.AlreadyKnown, server.upload_start("aa", 1));
-    const second = try server.upload_start("bb", 40);
+    const first = try server.upload_start("aa", "/a", 60);
+    try testing.expectError(error.UploadsFull, server.upload_start("bb", "/b", 41));
+    try testing.expectError(error.AlreadyKnown, server.upload_start("aa", "/a", 1));
+    const second = try server.upload_start("bb", "/b", 40);
     try testing.expectEqual(@as(u64, 100), server.uploads_bytes_used);
 
     // An abort gives its bytes back at once; an end only once the table is built.

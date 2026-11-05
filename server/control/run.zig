@@ -7,6 +7,8 @@ const Server = @import("../server.zig").Server;
 const TargetId = @import("../store/store.zig").TargetId;
 const upload_file = @import("../symbolize/upload.zig");
 const Upload = upload_file.Upload;
+const log_file = @import("../log.zig");
+const log = log_file.server;
 
 /// One profiling run. Its address must not change while the thread lives: the thread points
 /// into it, so the controller keeps all of them in one array that is never resized.
@@ -54,16 +56,33 @@ pub const Run = struct {
 
     /// Claims the binary and reserves its bytes, then gets ready for its chunks. Refused
     /// (`AlreadyKnown`) when another run is sending the same binary since this one asked.
+    /// Whatever refuses it says why in the log: the upload, the budget, or this.
     pub fn binary_begin(run: *Run, header: *const agent.binary.Header) !void {
         if (run.ticket != null) {
-            run.binary_abort(); // A begin with no end: the agent lost track. Start clean.
+            log.warn("binary refused: the last one never ended", .{ .path = header.path });
+            run.binary_abort(); // The agent lost track: start clean.
             return error.OutOfOrder;
         }
-        const bytes = try upload_file.bytes_of(header);
-        if (bytes > run.upload.bytes_max) return error.TooLarge;
-        run.ticket = try run.server.upload_start(header.build_id, bytes);
+        // Before anything is reserved for it.
+        const bytes = upload_file.bytes_of(header) catch std.math.maxInt(u64);
+        if (bytes > run.upload.bytes_max) {
+            log.warn("binary refused: too big to receive", .{
+                .path = header.path,
+                .kib = log_file.kib(bytes),
+                .kib_max = log_file.kib(run.upload.bytes_max),
+            });
+            return error.TooLarge;
+        }
+        run.ticket = run.server.upload_start(header.build_id, header.path, bytes) catch |err| {
+            // Another run got there first: nothing is wrong.
+            if (err == error.AlreadyKnown) log.debug("binary already on its way", .{
+                .path = header.path,
+            });
+            return err;
+        };
         errdefer run.ticket_drop();
         try run.upload.begin(run.gpa, header);
+        log.debug("binary arriving", .{ .path = header.path, .kib = log_file.kib(bytes) });
     }
 
     pub fn binary_chunk(run: *Run, chunk: *const agent.binary.Chunk) !void {
@@ -80,12 +99,17 @@ pub const Run = struct {
             return err;
         };
         run.ticket = null;
+        // Before it is handed over: the builder frees it when it is done.
+        log.debug("binary received", .{ .path = received.path, .kib = log_file.kib(ticket.bytes) });
         try run.server.upload_end(ticket, received);
     }
 
     /// The agent stopped in the middle of a binary (the file changed, or the run ends): the
     /// half that arrived is dropped, so the next binary starts clean.
     pub fn binary_abort(run: *Run) void {
+        if (run.upload.receiving) log.debug("binary not received: the agent stopped sending", .{
+            .path = run.upload.path,
+        });
         run.upload.abort(run.gpa);
         run.ticket_drop();
     }
@@ -131,7 +155,7 @@ test "the hooks turn a received binary into a known one" {
     try run.binary_begin(&header);
     // Claimed while it arrives: another run asking now is told not to send it.
     try testing.expect(run.binary_known("hook-id"));
-    try testing.expectError(error.AlreadyKnown, server.upload_start("hook-id", 0));
+    try testing.expectError(error.AlreadyKnown, server.upload_start("hook-id", "/test", 0));
     try run.binary_end();
     try testing.expect(run.ticket == null);
     try testing.expect(run.binary_known("hook-id"));

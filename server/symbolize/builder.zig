@@ -15,6 +15,8 @@ const Section = agent.binary.Section;
 /// Every section of one binary, arrived whole and checked against its header. Owns its buffers.
 pub const Received = struct {
     id: []u8,
+    /// For the logs: what a person recognizes the binary by.
+    path: []u8,
     segments: []elf.Segment,
     /// The sections one after the other.
     data: []u8,
@@ -25,6 +27,7 @@ pub const Received = struct {
 
     pub fn deinit(received: *Received, gpa: std.mem.Allocator) void {
         gpa.free(received.id);
+        gpa.free(received.path);
         gpa.free(received.segments);
         gpa.free(received.data);
         received.* = undefined;
@@ -97,6 +100,7 @@ const testing = std.testing;
 fn received_test(gpa: std.mem.Allocator, id: []const u8) !Received {
     return .{
         .id = try gpa.dupe(u8, id),
+        .path = try gpa.dupe(u8, "/test"),
         .segments = try gpa.alloc(elf.Segment, 0),
         .data = try gpa.alloc(u8, 0),
         .starts = .initFill(0),

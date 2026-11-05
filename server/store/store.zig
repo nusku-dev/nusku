@@ -7,6 +7,7 @@
 const std = @import("std");
 const agent = @import("agent");
 const WindowRing = @import("window_ring.zig").WindowRing;
+const log = @import("../log.zig").server;
 
 const assert = std.debug.assert;
 const Message = agent.Message;
@@ -56,6 +57,10 @@ pub const Store = struct {
         if (store.count == store.targets.len) {
             const oldest = store.finished_oldest() orelse return error.TargetsFull;
             store.target_remove(gpa, oldest) catch unreachable;
+            log.info("finished target dropped to make room: its windows are gone", .{
+                .target = oldest,
+                .targets_max = store.targets.len,
+            });
         }
 
         const target = &store.targets[store.count];

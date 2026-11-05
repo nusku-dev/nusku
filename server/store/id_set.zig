@@ -20,6 +20,13 @@ pub fn IdSet(comptime slots_max: usize) type {
 
         pub const Slot = usize;
 
+        /// How many slots are taken.
+        pub fn count(set: *const Set) usize {
+            var taken: usize = 0;
+            for (set.lengths) |length| taken += @intFromBool(length != 0);
+            return taken;
+        }
+
         pub fn has(set: *const Set, id: []const u8) bool {
             return set.find(id) != null;
         }

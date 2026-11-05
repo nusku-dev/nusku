@@ -5,6 +5,8 @@
 
 const std = @import("std");
 const SymbolTable = @import("../symbolize/symbol_table.zig").SymbolTable;
+const log_file = @import("../log.zig");
+const log = log_file.server;
 
 const assert = std.debug.assert;
 
@@ -145,6 +147,14 @@ pub const Binaries = struct {
         for (binaries.entries[0..binaries.count], 0..) |entry, index| {
             if (entry.used < binaries.entries[oldest].used) oldest = index;
         }
+        var hex: [log_file.hex_bytes_max]u8 = undefined;
+        // Its frames are named again if an agent sends it again.
+        log.debug("symbol table evicted to make room", .{
+            .build_id = log_file.hex(&hex, binaries.entries[oldest].id),
+            .kib = log_file.kib(binaries.entries[oldest].bytes),
+            .binaries = binaries.count,
+            .binaries_max = binaries.entries.len,
+        });
         binaries.bytes_used -= binaries.entries[oldest].bytes;
         entry_free(gpa, &binaries.entries[oldest]);
         binaries.count -= 1;
