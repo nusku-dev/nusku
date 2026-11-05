@@ -44,6 +44,15 @@ pub const binary = struct {
     pub const Section = binary_file.Section;
 };
 
+/// How the kernel's symbols are sent and named: under `id`, a key good for one boot, with each
+/// symbol at its distance from `_text`. The server names a kernel frame at `address - _text`.
+pub const kernel_symbols = struct {
+    const file = @import("symbols/kernel_symbols.zig");
+    pub const id = file.id;
+    pub const id_bytes_max = file.id_bytes_max;
+    pub const path = file.path;
+};
+
 /// A report copied out of the agent's buffers, owned: what a server keeps.
 pub const Message = @import("message.zig").Message;
 
@@ -92,6 +101,7 @@ test {
     _ = @import("symbols/offer.zig");
     _ = @import("symbols/transfer.zig");
     _ = @import("symbols/vdso_symbols.zig");
+    _ = @import("symbols/kernel_symbols.zig");
 
     _ = @import("message.zig");
 

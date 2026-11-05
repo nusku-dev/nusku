@@ -11,6 +11,7 @@ const vdso = @import("../target/vdso.zig");
 const Region = @import("../target/regions.zig").Region;
 const elf_file = @import("../unwind/elf_file.zig");
 const vdso_symbols = @import("vdso_symbols.zig");
+const kernel_symbols = @import("kernel_symbols.zig");
 
 const elf = shared.elf;
 const File = shared.File;
@@ -174,6 +175,32 @@ fn open_vdso(
         layout.header.sizes.set(.strtab, written.strtab.len);
     }
     return .{ .header = layout.header, .starts = layout.starts, .origin = .{ .memory = sections } };
+}
+
+/// The running kernel as a binary: its symbols, read from /proc/kallsyms as distances from
+/// `_text` (kernel_symbols.zig), under `id`, its identity for this boot. The symbols are in
+/// `arena` and must outlive the binary.
+pub fn kernel_binary(
+    arena: std.mem.Allocator,
+    id: []const u8,
+    symbols: *const kernel_symbols.Symbols,
+) !Binary {
+    var sizes = std.EnumArray(Section, u64).initFill(0);
+    sizes.set(.symtab, symbols.symtab.len);
+    sizes.set(.strtab, symbols.strtab.len);
+    var sections = std.EnumArray(Section, []const u8).initFill(&.{});
+    sections.set(.symtab, symbols.symtab);
+    sections.set(.strtab, symbols.strtab);
+    return .{
+        .header = .{
+            .build_id = try arena.dupe(u8, id),
+            .path = kernel_symbols.path,
+            .segments = try arena.dupe(elf.Segment, &.{kernel_symbols.segment}),
+            .sizes = sizes,
+        },
+        .starts = .initFill(0),
+        .origin = .{ .memory = sections },
+    };
 }
 
 const Layout = struct {

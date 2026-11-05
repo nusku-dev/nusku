@@ -12,6 +12,8 @@ const build_id = @import("../target/build_id.zig");
 const vdso = @import("../target/vdso.zig");
 const Region = @import("../target/regions.zig").Region;
 const binary_file = @import("binary.zig");
+const kernel_symbols = @import("kernel_symbols.zig");
+const KernelIdentity = @import("../target/kernel.zig").Identity;
 const Transfer = @import("transfer.zig").Transfer;
 const log = @import("../log.zig").agent;
 
@@ -25,6 +27,9 @@ pub const path_bytes_max = 4096;
 /// Bytes in one chunk, and chunks sent per loop round: at most 1 MiB per tick of 100 ms.
 pub const chunk_bytes = 256 * 1024;
 pub const chunks_per_round = 4;
+/// Bytes of /proc/kallsyms read per loop round: about 12 ms of the kernel's time, and some 5 s
+/// for all of it. Read in one go, it would hold up the loop for more than half a second.
+pub const kallsyms_bytes_per_round = 256 * 1024;
 
 /// A build ID, held by value.
 const Id = struct {
@@ -81,6 +86,17 @@ pub const Offer = struct {
     seen_full_logged: bool,
     /// The agent's own vDSO image, if it has one: what a [vdso] region is sent from.
     vdso_image: ?*const vdso.Image,
+    /// Who the running kernel is: its symbols are offered once, before the first binary.
+    kernel: KernelIdentity,
+    kernel_offered: bool,
+    /// Reading the kernel's symbols, a piece per round when no binary is being sent; the
+    /// kernel's transfer starts when it is done.
+    kernel_reader: ?kernel_symbols.Reader,
+    /// Holds the kernel's symbols while they are read and sent, apart from `arena`, which each
+    /// binary's transfer resets. Freed once they are sent: a few MiB, not kept for the run.
+    kernel_arena: std.heap.ArenaAllocator,
+    /// Whether `current` is the kernel's transfer, whose memory is `kernel_arena`.
+    current_is_kernel: bool,
 
     /// The transfer in flight, if any. One at a time.
     current: ?Transfer,
@@ -90,13 +106,14 @@ pub const Offer = struct {
     /// Scratch for checking a file's build ID: `build_id.prefix_size` bytes.
     prefix: []u8,
 
-    /// `vdso_image` must outlive the offer.
+    /// `vdso_image` and what `kernel` points into must outlive the offer.
     pub fn init(
         offer: *Offer,
         gpa: std.mem.Allocator,
         enabled: bool,
         pid: u32,
         vdso_image: ?*const vdso.Image,
+        kernel: KernelIdentity,
     ) !void {
         offer.* = .{
             .enabled = enabled,
@@ -108,6 +125,11 @@ pub const Offer = struct {
             .pending_count = 0,
             .seen_full_logged = false,
             .vdso_image = vdso_image,
+            .kernel = kernel,
+            .kernel_offered = false,
+            .kernel_reader = null,
+            .kernel_arena = .init(gpa),
+            .current_is_kernel = false,
             .current = null,
             .arena = .init(gpa),
             .chunk_buffer = &.{},
@@ -127,6 +149,8 @@ pub const Offer = struct {
     /// Call `stop` first if a transfer may be in flight, so the sink hears that it ends.
     pub fn deinit(offer: *Offer, gpa: std.mem.Allocator) void {
         if (offer.current) |*transfer| transfer.deinit();
+        if (offer.kernel_reader) |*reader| reader.deinit();
+        offer.kernel_arena.deinit();
         offer.arena.deinit();
         gpa.free(offer.prefix);
         gpa.free(offer.chunk_buffer);
@@ -171,7 +195,11 @@ pub const Offer = struct {
         if (!offer.enabled) return;
 
         if (offer.current == null) offer.next_start(sink);
-        const transfer = if (offer.current) |*current| current else return;
+        // With no binary to send, a piece of the kernel's symbols is read instead.
+        const transfer = if (offer.current) |*current| current else {
+            if (offer.kernel_reader != null) offer.kernel_read();
+            return;
+        };
 
         const done = transfer.pump(sink, offer.chunk_buffer, chunks_per_round) catch |err| {
             log.warn("sending a binary failed: dropped", .{
@@ -182,10 +210,7 @@ pub const Offer = struct {
             offer.current_drop(sink);
             return;
         };
-        if (done) {
-            transfer.deinit();
-            offer.current = null;
-        }
+        if (done) offer.current_end();
     }
 
     /// The run ends: a transfer still in flight is aborted, so the sink can drop what it got.
@@ -198,22 +223,38 @@ pub const Offer = struct {
     fn current_drop(offer: *Offer, sink: anytype) void {
         const transfer = &offer.current.?;
         if (transfer.begun()) sink.binary_abort();
-        transfer.deinit();
+        offer.current_end();
+    }
+
+    fn current_end(offer: *Offer) void {
+        offer.current.?.deinit();
         offer.current = null;
+        if (offer.current_is_kernel) {
+            offer.current_is_kernel = false;
+            _ = offer.kernel_arena.reset(.free_all);
+        }
     }
 
     /// Takes the next waiting binary: dropped if the server knows it or it cannot be opened,
     /// otherwise it becomes the transfer in flight.
     fn next_start(offer: *Offer, sink: anytype) void {
         assert(offer.current == null);
-        if (offer.pending_count == 0) return;
+        // The binaries first: the target's own code is what a profile is about. The kernel's
+        // symbols are read in the rounds with nothing else to send.
+        if (offer.pending_count == 0) {
+            if (!offer.kernel_offered) {
+                offer.kernel_offered = true;
+                offer.kernel_start(sink);
+            }
+            return;
+        }
 
         const region = offer.pending_at(0).region();
         defer offer.pending_drop();
 
         if (sink.binary_known(region.build_id.?)) return;
 
-        _ = offer.arena.reset(.retain_capacity);
+        offer.arena_reset();
         const arena = offer.arena.allocator();
         const opened = binary_file.open(arena, offer.pid, &region, offer.prefix, offer.vdso_image);
         const binary = opened catch |err| {
@@ -224,6 +265,67 @@ pub const Offer = struct {
             return;
         };
         offer.current = Transfer.init(binary);
+    }
+
+    /// Starts reading the kernel's symbols, if the server does not have them for this boot.
+    fn kernel_start(offer: *Offer, sink: anytype) void {
+        var id_buffer: [kernel_symbols.id_bytes_max]u8 = undefined;
+        const kernel = &offer.kernel;
+        const id = kernel_symbols.id(&id_buffer, kernel.build_id, kernel.text_address) orelse {
+            log.debug("kernel symbols not offered: the kernel does not say who it is", .{
+                .build_id_found = kernel.build_id != null,
+                .text_address_found = kernel.text_address != null,
+            });
+            return;
+        };
+        if (sink.binary_known(id)) return;
+
+        _ = offer.kernel_arena.reset(.free_all);
+        const arena = offer.kernel_arena.allocator();
+        const opened = kernel_symbols.Reader.init(arena, kernel.text_address.?);
+        offer.kernel_reader = (opened catch null) orelse {
+            log.debug("kernel symbols not offered: kallsyms cannot be read", .{});
+            return;
+        };
+    }
+
+    /// One more piece of kallsyms; at its end, the kernel's symbols become the transfer.
+    fn kernel_read(offer: *Offer) void {
+        const reader = &offer.kernel_reader.?;
+        const done = reader.step(kallsyms_bytes_per_round) catch |err| {
+            log.debug("kernel symbols not offered: kallsyms could not be read", .{ .cause = err });
+            return offer.kernel_reader_drop();
+        };
+        if (!done) return;
+        defer offer.kernel_reader_drop();
+
+        // Root reads the addresses; anyone else reads zeros, and there is nothing to send.
+        const symbols = reader.symbols() orelse {
+            log.debug("kernel symbols not offered: their addresses are hidden", .{});
+            return;
+        };
+        var id_buffer: [kernel_symbols.id_bytes_max]u8 = undefined;
+        const kernel = &offer.kernel;
+        const id = kernel_symbols.id(&id_buffer, kernel.build_id, kernel.text_address).?;
+        const binary = binary_file.kernel_binary(offer.kernel_arena.allocator(), id, &symbols) catch
+            return;
+        log.debug("kernel symbols offered", .{
+            .release = kernel.release,
+            .symbols = symbols.count,
+            .names_kib = symbols.strtab.len / 1024,
+        });
+        offer.current = Transfer.init(binary);
+        offer.current_is_kernel = true;
+    }
+
+    fn kernel_reader_drop(offer: *Offer) void {
+        offer.kernel_reader.?.deinit();
+        offer.kernel_reader = null;
+    }
+
+    /// Frees the last binary's memory, keeping it for the next.
+    fn arena_reset(offer: *Offer) void {
+        _ = offer.arena.reset(.retain_capacity);
     }
 
     fn seen_has(offer: *const Offer, id: []const u8) bool {
@@ -281,7 +383,7 @@ fn region_test(path: []const u8, id: ?[]const u8) Region {
 
 fn offer_test(enabled: bool, image: ?*const vdso.Image) !Offer {
     var offer: Offer = undefined;
-    try offer.init(testing.allocator, enabled, process.current_pid(), image);
+    try offer.init(testing.allocator, enabled, process.current_pid(), image, .{});
     return offer;
 }
 
@@ -499,4 +601,42 @@ test "a binary that cannot be opened is dropped, not retried" {
     // The same regions again: already seen, nothing queued.
     offer.regions_see(&.{region_test("/no/such/file", "\x01\x02")});
     try testing.expectEqual(@as(u32, 0), offer.pending_count);
+}
+
+test "the binaries go first; the kernel's symbols are read after, a piece per round" {
+    var prefix: [build_id.prefix_size]u8 = undefined;
+    const id = (try sh_id(&prefix)) orelse return error.SkipZigTest;
+
+    var offer: Offer = undefined;
+    const kernel = KernelIdentity{ .build_id = "kk", .text_address = 0xffffffff81000000 };
+    try offer.init(testing.allocator, true, process.current_pid(), null, kernel);
+    defer offer.deinit(testing.allocator);
+    var sink = Sink{};
+
+    offer.regions_see(&.{region_test("/bin/sh", id)});
+    // The first round starts the binary, not the kernel.
+    offer.pump(&sink);
+    try testing.expectEqual(@as(u32, 1), sink.begins);
+    try testing.expect(offer.kernel_reader == null);
+
+    var rounds: u32 = 0;
+    while (offer.current != null) : (rounds += 1) offer.pump(&sink);
+    try testing.expectEqual(@as(u32, 1), sink.ends);
+
+    // Nothing left to send: the kernel's turn. Kallsyms is read over many rounds.
+    offer.pump(&sink);
+    try testing.expect(offer.kernel_reader != null);
+    var reading: u32 = 1;
+    while (offer.kernel_reader != null) : (reading += 1) offer.pump(&sink);
+    try testing.expect(reading > 3);
+
+    // As root the kernel's symbols are then sent; without, they were hidden and are not.
+    if (std.os.linux.geteuid() == 0) {
+        try testing.expect(offer.current_is_kernel);
+        while (offer.current != null) offer.pump(&sink);
+        try testing.expectEqual(@as(u32, 2), sink.ends);
+    } else {
+        try testing.expect(offer.current == null);
+    }
+    try testing.expect(offer.kernel_offered);
 }

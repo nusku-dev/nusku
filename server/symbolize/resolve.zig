@@ -36,11 +36,29 @@ pub fn window_resolve(
     for (message.stacks) |stack| user_max = @max(user_max, stack.user.len);
     const locations = try arena.alloc(Location, user_max);
 
+    const kernel = try kernel_of(arena, message);
     const stacks = try arena.alloc(SymbolStack, message.stacks.len);
     for (message.stacks, stacks) |stack, *out| {
-        out.* = try stack_resolve(arena, lookup, regions, locations[0..stack.user.len], stack);
+        const scratch = locations[0..stack.user.len];
+        out.* = try stack_resolve(arena, lookup, regions, kernel, scratch, stack);
     }
     return stacks;
+}
+
+/// What names a kernel frame: the identity of the kernel's symbols for this boot, and where
+/// `_text` was. The window says both, or the kernel frames keep their addresses.
+const Kernel = struct {
+    /// In `arena`: the lookup may keep it as long as the query.
+    id: []const u8,
+    text_address: u64,
+};
+
+fn kernel_of(arena: std.mem.Allocator, message: *const Message) !?Kernel {
+    var buffer: [agent.kernel_symbols.id_bytes_max]u8 = undefined;
+    const kernel = &message.kernel;
+    const id = agent.kernel_symbols.id(&buffer, kernel.build_id, kernel.text_address) orelse
+        return null;
+    return .{ .id = try arena.dupe(u8, id), .text_address = kernel.text_address.? };
 }
 
 /// `regions` are valid; `locations` is scratch, as long as the user frames.
@@ -48,15 +66,21 @@ fn stack_resolve(
     arena: std.mem.Allocator,
     lookup: anytype,
     regions: []const Region,
+    kernel: ?Kernel,
     locations: []Location,
     stack: Message.Stack,
 ) !SymbolStack {
     assert(locations.len == stack.user.len);
     const frames = try arena.alloc(Frame, stack.kernel.len + stack.user.len);
 
-    // Kernel frames come first: they are the innermost. No kernel symbols yet.
-    for (stack.kernel, frames[0..stack.kernel.len]) |address, *frame| {
+    // Kernel frames come first: they are the innermost. Each is named at its distance from
+    // `_text`; after the first, a frame is a return address, so the call is one byte back.
+    for (stack.kernel, frames[0..stack.kernel.len], 0..) |address, *frame, index| {
         frame.* = .{ .address = address, .kernel = true };
+        const known = kernel orelse continue;
+        frame.module = agent.kernel_symbols.path;
+        const offset = address -% known.text_address -% @intFromBool(index > 0);
+        frame.function = try lookup.name(arena, known.id, offset);
     }
 
     normalize.user_locate(regions, stack.user, stack.leaf_is_return, locations);
@@ -217,4 +241,53 @@ test "regions that overlap are not trusted, and the frames are still there" {
     try testing.expectEqual(@as(?[]const u8, null), resolved[0].frames[0].function);
     try testing.expectEqual(@as(?[]const u8, null), resolved[0].frames[0].module);
     try testing.expectEqual(@as(u32, 0), fake.asked);
+}
+
+test "kernel frames are named at their distance from _text, with the kernel's identity" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const text: u64 = 0xffffffff9a000000; // Where KASLR put it this boot.
+    const KernelFake = struct {
+        id_expected: []const u8,
+        asked: [2]u64 = undefined,
+        count: usize = 0,
+
+        pub fn name(
+            fake: *@This(),
+            names: std.mem.Allocator,
+            build_id: []const u8,
+            offset: u64,
+        ) !?[]const u8 {
+            try testing.expectEqualSlices(u8, fake.id_expected, build_id);
+            fake.asked[fake.count] = offset;
+            fake.count += 1;
+            return try names.dupe(u8, if (offset < 0x200) "do_syscall_64" else "entry_SYSCALL_64");
+        }
+    };
+    var id_buffer: [agent.kernel_symbols.id_bytes_max]u8 = undefined;
+    var fake = KernelFake{ .id_expected = agent.kernel_symbols.id(&id_buffer, "kk", text).? };
+
+    const stacks = [_]Message.Stack{.{
+        .samples = 1,
+        .user = &.{},
+        .kernel = &.{ text + 0x100, text + 0x501 },
+        .complete = true,
+    }};
+    var message = message_test(&.{}, &stacks);
+    message.kernel = .{ .release = "test", .build_id = "kk", .text_address = text };
+    const resolved = try window_resolve(arena.allocator(), &fake, &message);
+
+    // The leaf is exact; the next is a return address, looked up one byte back.
+    try testing.expectEqual(@as(u64, 0x100), fake.asked[0]);
+    try testing.expectEqual(@as(u64, 0x500), fake.asked[1]);
+    try testing.expectEqualStrings("do_syscall_64", resolved[0].frames[0].function.?);
+    try testing.expectEqualStrings("[kernel]", resolved[0].frames[0].module.?);
+    try testing.expect(resolved[0].frames[1].kernel);
+
+    // A window that does not say where `_text` is: the addresses stay as they are.
+    message.kernel.text_address = null;
+    const unnamed = try window_resolve(arena.allocator(), &fake, &message);
+    try testing.expectEqual(@as(?[]const u8, null), unnamed[0].frames[0].function);
+    try testing.expectEqual(@as(usize, 2), fake.count);
 }

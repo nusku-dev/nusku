@@ -90,7 +90,7 @@ pub fn profile(
 
     var offer: Offer = undefined;
     const wanted = comptime binaries_wanted(@TypeOf(context));
-    try offer.init(gpa, wanted, options.pid, session.vdso_image());
+    try offer.init(gpa, wanted, options.pid, session.vdso_image(), session.kernel);
     defer offer.deinit(gpa);
     // Also when the run fails: a binary in flight is aborted, not left half sent.
     defer if (wanted) offer.stop(context);
