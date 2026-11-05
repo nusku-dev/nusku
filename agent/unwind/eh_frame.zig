@@ -44,8 +44,8 @@ pub const EhFrame = struct {
     /// relative to where they are stored, so this is needed to turn them into addresses.
     vaddr: u64,
 
-    pub fn iterator(self: EhFrame) Iterator {
-        return .{ .section = self };
+    pub fn iterator(eh_frame: EhFrame) Iterator {
+        return .{ .section = eh_frame };
     }
 };
 
@@ -55,13 +55,13 @@ pub const Iterator = struct {
     cie_cache: ?Cie = null,
 
     /// The next FDE, or null at the end. CIEs are not returned; each FDE carries its own.
-    pub fn next(self: *Iterator) Error!?Fde {
-        const bytes = self.section.bytes;
-        while (self.pos < bytes.len) {
-            var reader = Reader{ .bytes = bytes, .pos = self.pos, .end = bytes.len };
+    pub fn next(iterator: *Iterator) Error!?Fde {
+        const bytes = iterator.section.bytes;
+        while (iterator.pos < bytes.len) {
+            var reader = Reader{ .bytes = bytes, .pos = iterator.pos, .end = bytes.len };
             const length = try reader.int(u32);
             if (length == 0) { // the terminator
-                self.pos = bytes.len;
+                iterator.pos = bytes.len;
                 return null;
             }
             // The 64-bit form, which nothing uses.
@@ -69,15 +69,15 @@ pub const Iterator = struct {
             const body_end = std.math.add(usize, reader.pos, length) catch return error.Malformed;
             if (body_end > bytes.len) return error.Truncated;
             reader.end = body_end;
-            self.pos = body_end;
+            iterator.pos = body_end;
 
             const id_pos = reader.pos;
             const id = try reader.int(u32);
             if (id == 0) continue; // a CIE: it is read when an FDE points at it
             if (id > id_pos) return error.Malformed;
-            const cie = try self.cie_at(id_pos - id);
+            const cie = try iterator.cie_at(id_pos - id);
 
-            const pc_begin = try pointer_read(&reader, cie.fde_encoding, self.section.vaddr);
+            const pc_begin = try pointer_read(&reader, cie.fde_encoding, iterator.section.vaddr);
             const range = try formatted_read(&reader, cie.fde_encoding & 0x0f);
             if (@as(i64, @bitCast(range)) < 0) return error.Malformed;
             const pc_end = std.math.add(u64, pc_begin, range) catch return error.Malformed;
@@ -95,11 +95,11 @@ pub const Iterator = struct {
         return null;
     }
 
-    fn cie_at(self: *Iterator, offset: usize) Error!Cie {
-        if (self.cie_cache) |cached| {
+    fn cie_at(iterator: *Iterator, offset: usize) Error!Cie {
+        if (iterator.cie_cache) |cached| {
             if (cached.offset == offset) return cached;
         }
-        const bytes = self.section.bytes;
+        const bytes = iterator.section.bytes;
         var reader = Reader{ .bytes = bytes, .pos = offset, .end = bytes.len };
         const length = try reader.int(u32);
         if (length == 0 or length == 0xffffffff) return error.Malformed;
@@ -143,7 +143,7 @@ pub const Iterator = struct {
             reader.pos = data_end;
         }
         cie.instructions = bytes[reader.pos..reader.end];
-        self.cie_cache = cie;
+        iterator.cie_cache = cie;
         return cie;
     }
 };

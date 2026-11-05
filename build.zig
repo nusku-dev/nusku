@@ -24,6 +24,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Code that the agent and the server both use.
+    const shared = b.createModule(.{
+        .root_source_file = b.path("shared/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // The agent: its libraries, kernel programs, module and tests all live in agent/build.zig.
     const agent_mod = agent.add(b, .{
         .target = target,
@@ -40,6 +47,9 @@ pub fn build(b: *std.Build) void {
         .log = log_mod,
         .agent = agent_mod,
     });
+
+    server_mod.addImport("shared", shared);
+    agent_mod.addImport("shared", shared);
 
     const exe = b.addExecutable(.{
         .name = "nusku",

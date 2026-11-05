@@ -4,6 +4,7 @@
 const std = @import("std");
 const process_maps = @import("process_maps.zig");
 const build_id = @import("build_id.zig");
+const vdso = @import("vdso.zig");
 
 const Mapping = process_maps.Mapping;
 
@@ -30,7 +31,7 @@ pub fn build(
     mappings: []const Mapping,
     pid: u32,
     previous: []const Region,
-) ![]const Region {
+) ![]Region {
     const regions = try arena.alloc(Region, mappings.len);
     for (mappings, regions, 0..) |mapping, *region, index| {
         assert(mapping.start < mapping.end);
@@ -47,6 +48,19 @@ pub fn build(
         };
     }
     return regions;
+}
+
+/// The vDSO has no file to read a build ID from, but it is the agent's own image, and its
+/// identity is what the server needs to find the vDSO's symbols. Gives the [vdso] region that
+/// ID, when the image is the same as the target's (their sizes agree; a 32-bit target's is not).
+/// The ID points into the image, which must outlive the regions.
+pub fn vdso_mark(regions: []Region, image: ?*const vdso.Image) void {
+    const found = image orelse return;
+    const id = found.build_id orelse return;
+    for (regions) |*region| {
+        if (!std.mem.eql(u8, region.path, vdso.path)) continue;
+        if (found.matches(region.end - region.start)) region.build_id = id;
+    }
 }
 
 /// Reuses the build ID of a region for the same file, first from this table, then from
@@ -139,6 +153,53 @@ test "locate finds the region and the offset inside its file" {
 
     try std.testing.expect(locate(&regions, 0x3000) == null); // the end is exclusive
     try std.testing.expect(locate(&regions, 0xfff) == null);
-    const vdso = locate(&regions, 0x7fff) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("[vdso]", vdso.region.path);
+    const vdso_test = locate(&regions, 0x7fff) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("[vdso]", vdso_test.region.path);
+}
+
+test "vdso_mark gives the [vdso] region the build ID of the agent's own image" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const image = (try vdso.read(arena.allocator())) orelse return error.SkipZigTest;
+    const id = image.build_id orelse return error.SkipZigTest;
+
+    const file = Region{
+        .start = 0x1000,
+        .end = 0x2000,
+        .offset = 0,
+        .inode = 1,
+        .path = "/bin/a",
+        .build_id = null,
+    };
+    var same = file;
+    same.start = 0x7000;
+    same.end = 0x7000 + image.bytes.len;
+    same.path = vdso.path;
+    var other = same;
+    other.end += 4096;
+    var regions = [_]Region{ file, same, other };
+    vdso_mark(&regions, &image);
+
+    try std.testing.expect(regions[0].build_id == null); // a file keeps what it had
+    try std.testing.expectEqualSlices(u8, id, regions[1].build_id.?);
+    try std.testing.expect(regions[2].build_id == null); // another size: not our image
+}
+
+test "this process: the [vdso] region of the real maps gets an ID" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const pid = process.current_pid();
+
+    const image = (try vdso.read(arena.allocator())) orelse return error.SkipZigTest;
+    if (image.build_id == null) return error.SkipZigTest;
+    const regions = try build(arena.allocator(), try read(arena.allocator(), pid), pid, &.{});
+    vdso_mark(regions, &image);
+
+    for (regions) |region| {
+        if (std.mem.eql(u8, region.path, vdso.path)) {
+            try std.testing.expect(region.build_id != null);
+            return;
+        }
+    }
+    return error.SkipZigTest; // This process maps no [vdso].
 }

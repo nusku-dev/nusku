@@ -16,7 +16,7 @@ const timer = @import("../../os/timer.zig");
 const elf_file = @import("../../unwind/elf_file.zig");
 const module = @import("../../unwind/module.zig");
 const table = @import("../../unwind/table.zig");
-const File = @import("../../os/file.zig").File;
+const File = @import("shared").File;
 const session_file = @import("../../session.zig");
 const collector_file = @import("../../cpu/collector.zig");
 
@@ -27,7 +27,7 @@ const source = @embedFile("go/frameless.go");
 fn table_of(path: [:0]const u8, target: *table.Table) !module.Built {
     var file = try File.open(path);
     defer file.deinit();
-    var loaded = try elf_file.load(&file);
+    var loaded = try elf_file.load(&file, &elf_file.sections_unwind, elf_file.file_size_max);
     defer loaded.deinit();
     // Its text segment is mapped at file offset 0x1000, at 0x401000: as /proc/<pid>/maps says.
     return module.table_build(target, testing.allocator, .{

@@ -14,6 +14,7 @@ const regions_file = @import("target/regions.zig");
 const kernel = @import("target/kernel.zig");
 const tables_file = @import("unwind/tables.zig");
 const collector_file = @import("cpu/collector.zig");
+const vdso = @import("target/vdso.zig");
 const log = @import("log.zig").agent;
 
 const Region = regions_file.Region;
@@ -45,8 +46,9 @@ pub const Session = struct {
     /// Owns `kernel`: read once, it cannot change while the agent runs.
     kernel_arena: std.heap.ArenaAllocator,
     /// The regions of the last successful read live in `regions_arenas[regions_current]`; the
-    /// next read goes into the other one, and reuses the build IDs of these.
-    regions: []const Region,
+    /// next read goes into the other one, and reuses the build IDs of these. Mutable, so the
+    /// [vdso] region can be given its build ID once the image is read (`init`).
+    regions: []Region,
     regions_arenas: [2]std.heap.ArenaAllocator,
     regions_current: u1,
     tables: Tables,
@@ -93,11 +95,15 @@ pub const Session = struct {
                 .needs = "CAP_SYSLOG",
             });
         }
-        // Without a first table of regions there is nothing to unwind against.
-        if (!try session.regions_refresh_read()) return error.ProcessNotFound;
+        // Without a first table of regions there is nothing to unwind against. Read first:
+        // the target may be short-lived, and a zombie has no maps.
+        if (!try session.regions_refresh_read(null)) return error.ProcessNotFound;
 
         try session.tables.init(gpa);
         errdefer session.tables.deinit(gpa);
+
+        // The first regions were read before the vDSO image existed.
+        regions_file.vdso_mark(session.regions, session.vdso_image());
         try session.tables.sync(gpa, session.pid, session.regions);
 
         if (options.metrics.contains(.cpu)) {
@@ -145,7 +151,7 @@ pub const Session = struct {
 
         if (session.cpu) |*cpu| try cpu.generation_advance();
         // Also the grace time between the generation's advance and its drain.
-        if (try session.regions_refresh_read()) {
+        if (try session.regions_refresh_read(session.vdso_image())) {
             try session.tables.sync(gpa, session.pid, session.regions);
         }
 
@@ -167,7 +173,9 @@ pub const Session = struct {
 
     /// Reads the target's regions into the spare arena, and makes them current. False when the
     /// target has exited: the last regions are kept, so a final report can still use them.
-    fn regions_refresh_read(session: *Session) !bool {
+    /// `image` is the agent's own vDSO image, once the tables have read it: with it the [vdso]
+    /// region gets a build ID. Null before that (see `init`).
+    fn regions_refresh_read(session: *Session, image: ?*const vdso.Image) !bool {
         const spare = session.regions_current +% 1;
         const arena = &session.regions_arenas[spare];
         // Keeping the capacity, a steady target's reads stop allocating after the first.
@@ -189,13 +197,16 @@ pub const Session = struct {
         }
 
         const regions_count_before = session.regions.len;
-        session.regions = try regions_file.build(
+        const built = try regions_file.build(
             arena.allocator(),
             mappings,
             session.pid,
             session.regions,
         );
+        regions_file.vdso_mark(built, image);
+        session.regions = built;
         session.regions_current = spare;
+
         // The target loaded or unloaded code (dlopen, a plugin, a JIT region).
         if (regions_count_before != 0 and session.regions.len != regions_count_before) {
             log.debug("target regions changed", .{
@@ -204,6 +215,11 @@ pub const Session = struct {
             });
         }
         return true;
+    }
+
+    /// The agent's own vDSO image, once the tables have read it. Lives as long as the session.
+    pub fn vdso_image(session: *const Session) ?*const vdso.Image {
+        return if (session.tables.vdso_image) |*image| image else null;
     }
 };
 

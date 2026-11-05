@@ -2,12 +2,14 @@
 //! matching binary or debug info. Only the first part of the file is ever read.
 const std = @import("std");
 const process_maps = @import("process_maps.zig");
-const File = @import("../os/file.zig").File;
+const process = @import("../os/process.zig");
 
 /// How much of the start of a file we read. The ELF header, the program headers and the
 /// note segments lie in there for practically every binary. If a note does not, the file is
 /// reported as having no build ID.
 pub const prefix_size = 64 * 1024;
+/// Longer build IDs are refused. GNU ld writes 20 bytes (SHA-1); 64 leaves room for any hash.
+pub const id_bytes_max = 64;
 
 const PT_NOTE = 4;
 const NT_GNU_BUILD_ID = 3;
@@ -47,17 +49,12 @@ pub fn from_prefix(prefix: []const u8) ?[]const u8 {
 pub fn for_mapping(arena: std.mem.Allocator, pid: u32, mapping: process_maps.Mapping) !?[]const u8 {
     if (mapping.deleted or mapping.path.len == 0 or mapping.path[0] != '/') return null;
 
-    // A path can be up to 4096 bytes; the prefix "/proc/4294967295/root" is 21 more.
-    var path_buf: [4200]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/root{s}", .{ pid, mapping.path }) catch
-        return null;
-
-    var file = File.open(path) catch return null;
+    var file = process.file_open(pid, mapping.path) catch return null;
     defer file.deinit();
 
-    var prefix_buf: [prefix_size]u8 = undefined;
-    const n = file.read_at(&prefix_buf, 0) catch return null;
-    const id = from_prefix(prefix_buf[0..n]) orelse return null;
+    var prefix_buffer: [prefix_size]u8 = undefined;
+    const n = file.read_at(&prefix_buffer, 0) catch return null;
+    const id = from_prefix(prefix_buffer[0..n]) orelse return null;
     return try arena.dupe(u8, id);
 }
 
@@ -86,7 +83,7 @@ pub fn find_build_id(notes: []const u8) ?[]const u8 {
         const desc_end = std.math.add(usize, desc, descsz) catch return null;
         if (desc_end > notes.len) return null; // Truncated.
 
-        if (kind == NT_GNU_BUILD_ID and namesz == 4 and descsz > 0 and descsz <= 64 and
+        if (kind == NT_GNU_BUILD_ID and namesz == 4 and descsz > 0 and descsz <= id_bytes_max and
             std.mem.eql(u8, notes[name..][0..4], "GNU\x00"))
         {
             return notes[desc..][0..descsz];
@@ -97,8 +94,8 @@ pub fn find_build_id(notes: []const u8) ?[]const u8 {
 }
 
 // ------------------------------------------------------------------------------------- tests
-fn put(comptime T: type, buf: []u8, offset: usize, value: T) void {
-    std.mem.writeInt(T, buf[offset..][0..@sizeOf(T)], value, .little);
+fn put(comptime T: type, buffer: []u8, offset: usize, value: T) void {
+    std.mem.writeInt(T, buffer[offset..][0..@sizeOf(T)], value, .little);
 }
 
 /// A tiny hand-made ELF: header, two program headers, and a note segment holding an ABI tag

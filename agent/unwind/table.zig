@@ -343,20 +343,20 @@ pub const RowIterator = struct {
         };
     }
 
-    pub fn next(self: *RowIterator) !?Entry {
-        while (!self.done) {
-            const start = self.machine.loc;
-            const advance = try self.machine.run_to_advance(&self.program);
+    pub fn next(row_iterator: *RowIterator) !?Entry {
+        while (!row_iterator.done) {
+            const start = row_iterator.machine.loc;
+            const advance = try row_iterator.machine.run_to_advance(&row_iterator.program);
 
-            var end = self.pc_end;
+            var end = row_iterator.pc_end;
             if (advance) |to| {
                 // The last row reaches the end.
-                if (to < self.pc_end) end = to else self.done = true;
+                if (to < row_iterator.pc_end) end = to else row_iterator.done = true;
             } else {
-                self.done = true;
+                row_iterator.done = true;
             }
-            const row = self.machine.row;
-            self.machine.loc = end;
+            const row = row_iterator.machine.row;
+            row_iterator.machine.loc = end;
             if (end > start) return Entry{ .start = start, .end = end, .row = row };
         }
         return null;

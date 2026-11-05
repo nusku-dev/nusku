@@ -87,8 +87,8 @@ test "this process has a vDSO, a whole ELF file with unwind information" {
 
     try std.testing.expect(image.bytes.len >= 4096);
     try std.testing.expectEqual(@as(u8, 2), image.bytes[4]); // 64-bit.
-    const elf_sections = @import("../unwind/elf_sections.zig");
-    const eh_frame = try elf_sections.find(image.bytes, ".eh_frame");
+    const elf = @import("shared").elf;
+    const eh_frame = try elf.find(image.bytes, ".eh_frame");
     try std.testing.expect(eh_frame != null);
     try std.testing.expect(image.matches(image.bytes.len));
     try std.testing.expect(!image.matches(image.bytes.len + 4096));

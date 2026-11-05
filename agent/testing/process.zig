@@ -7,7 +7,7 @@ const linux = std.os.linux;
 const timer = @import("../os/timer.zig");
 const process = @import("../os/process.zig");
 const vdso = @import("../target/vdso.zig");
-const elf_sections = @import("../unwind/elf_sections.zig");
+const elf = @import("shared").elf;
 
 /// Forks a child that keeps one CPU busy in its own code for `duration_ms`, then exits.
 pub fn burner_spawn(duration_ms: u64) error{ForkFailed}!u32 {
@@ -44,10 +44,10 @@ pub fn vdso_clock_gettime(gpa: std.mem.Allocator) !?ClockGettime {
     var image = (try vdso.read(gpa)) orelse return null;
     defer image.deinit(gpa);
 
-    const symbols_section = (try elf_sections.find(image.bytes, ".dynsym")) orelse return null;
-    const names_section = (try elf_sections.find(image.bytes, ".dynstr")) orelse return null;
-    const symbols = elf_sections.bytes_of(image.bytes, symbols_section) orelse return null;
-    const names = elf_sections.bytes_of(image.bytes, names_section) orelse return null;
+    const symbols_section = (try elf.find(image.bytes, ".dynsym")) orelse return null;
+    const names_section = (try elf.find(image.bytes, ".dynstr")) orelse return null;
+    const symbols = elf.bytes_of(image.bytes, symbols_section) orelse return null;
+    const names = elf.bytes_of(image.bytes, names_section) orelse return null;
 
     // An Elf64_Sym: name u32, info u8, other u8, section u16, value u64, size u64.
     var offset: usize = 0;

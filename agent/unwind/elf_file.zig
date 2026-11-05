@@ -9,11 +9,9 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const file_module = @import("../os/file.zig");
+const File = @import("shared").File;
 const anonymous_memory = @import("../os/anonymous_memory.zig");
-const elf_sections = @import("elf_sections.zig");
-
-const File = file_module.File;
+const elf = @import("shared").elf;
 
 /// Address space only, so this can be generous. Larger files are refused, not truncated.
 pub const file_size_max: u64 = 4 << 30;
@@ -22,6 +20,12 @@ const elf_header_size = 64;
 const program_header_size = 56;
 const section_header_size = 64;
 const machine_x86_64 = 62;
+/// The section names of a linked binary are a few hundred bytes. The size comes from the file,
+/// so without a limit a hostile file could make the agent read gigabytes for its names.
+const names_size_max = 1 << 20;
+
+/// What the unwinder reads: the unwind information of ordinary and of Go binaries.
+pub const sections_unwind = [_][]const u8{ ".eh_frame", ".gopclntab" };
 
 pub const Loaded = struct {
     /// As long as the file. The parts that were not read are zeros that cost nothing.
@@ -35,9 +39,10 @@ pub const Loaded = struct {
     }
 };
 
-/// Reads what the unwinder needs from an open file. A file without section headers loads fine;
-/// it just has no sections to find.
-pub fn load(file: *const File) !Loaded {
+/// Reads the headers and the `sections` asked for from an open file. A file without section
+/// headers loads fine; it just has no sections to find. A section that would take the bytes
+/// read past `read_max` is refused with `error.TooLarge`, before it is read.
+pub fn load(file: *const File, sections: []const []const u8, read_max: u64) !Loaded {
     const size = try file.size_bytes();
     if (size < elf_header_size) return error.NotElf;
     if (size > file_size_max) return error.TooLarge;
@@ -76,12 +81,14 @@ pub fn load(file: *const File) !Loaded {
             section_headers_offset + @as(u64, section_names_index) * section_header_size;
         const names_offset = int_read(u64, bytes, names_header + 24);
         const names_size = int_read(u64, bytes, names_header + 32);
+        if (names_size > names_size_max) return error.TooLarge;
         try range_read(file, bytes, names_offset, names_size, &read_size);
 
-        // Go binaries carry their unwind information in .gopclntab instead (module.zig).
-        for ([_][]const u8{ ".eh_frame", ".gopclntab" }) |name| {
-            const found = elf_sections.find(bytes, name) catch return error.NotElf;
+        for (sections) |name| {
+            const found = elf.find(bytes, name) catch return error.NotElf;
             if (found) |section| {
+                const room = std.math.sub(u64, read_max, read_size) catch return error.TooLarge;
+                if (section.size > room) return error.TooLarge;
                 try range_read(file, bytes, section.offset, section.size, &read_size);
             }
         }
@@ -128,16 +135,16 @@ fn file_read_whole(gpa: std.mem.Allocator, path: [:0]const u8) ![]u8 {
 test "our own executable: the parts read are the same as in the file, and much smaller" {
     var file = try File.open("/proc/self/exe");
     defer file.deinit();
-    var loaded = try load(&file);
+    var loaded = try load(&file, &sections_unwind, file_size_max);
     defer loaded.deinit();
 
     const whole = try file_read_whole(testing.allocator, "/proc/self/exe");
     defer testing.allocator.free(whole);
     try testing.expectEqual(whole.len, loaded.bytes.len);
 
-    const expected = (try elf_sections.find(whole, ".eh_frame")) orelse
+    const expected = (try elf.find(whole, ".eh_frame")) orelse
         return error.TestUnexpectedResult;
-    const found = (try elf_sections.find(loaded.bytes, ".eh_frame")) orelse
+    const found = (try elf.find(loaded.bytes, ".eh_frame")) orelse
         return error.TestUnexpectedResult;
     try testing.expectEqual(expected.offset, found.offset);
     try testing.expectEqual(expected.size, found.size);
@@ -151,11 +158,29 @@ test "our own executable: the parts read are the same as in the file, and much s
 test "a file that is not ELF is refused" {
     var file = File.open("/etc/passwd") catch return error.SkipZigTest;
     defer file.deinit();
-    try testing.expectError(error.NotElf, load(&file));
+    try testing.expectError(error.NotElf, load(&file, &sections_unwind, file_size_max));
 }
 
 test "a file that reports size 0, as every /proc file does, is refused" {
     var file = try File.open("/proc/self/cmdline");
     defer file.deinit();
-    try testing.expectError(error.NotElf, load(&file));
+    try testing.expectError(error.NotElf, load(&file, &sections_unwind, file_size_max));
+}
+
+test "a section over the limit is refused, and symbol sections are read when asked" {
+    var file = try File.open("/proc/self/exe");
+    defer file.deinit();
+    try testing.expectError(error.TooLarge, load(&file, &sections_unwind, 1));
+
+    var loaded = try load(&file, &.{ ".symtab", ".strtab" }, file_size_max);
+    defer loaded.deinit();
+    const symbols = (try elf.find(loaded.bytes, ".symtab")) orelse return error.SkipZigTest;
+    const names = (try elf.find(loaded.bytes, ".strtab")) orelse return error.SkipZigTest;
+    // Both were read: their bytes are not the zeros of the unread parts.
+    const symbols_bytes = elf.bytes_of(loaded.bytes, symbols) orelse
+        return error.TestUnexpectedResult;
+    const names_bytes = elf.bytes_of(loaded.bytes, names) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOfNone(u8, symbols_bytes, &.{0}) != null);
+    try testing.expect(std.mem.indexOfNone(u8, names_bytes, &.{0}) != null);
 }

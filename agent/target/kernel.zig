@@ -1,7 +1,7 @@
 //! The identity of the running kernel, so the server can find its symbols for kernel frames.
 
 const std = @import("std");
-const File = @import("../os/file.zig").File;
+const File = @import("shared").File;
 
 const assert = std.debug.assert;
 
@@ -51,26 +51,26 @@ pub fn read(arena: std.mem.Allocator) !Identity {
 /// current kernels. Reads kallsyms front to back in chunks and stops at `_text`: the first lines
 /// are per-CPU variables with tiny addresses, so `_text` can be tens of kilobytes in.
 fn text_address_scan(comptime chunk: usize, source: *const File) ?u64 {
-    var buf: [chunk]u8 = undefined;
-    var kept: usize = 0; // bytes of an unfinished line, kept at the start of buf
+    var buffer: [chunk]u8 = undefined;
+    var kept: usize = 0; // bytes of an unfinished line, kept at the start of buffer
     var offset: u64 = 0;
     var stext: ?u64 = null;
     const limit = 4 * 1024 * 1024; // no kernel has _text this deep
 
     while (offset < limit) {
-        const n = source.read_at(buf[kept..], offset) catch break;
+        const n = source.read_at(buffer[kept..], offset) catch break;
         if (n == 0) break;
         offset += n;
         const filled = kept + n;
 
         // Work on whole lines only. No newline at all means a line longer than the buffer,
         // which is not kallsyms.
-        const lines_end = (std.mem.lastIndexOfScalar(u8, buf[0..filled], '\n') orelse break) + 1;
-        if (address_of(buf[0..lines_end], "_text")) |address| return address;
-        if (stext == null) stext = address_of(buf[0..lines_end], "_stext");
+        const lines_end = (std.mem.lastIndexOfScalar(u8, buffer[0..filled], '\n') orelse break) + 1;
+        if (address_of(buffer[0..lines_end], "_text")) |address| return address;
+        if (stext == null) stext = address_of(buffer[0..lines_end], "_stext");
 
         kept = filled - lines_end;
-        std.mem.copyForwards(u8, buf[0..kept], buf[lines_end..filled]);
+        std.mem.copyForwards(u8, buffer[0..kept], buffer[lines_end..filled]);
     }
     return stext;
 }

@@ -15,8 +15,8 @@ const map_file = @import("../bpf/map.zig");
 const loader = @import("../bpf/loader.zig");
 const libbpf = @import("../bpf/libbpf.zig");
 const unwind_wire = @import("../bpf/kernel/shared/unwind_wire.zig");
-const File = @import("../os/file.zig").File;
 const build_id = @import("../target/build_id.zig");
+const mapped_file = @import("../target/mapped_file.zig");
 const Region = @import("../target/regions.zig").Region;
 const vdso = @import("../target/vdso.zig");
 const elf_file = @import("elf_file.zig");
@@ -245,28 +245,16 @@ fn outcome_for(context: BuildContext, region: *const Region) !Outcome {
     const identity = identity_of(region);
     if (context.registry.lookup(identity)) |known| return known;
 
-    // The file as the process sees it, so files that exist only inside a container work.
-    var path_buffer: [4200]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/root{s}", .{
-        context.pid,
-        region.path,
-    }) catch return .{ .unavailable = .unreadable };
-    var file = File.open(path) catch return .{ .unavailable = .unreadable };
+    // Not remembered when it fails: the next report checks again.
+    const opened = mapped_file.open(context.pid, region, context.prefix_buffer);
+    var file = opened catch |err| switch (err) {
+        error.Unreadable => return .{ .unavailable = .unreadable },
+        error.WrongFile => return .{ .unavailable = .wrong_file },
+    };
     defer file.deinit();
 
-    // The path may lead to another file than the one the process mapped (an upgrade replaced
-    // it). Not remembered: the next report checks again.
-    if (region.build_id) |build_id_expected| {
-        const read = file.read_at(context.prefix_buffer, 0) catch
-            return .{ .unavailable = .unreadable };
-        const build_id_found = build_id.from_prefix(context.prefix_buffer[0..read]) orelse
-            return .{ .unavailable = .wrong_file };
-        if (!std.mem.eql(u8, build_id_found, build_id_expected)) {
-            return .{ .unavailable = .wrong_file };
-        }
-    }
-
-    var loaded = elf_file.load(&file) catch |err| switch (err) {
+    const loading = elf_file.load(&file, &elf_file.sections_unwind, elf_file.file_size_max);
+    var loaded = loading catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             log.debug("binary not readable as ELF", .{ .path = region.path, .cause = err });
@@ -466,8 +454,8 @@ test "this process: the vDSO gets a table, with a row for nearly every byte of i
     try testing.expect(mapping.module != unwind_wire.module_none);
 
     // Every address of .text, as the kernel will see it, against the table.
-    const elf_sections = @import("elf_sections.zig");
-    const text = (try elf_sections.find(image.bytes, ".text")) orelse
+    const elf = @import("shared").elf;
+    const text = (try elf.find(image.bytes, ".text")) orelse
         return error.TestUnexpectedResult;
     var covered: u64 = 0;
     var address = region.start + text.vaddr;

@@ -1,5 +1,6 @@
 //! Finds sections and loadable segments of a 64-bit little-endian ELF file, and the load bias
 //! of a mapping. Everything in the file is untrusted: each offset is checked before it is read.
+
 const std = @import("std");
 
 pub const Error = error{ NotElf, Truncated, Unsupported };
@@ -120,6 +121,21 @@ pub fn segment_mapped(file: []const u8, region_offset: u64) Error!?Segment {
     return null;
 }
 
+/// The loadable, executable segments of a file, into `out`. Returns how many. A file with more
+/// than `out.len` is refused rather than cut: a table built from half of them would be wrong.
+pub fn segments_executable(file: []const u8, out: []Segment) Error!usize {
+    const h = (try program_headers(file)) orelse return 0;
+    var count: usize = 0;
+    var i: u64 = 0;
+    while (i < h.count) : (i += 1) {
+        const segment = segment_executable(file, h, i) orelse continue;
+        if (count == out.len) return error.Unsupported;
+        out[count] = segment;
+        count += 1;
+    }
+    return count;
+}
+
 /// How far a loaded file is from the addresses written in it: the address in memory is the
 /// address in the file plus the bias. `region_start` and `region_offset` describe an
 /// EXECUTABLE mapping of the file: where it begins in memory and the file offset it maps from.
@@ -206,6 +222,29 @@ fn file_for_test(b: *[test_size]u8) void {
 
     section_put(b, 1, 1, 3, 0, 80, 21);
     section_put(b, 2, 11, 1, 0x2000, 64, 16);
+}
+
+test "segments_executable lists the loadable executable segments only" {
+    var file = [_]u8{0} ** (64 + 4 * phdr_size);
+    @memcpy(file[0..4], "\x7fELF");
+    file[4] = 2;
+    file[5] = 1;
+    std.mem.writeInt(u64, file[32..][0..8], 64, .little); // e_phoff
+    std.mem.writeInt(u16, file[54..][0..2], phdr_size, .little);
+    std.mem.writeInt(u16, file[56..][0..2], 4, .little);
+    program_header_put(&file, 0, PT_LOAD, PF_X | 4, 0x1000, 0x401000, 0x200); // r-x: kept
+    program_header_put(&file, 1, PT_LOAD, 6, 0x2000, 0x402000, 0x100); // rw-: not executable
+    program_header_put(&file, 2, 4, PF_X, 0x3000, 0x403000, 0x10); // PT_NOTE: not loadable
+    program_header_put(&file, 3, PT_LOAD, PF_X, 0x4000, 0x7f0000, 0x300); // x: kept
+
+    var out: [4]Segment = undefined;
+    const count = try segments_executable(&file, &out);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(u64, 0x401000), out[0].vaddr);
+    try std.testing.expectEqual(@as(u64, 0x7f0000), out[1].vaddr);
+
+    var small: [1]Segment = undefined;
+    try std.testing.expectError(error.Unsupported, segments_executable(&file, &small));
 }
 
 test "find returns where a section is in the file and in memory" {

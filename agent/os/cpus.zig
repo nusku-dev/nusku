@@ -3,16 +3,17 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const file_module = @import("file.zig");
-const File = file_module.File;
+const shared = @import("shared");
+
+const File = shared.File;
+const FileError = shared.FileError;
 
 /// "0-3,5,7-63\n" for 64 CPUs is a few bytes: the kernel writes consecutive CPUs as a range. Only
 /// thousands of CPUs online one in two would need more, and such a list is refused (ListTooLong):
 /// the caller then tries every possible CPU instead.
 const list_size_max = 4096;
 
-pub const Error = error{ ListMalformed, ListTooLong, CpuTooLarge } || file_module.ReadError ||
-    file_module.OpenError;
+pub const Error = error{ ListMalformed, ListTooLong, CpuTooLarge } || FileError;
 
 /// Sets `online[cpu]` for every online CPU and clears the others. `online.len` is the number of
 /// possible CPUs: a CPU the kernel lists outside of it is an error.

@@ -62,6 +62,9 @@ fn add_kernel_program(
 /// the tests that need root can be run with sudo without building as root.
 fn add_tests(b: *std.Build, module: *std.Build.Module, test_step: *std.Build.Step) void {
     const tests = b.addTest(.{ .root_module = module });
+    tests.build_id = .fast;
+    tests.use_llvm = true;
+    tests.use_lld = true;
     test_step.dependOn(&b.addRunArtifact(tests).step);
     test_step.dependOn(&b.addInstallArtifact(tests, .{ .dest_sub_path = "agent-tests" }).step);
 }

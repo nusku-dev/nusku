@@ -5,7 +5,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const c = std.c;
-const log = @import("../log.zig").agent;
 
 comptime {
     // pread and errno come from a POSIX libc.
@@ -124,9 +123,6 @@ fn read_error(code: c.E) ReadError {
         .IO => error.InputOutput,
         // The fd was closed or never opened: a bug in our code, not an operating error.
         .BADF => unreachable,
-        else => blk: {
-            log.warn("unexpected error reading a file", .{ .errno = @intFromEnum(code) });
-            break :blk error.Unexpected;
-        },
+        else => error.Unexpected,
     };
 }

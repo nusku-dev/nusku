@@ -5,8 +5,8 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const File = @import("../os/file.zig").File;
-const elf_sections = @import("../unwind/elf_sections.zig");
+const File = @import("shared").File;
+const elf = @import("shared").elf;
 
 extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
 
@@ -115,10 +115,10 @@ pub const Range = struct { start: u64, end: u64 };
 
 /// The address range of the function `name`, from the binary's symbol table.
 pub fn symbol_range(file: []const u8, name: []const u8) !?Range {
-    const symbols_section = (try elf_sections.find(file, ".symtab")) orelse return null;
-    const names_section = (try elf_sections.find(file, ".strtab")) orelse return null;
-    const symbols = elf_sections.bytes_of(file, symbols_section) orelse return null;
-    const names = elf_sections.bytes_of(file, names_section) orelse return null;
+    const symbols_section = (try elf.find(file, ".symtab")) orelse return null;
+    const names_section = (try elf.find(file, ".strtab")) orelse return null;
+    const symbols = elf.bytes_of(file, symbols_section) orelse return null;
+    const names = elf.bytes_of(file, names_section) orelse return null;
 
     // An Elf64_Sym: name u32, info u8, other u8, section u16, value u64, size u64.
     var offset: usize = 0;

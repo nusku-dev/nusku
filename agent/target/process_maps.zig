@@ -1,6 +1,6 @@
 //! Reads the executable mappings of a process from /proc/<pid>/maps.
 const std = @import("std");
-const File = @import("../os/file.zig").File;
+const File = @import("shared").File;
 const assert = std.debug.assert;
 
 /// /proc/<pid>/maps of a large process (a browser, a JVM) is a few hundred KiB.

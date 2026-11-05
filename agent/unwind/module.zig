@@ -4,7 +4,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const eh_frame = @import("eh_frame.zig");
-const elf_sections = @import("elf_sections.zig");
+const elf = @import("shared").elf;
 const go_pclntab = @import("go_pclntab.zig");
 const table = @import("table.zig");
 
@@ -31,21 +31,21 @@ pub const Built = struct {
 /// code, in a cgo binary, then has no rows: frame pointers unwind it, as before.)
 pub fn table_build(target: *table.Table, gpa: std.mem.Allocator, mapping: Mapping) !Built {
     assert(mapping.start < mapping.end);
-    const bias_found = try elf_sections.load_bias(mapping.file, mapping.start, mapping.offset);
+    const bias_found = try elf.load_bias(mapping.file, mapping.start, mapping.offset);
     const bias = bias_found orelse return error.NoUnwindInfo;
 
-    if (try elf_sections.find(mapping.file, ".gopclntab")) |section| {
-        const bytes = elf_sections.bytes_of(mapping.file, section) orelse return error.NoUnwindInfo;
-        const text = (try elf_sections.find(mapping.file, ".text")) orelse
+    if (try elf.find(mapping.file, ".gopclntab")) |section| {
+        const bytes = elf.bytes_of(mapping.file, section) orelse return error.NoUnwindInfo;
+        const text = (try elf.find(mapping.file, ".text")) orelse
             return error.NoUnwindInfo;
         const pclntab = try go_pclntab.Pclntab.init(bytes, text.vaddr);
         try target.init_go(gpa, &pclntab);
         return .{ .bias = bias, .source = .go_pclntab };
     }
 
-    const section = (try elf_sections.find(mapping.file, ".eh_frame")) orelse
+    const section = (try elf.find(mapping.file, ".eh_frame")) orelse
         return error.NoUnwindInfo;
-    const bytes = elf_sections.bytes_of(mapping.file, section) orelse return error.NoUnwindInfo;
+    const bytes = elf.bytes_of(mapping.file, section) orelse return error.NoUnwindInfo;
     const fdes = try fdes_sorted(gpa, bytes, section.vaddr);
     defer gpa.free(fdes);
     try target.init(gpa, fdes);
