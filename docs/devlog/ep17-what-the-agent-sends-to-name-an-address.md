@@ -204,14 +204,16 @@ is sent differently: once, on request, in small pieces.
 1. **Offer.** After each report, `regions_see` looks for build IDs not seen in this run, and
    queues those regions. It takes file regions, and `[vdso]` once it has its ID.
 2. **Ask.** The server answers `binary_known(build_id)`. If it already has the binary, from
-   another process or an earlier run, nothing more happens. This makes "once per build ID" true
-   across the whole fleet, not just per run.
+   another process or an earlier run, nothing more happens. It also says yes while another run
+   is sending the same binary, and for a binary it refused before. This makes "once per build
+   ID" true across the whole fleet, not just per run.
 3. **Open.** `binary.open` opens the file as the target sees it, and checks that the build ID in
    it is the one the target mapped. If an upgrade replaced the file, the agent sends nothing
    rather than the symbols of another build. It reads only the ELF headers (`elf_file.load`
    with no sections), to find where the four sections are.
 4. **Send.** `binary_begin(header)`, then the section bytes as chunks of 256 KiB, then
-   `binary_end`. If a hook fails or the run stops in the middle, the server gets
+   `binary_end`. The server may refuse the begin (another run got there first, or its upload
+   budget is full). If a hook fails or the run stops in the middle, the server gets
    `binary_abort`, so it never keeps half a binary.
 
 ### 4.2 Why it looks like a network stream
@@ -312,30 +314,126 @@ error: profile: `run.Run.binary_abort`: must not fail
 
 ## 6. On the server side
 
-The server owns the rest, and needs nothing from the target machine:
+The server does the naming, and needs nothing from the target machine. It has two paths: a
+binary arriving, which turns sections into a symbol table, and a query, which turns stacks of
+addresses into stacks of names.
 
-1. **Find the region** of an address. Regions are sorted and do not overlap, so this is a binary
-   search (`server/symbolize/regions.zig`, the first step, already there).
-2. **File offset** = `address - region.start + region.offset`, with `address - 1` for every
-   return address (all user frames after the first, and the first one too when
-   `leaf_is_return`).
-3. **Symbol table** of the build ID, built once from the sections the agent sent: a sorted array
-   of functions by file offset, searched by binary search.
-4. **Merge** equal stacks after naming, because two addresses in the same function become one
-   frame.
+### 6.1 A binary arrives (`control/run.zig`, `symbolize/upload.zig`, `symbolize/builder.zig`)
 
-All of this happens when someone asks for a profile, not when samples arrive. Samples stay small
-in the store, and when the symbolizer gets better (DWARF line numbers, Go's `.gopclntab` names,
-kernel symbols), old profiles get the better names without being taken again.
+```
+ agent, on the run's thread              server
+ ──────────────────────────              ──────
+ binary_known(id) ─────────────────────► stored? queued? being built? being sent? refused?
+ binary_begin(header) ─────────────────► upload_start: claim the ID, reserve the bytes
+                                          Upload.begin: one buffer, the size announced
+ binary_chunk × N ─────────────────────► in order, no gap, never past the announced size
+ binary_end ───────────────────────────► Upload.end → Received → build queue; the run goes on
+                                                                     │
+                                          builder thread: SymbolTable.init → Binaries.put
+```
+
+- **Everything that arrives is untrusted.** The header says how big each section is, so the
+  upload allocates once and checks every chunk against it. A chunk out of order, past its
+  section or empty ends the upload. The checks are covered by fuzz tests, which throw random
+  sequences of calls at `Upload` and random bytes at `SymbolTable.init`.
+- **A run holds a ticket while it sends.** `upload_start` claims the build ID, so two runs of
+  the same program do not both send libc. It also reserves the bytes from one budget for all
+  uploads (1 GiB). The bytes stay reserved until the table is built, because until then the
+  buffers are still in memory.
+- **The table is built on a thread of its own.** Building means sorting every function of the
+  file, which takes a while for a big binary. The run's thread is the agent's loop (Ep15), and
+  while that thread waits, nothing drains the kernel's ring buffer. An end-to-end run showed
+  it: samples of `SymbolTable.init` under `Transfer.pump`. So `binary_end` only queues
+  the buffers and returns. The builder thread builds the tables one at a time.
+- **A table too big to keep is remembered as refused.** Sending it again would fail the same
+  way, so `binary_known` says yes for it, and no run sends it again.
+
+### 6.2 The symbol table (`symbolize/symbol_table.zig`, `store/binaries.zig`)
+
+The table is built from `.symtab` when the file has one, otherwise from `.dynsym`. It keeps the
+functions that are defined in this file and lie in an executable segment, and nothing else.
+
+Each symbol's address is a virtual address in the file, so it is converted to the key the server
+uses: `file offset = vaddr - p_vaddr + p_offset` of the segment that holds it. This is the
+segment list the agent sent in the header (3.4).
+
+What is kept is small:
+
+- a sorted array of 16-byte entries `{ start, name, size }`, plus one blob with the names
+- aliases (two names at the same start) keep one name
+- a function with no size (assembly often has none) lasts until the next one
+
+A lookup is a binary search: the last entry that starts at or before the offset, if the offset
+is inside its size.
+
+`Binaries` keeps the tables by build ID within fixed limits, 1024 tables and 256 MiB. When a new
+one does not fit, the least recently used ones go. A table counts as used when a query names an
+address with it, and when a window arrives whose regions need it.
+
+### 6.3 A query (`server.zig`, `symbolize/normalize.zig`, `resolve.zig`, `merge.zig`)
+
+```
+profile(target, from, to)
+  ├─ windows_copy          under the lock: the windows that overlap the time range
+  ├─ for each window       its regions, checked once: sorted and apart, or none are trusted
+  │    for each user frame
+  │      region            binary search over the regions
+  │      file offset       address - start + offset, one byte back for a return address
+  │      Lookup.name       the cache, or else the table, under the lock for that one lookup
+  └─ merge                 equal stacks become one; most samples first
+```
+
+- **One byte back.** Every user frame after the first is a return address, so it points after
+  the call, sometimes into the next function. The call is at `address - 1`. The first frame
+  gets the same treatment when the agent set `leaf_is_return` (3.6).
+- **A small cache in front of the tables.** The same addresses come back in almost every stack:
+  every stack through a call site has the same return address. The lookup keeps 1024 recent
+  answers by `(build ID, file offset)`. That pair names the same function forever, so a cached
+  answer stays right even if the table is evicted while the query runs.
+- **The lock is never held for a whole query.** It is taken to copy the windows, then once per
+  lookup the cache could not answer. Reports keep arriving while a query runs.
+- **Merging compares functions, not addresses.** Two samples at different instructions of the
+  same function, on the same call path, are one stack. A frame without a name is compared by its
+  raw address.
+
+Names are made when someone asks for a profile, not when samples arrive. Samples stay small in
+the store, and when the symbolizer gets better (DWARF line numbers, Go's `.gopclntab` names,
+kernel symbols), old profiles get the better names without being profiled again.
+
+Two things a caller should know. Right after a run ends, its last binaries may still be on the
+builder's queue, so `builds_wait()` comes before a query that needs every name. And a profile
+says how many of the target's windows were lost on the way (`windows_rejected`), because those
+samples are missing from it.
+
+### 6.4 What it costs, and its limits
+
+| Limit | Value | Why |
+|---|---|---|
+| targets | 16 | each has its ring; when full, the oldest finished target makes room |
+| windows per target | 120 × 128 KiB | the store's memory is fixed when the server starts |
+| symbol tables | 1024, 256 MiB | least recently used go first |
+| one upload | 512 MiB | the header is untrusted; nothing bigger is allocated |
+| all uploads together | 1 GiB | from the first chunk until the table is built |
+| uploads at once | 64 | one claim per run |
+| build queue | 32 | a full queue refuses rather than grows |
+| refused binaries remembered | 64 | the most recent ones |
+| lookup cache | 1024 answers | per query |
 
 ## 7. What is not done yet
 
 - **Binaries without a build ID** are not offered. A fallback identity computed by the agent
   (for example a hash of the headers and size) would cover many Zig and Go binaries.
-- **Kernel symbols** are not sent. The identity is, so the server can find them itself.
+- **Kernel symbols** are not sent or named. The identity is sent, so the server can find them
+  itself.
 - **Go names from `.gopclntab`** and **DWARF line tables** are not sent yet. Stripped Go binaries
-  have no `.symtab`, so their frames stay unnamed until then.
+  have no `.symtab`, so their frames stay unnamed until then. `Frame.file` and `Frame.line` are
+  there for when they are.
 - **No retry.** A binary that failed once is not offered again in the same run.
+- **Nothing is kept on disk.** Symbol tables live in memory: a restarted server asks for every
+  binary again.
+- **A query copies its windows.** It is bounded (at most about 15 MiB), and it is what lets the
+  lock go while names are looked up. Reading straight from the ring is worth it only if queries
+  turn out to be slow.
 
 ## 8. Summary
 
@@ -348,3 +446,6 @@ kernel symbols), old profiles get the better names without being taken again.
   and every cost has a limit.
 - It fits into the existing loop: regions after each report, chunks on each tick, an abort at
   the end. The kernel side is unchanged.
+- The server checks everything it receives, builds each table on a thread of its own so the
+  agent never waits, and names addresses when a profile is asked for, through a cache keyed by
+  the same `(build ID, file offset)`.

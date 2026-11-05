@@ -60,8 +60,10 @@ pub const WindowRing = struct {
         if (ring.count == ring.messages.len) ring.count -= 1;
 
         const start = @as(usize, ring.head) * ring.window_bytes_max;
-        var fixed = std.heap.FixedBufferAllocator.init(ring.bytes[start..][0..ring.window_bytes_max]);
-        ring.messages[ring.head] = message.clone(fixed.allocator()) catch return error.WindowTooLarge;
+        const slot = ring.bytes[start..][0..ring.window_bytes_max];
+        var fixed = std.heap.FixedBufferAllocator.init(slot);
+        ring.messages[ring.head] = message.clone(fixed.allocator()) catch
+            return error.WindowTooLarge;
 
         ring.head = (ring.head + 1) % @as(u32, @intCast(ring.messages.len));
         ring.count += 1;
@@ -75,7 +77,14 @@ pub const WindowRing = struct {
     }
 };
 
+// ------------------------------------------------------------------------------------- tests
+
 const testing = std.testing;
+
+/// One stack of `user` frames.
+fn stacks_test(user: []const u64) [1]Message.Stack {
+    return .{.{ .samples = 1, .user = user, .kernel = &.{}, .complete = true }};
+}
 
 fn message_test(start_unix_ns: u64, stacks: []const Message.Stack) Message {
     return .{
@@ -91,7 +100,7 @@ fn message_test(start_unix_ns: u64, stacks: []const Message.Stack) Message {
 }
 
 test "a full ring keeps the newest windows, oldest dropped" {
-    const stacks = [_]Message.Stack{.{ .samples = 1, .user = &.{ 1, 2, 3 }, .kernel = &.{}, .complete = true }};
+    const stacks = stacks_test(&.{ 1, 2, 3 });
     var ring: WindowRing = undefined;
     try ring.init(testing.allocator, .{ .windows_max = 3, .window_bytes_max = 4096 });
     defer ring.deinit(testing.allocator);
@@ -105,9 +114,9 @@ test "a full ring keeps the newest windows, oldest dropped" {
 }
 
 test "a message too big for a window is rejected and the ring stays consistent" {
-    const small = [_]Message.Stack{.{ .samples = 1, .user = &.{1}, .kernel = &.{}, .complete = true }};
+    const small = stacks_test(&.{1});
     const big_frames = [_]u64{0} ** 1000; // 8000 bytes, more than a window
-    const big = [_]Message.Stack{.{ .samples = 1, .user = &big_frames, .kernel = &.{}, .complete = true }};
+    const big = stacks_test(&big_frames);
 
     var ring: WindowRing = undefined;
     try ring.init(testing.allocator, .{ .windows_max = 3, .window_bytes_max = 4096 });

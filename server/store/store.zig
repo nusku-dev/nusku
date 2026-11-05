@@ -1,5 +1,8 @@
 //! Where the server keeps what the agents report: one ring of windows per target, found by
 //! id. Single-threaded: whoever shares a store between threads puts a lock around it.
+//!
+//! A target outlives its run, so its windows can still be queried. When the store is full, the
+//! oldest finished target makes room for a new one; targets still running are never dropped.
 
 const std = @import("std");
 const agent = @import("agent");
@@ -20,7 +23,10 @@ pub const Store = struct {
         id: TargetId,
         pid: u32,
         ring: WindowRing,
+        /// Windows lost on the way: too big for the run's buffer, or for a slot of the ring.
         windows_rejected: u64,
+        /// No more reports will come: the target may make room for a new one.
+        finished: bool,
     };
 
     pub const Options = struct {
@@ -40,23 +46,62 @@ pub const Store = struct {
     }
 
     /// Registers a process and reserves its ring. Not for the hot path: this allocates.
-    pub fn target_add(store: *Store, gpa: std.mem.Allocator, pid: u32) error{ TargetsFull, OutOfMemory }!TargetId {
+    pub fn target_add(
+        store: *Store,
+        gpa: std.mem.Allocator,
+        pid: u32,
+    ) error{ TargetsFull, OutOfMemory }!TargetId {
         assert(pid > 0);
         assert(store.count <= store.targets.len);
-        if (store.count == store.targets.len) return error.TargetsFull;
+        if (store.count == store.targets.len) {
+            const oldest = store.finished_oldest() orelse return error.TargetsFull;
+            store.target_remove(gpa, oldest) catch unreachable;
+        }
 
         const target = &store.targets[store.count];
         try target.ring.init(gpa, store.ring_options);
         target.id = store.next_id;
         target.pid = pid;
         target.windows_rejected = 0;
+        target.finished = false;
 
         store.count += 1;
         store.next_id += 1;
         return target.id;
     }
 
-    /// Null for an id that was never handed out. A linear scan: `targets_max` is small.
+    /// Marks the target as done: it keeps its windows until it is removed, or until its room
+    /// is needed.
+    pub fn target_finish(store: *Store, id: TargetId) error{TargetUnknown}!void {
+        const target = store.target_find(id) orelse return error.TargetUnknown;
+        target.finished = true;
+    }
+
+    /// Drops the target and its windows. Its id is never handed out again.
+    pub fn target_remove(
+        store: *Store,
+        gpa: std.mem.Allocator,
+        id: TargetId,
+    ) error{TargetUnknown}!void {
+        const target = store.target_find(id) orelse return error.TargetUnknown;
+        target.ring.deinit(gpa);
+        store.count -= 1;
+        // The last target fills the hole: the order of targets does not matter.
+        target.* = store.targets[store.count];
+    }
+
+    /// The finished target that started first (ids grow with time), if there is one.
+    fn finished_oldest(store: *const Store) ?TargetId {
+        var oldest: ?TargetId = null;
+        for (store.targets[0..store.count]) |target| {
+            if (!target.finished) continue;
+            if (oldest == null or target.id < oldest.?) oldest = target.id;
+        }
+        return oldest;
+    }
+
+    /// Null for an id that was never handed out, or removed. A linear scan: `targets_max` is
+    /// small.
     pub fn target_find(store: *Store, id: TargetId) ?*Target {
         for (store.targets[0..store.count]) |*target| {
             if (target.id == id) return target;
@@ -65,12 +110,23 @@ pub const Store = struct {
     }
 
     /// Keeps a copy of the message as the target's newest window. Does not allocate.
-    pub fn ingest(store: *Store, id: TargetId, message: *const Message) error{ TargetUnknown, WindowTooLarge }!void {
+    pub fn ingest(
+        store: *Store,
+        id: TargetId,
+        message: *const Message,
+    ) error{ TargetUnknown, WindowTooLarge }!void {
         const target = store.target_find(id) orelse return error.TargetUnknown;
         target.ring.push(message) catch |err| {
             target.windows_rejected += 1;
             return err;
         };
+    }
+
+    /// A window that never reached `ingest` (the run could not copy it): counted with the
+    /// rejected ones.
+    pub fn window_dropped(store: *Store, id: TargetId) error{TargetUnknown}!void {
+        const target = store.target_find(id) orelse return error.TargetUnknown;
+        target.windows_rejected += 1;
     }
 
     pub fn deinit(store: *Store, gpa: std.mem.Allocator) void {
@@ -83,6 +139,11 @@ pub const Store = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
+
+/// One stack of `user` frames.
+fn stacks_test(user: []const u64) [1]Message.Stack {
+    return .{.{ .samples = 1, .user = user, .kernel = &.{}, .complete = true }};
+}
 
 fn message_test(start_unix_ns: u64, stacks: []const Message.Stack) Message {
     return .{
@@ -107,7 +168,7 @@ fn store_test(targets_max: u32) !Store {
 }
 
 test "each target has its own windows" {
-    const stacks = [_]Message.Stack{.{ .samples = 1, .user = &.{1}, .kernel = &.{}, .complete = true }};
+    const stacks = stacks_test(&.{1});
     var store = try store_test(4);
     defer store.deinit(testing.allocator);
 
@@ -119,16 +180,18 @@ test "each target has its own windows" {
     try store.ingest(first, &message_test(2, &stacks));
     try store.ingest(second, &message_test(7, &stacks));
 
-    try testing.expectEqual(@as(u32, 2), store.target_find(first).?.ring.count);
-    try testing.expectEqual(@as(u32, 1), store.target_find(second).?.ring.count);
-    try testing.expectEqual(@as(u64, 2), store.target_find(first).?.ring.window_get(0).start_unix_ns);
-    try testing.expectEqual(@as(u64, 7), store.target_find(second).?.ring.window_get(0).start_unix_ns);
+    const first_ring = &store.target_find(first).?.ring;
+    const second_ring = &store.target_find(second).?.ring;
+    try testing.expectEqual(@as(u32, 2), first_ring.count);
+    try testing.expectEqual(@as(u32, 1), second_ring.count);
+    try testing.expectEqual(@as(u64, 2), first_ring.window_get(0).start_unix_ns);
+    try testing.expectEqual(@as(u64, 7), second_ring.window_get(0).start_unix_ns);
 }
 
 test "an unknown target, a full store and a message too big are errors, counted" {
-    const small = [_]Message.Stack{.{ .samples = 1, .user = &.{1}, .kernel = &.{}, .complete = true }};
+    const small = stacks_test(&.{1});
     const big_frames = [_]u64{0} ** 200; // 1600 bytes, more than a window of 1024
-    const big = [_]Message.Stack{.{ .samples = 1, .user = &big_frames, .kernel = &.{}, .complete = true }};
+    const big = stacks_test(&big_frames);
 
     var store = try store_test(1);
     defer store.deinit(testing.allocator);
@@ -141,4 +204,29 @@ test "an unknown target, a full store and a message too big are errors, counted"
     try testing.expectError(error.WindowTooLarge, store.ingest(id, &message_test(1, &big)));
     try testing.expectEqual(@as(u64, 1), store.target_find(id).?.windows_rejected);
     try store.ingest(id, &message_test(2, &small)); // still works afterwards
+}
+
+test "a full store makes room by dropping its oldest finished target, never a running one" {
+    const stacks = stacks_test(&.{1});
+    var store = try store_test(2);
+    defer store.deinit(testing.allocator);
+
+    const first = try store.target_add(testing.allocator, 100);
+    const second = try store.target_add(testing.allocator, 200);
+    try store.ingest(second, &message_test(5, &stacks));
+    try testing.expectError(error.TargetsFull, store.target_add(testing.allocator, 300));
+
+    try store.target_finish(second);
+    try store.target_finish(first);
+    const third = try store.target_add(testing.allocator, 300);
+    // The first started first: it went. The second, finished too, still has its window.
+    try testing.expect(store.target_find(first) == null);
+    try testing.expectEqual(@as(u32, 1), store.target_find(second).?.ring.count);
+    try testing.expectEqual(@as(u32, 300), store.target_find(third).?.pid);
+    try testing.expect(third != first and third != second);
+    try testing.expectError(error.TargetUnknown, store.ingest(first, &message_test(6, &stacks)));
+
+    try store.target_remove(testing.allocator, second);
+    try testing.expectError(error.TargetUnknown, store.target_remove(testing.allocator, second));
+    try testing.expectEqual(@as(u32, 1), store.count);
 }
