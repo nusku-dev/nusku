@@ -24,9 +24,13 @@ async function callJson<T>(fn: string, ...args: Arg[]): Promise<T> {
   return JSON.parse(await bridge().call(fn, ...args)) as T
 }
 
-/** Calls `onChange` whenever the connection to the backend opens or drops. */
+/**
+ * Calls `onChange` whenever the connection to the backend opens or drops. Without the bridge
+ * (the UI opened in a plain browser) it reports "not connected" once.
+ */
 export function onConnection(onChange: (connected: boolean) => void): void {
-  const ui = bridge()
+  const ui = globalThis.webui
+  if (!ui) return onChange(false)
   ui.setEventCallback((event) => onChange(event === ui.event.CONNECTED))
   onChange(ui.isConnected()) // it may have connected before we subscribed
 }

@@ -2,9 +2,13 @@
 //!
 //! Usage: embed <input dir> <output dir>
 //!
-//! Copies every file under the input to `<output>/files/<n>` and writes `<output>/assets.zig`,
-//! which lists each file with a complete HTTP response (headers and body) built at compile time.
-//! The app hands these straight to WebUI's file handler, with no copying or I/O at run time.
+//! Writes, for every file under the input, `<output>/files/<n>`: a complete HTTP response, the
+//! headers and then the file. `<output>/assets.zig` lists them with `@embedFile`. The app hands
+//! these straight to WebUI's file handler, with no copying or I/O at run time.
+//!
+//! The headers are added here, not with `++` at compile time: comptime concatenation keeps
+//! every byte as a separate value, and on a bundle of a megabyte or so that took gigabytes of
+//! compiler memory. `@embedFile` alone is a plain copy.
 
 const std = @import("std");
 const Io = std.Io;
@@ -48,25 +52,25 @@ pub fn main(init: std.process.Init) !void {
         \\pub const files = [_]File{
         \\
     );
+    try output.createDirPath(io, "files");
     for (paths.items, 0..) |path, index| {
-        const copy = try std.fmt.allocPrint(arena, "files/{d}", .{index});
-        try input.copyFile(path, output, copy, io, .{ .make_path = true });
-        try w.print("    .{{ .path = \"/{f}\", .response = response(\"{s}\", \"{s}\", @embedFile(\"{s}\")) }},\n", .{
-            std.zig.fmtString(path), mimeType(path), cacheControl(path), copy,
-        });
+        const body = try input.readFileAlloc(io, path, arena, .limited(64 << 20));
+        const response = try std.fmt.allocPrint(
+            arena,
+            "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nCache-Control: {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
+            .{ mimeType(path), cacheControl(path), body.len },
+        );
+        const name = try std.fmt.allocPrint(arena, "files/{d}", .{index});
+        const file = try output.createFile(io, name, .{});
+        defer file.close(io);
+        var buffer: [64 * 1024]u8 = undefined;
+        var writer = file.writer(io, &buffer);
+        try writer.interface.writeAll(response);
+        try writer.interface.writeAll(body);
+        try writer.interface.flush();
+        try w.print("    .{{ .path = \"/{f}\", .response = @embedFile(\"{s}\") }},\n", .{ std.zig.fmtString(path), name });
     }
-    try w.writeAll(
-        \\};
-        \\
-        \\fn response(comptime mime: []const u8, comptime cache: []const u8, comptime body: []const u8) []const u8 {
-        \\    @setEvalBranchQuota(10_000);
-        \\    return "HTTP/1.1 200 OK\r\nContent-Type: " ++ mime ++
-        \\        "\r\nCache-Control: " ++ cache ++
-        \\        "\r\nContent-Length: " ++ @import("std").fmt.comptimePrint("{d}", .{body.len}) ++
-        \\        "\r\nConnection: close\r\n\r\n" ++ body;
-        \\}
-        \\
-    );
+    try w.writeAll("};\n");
 
     try output.writeFile(io, .{ .sub_path = "assets.zig", .data = source.written() });
 }

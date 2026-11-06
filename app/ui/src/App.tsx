@@ -1,22 +1,16 @@
-import { useEffect, useState } from 'react'
-import { backend, onConnection, type AppInfo } from './lib/backend'
+import { AppShell } from '@/components/layout/AppShell'
+import { ProcessesPage } from '@/features/processes/ProcessesPage'
+import { SessionPage } from '@/features/sessions/SessionPage'
+import { SessionsPage } from '@/features/sessions/SessionsPage'
+import { useRoute } from '@/lib/router'
 
 export default function App() {
-  const [connected, setConnected] = useState(false)
-  const [info, setInfo] = useState<AppInfo | null>(null)
-
-  useEffect(() => onConnection(setConnected), [])
-
-  useEffect(() => {
-    if (connected) backend.appInfo().then(setInfo, console.error)
-  }, [connected])
-
+  const route = useRoute()
   return (
-    <main className="flex-col justify-center items-center">
-      <h1>{info ? `${info.name} ${info.version}` : 'Nusku'}</h1>
-      <p className={connected ? 'text-green-500' : 'text-red-500'}>
-        {connected ? 'Connected to backend' : 'Connecting…'}
-      </p>
-    </main>
+    <AppShell>
+      {route.name === 'processes' && <ProcessesPage />}
+      {route.name === 'sessions' && <SessionsPage />}
+      {route.name === 'session' && <SessionPage id={route.id} />}
+    </AppShell>
   )
 }
