@@ -53,6 +53,15 @@ pub const kernel_symbols = struct {
     pub const path = file.path;
 };
 
+/// Watching every process of the machine: see `processes.watch`.
+pub const processes = struct {
+    // pub const watch = watch_file.watch_processes;
+    // pub const Options = watch_file.Options;
+    // pub const StopReason = watch_file.StopReason;
+    // pub const Frame = watch_file.Frame;
+    pub const ProcessInfo = @import("processes/process.zig").ProcessInfo;
+};
+
 /// A report copied out of the agent's buffers, owned: what a server keeps.
 pub const Message = @import("message.zig").Message;
 
@@ -65,6 +74,7 @@ test {
     _ = @import("os/poll.zig");
     _ = @import("os/process.zig");
     _ = @import("os/timer.zig");
+    _ = @import("os/directory.zig");
 
     _ = @import("bpf/libbpf.zig");
     _ = @import("bpf/loader.zig");
@@ -112,6 +122,17 @@ test {
     _ = @import("testing/e2e/vdso_unwind.zig");
     _ = @import("testing/e2e/cpu_hotplug.zig");
     _ = @import("testing/e2e/go_unwind.zig");
+    _ = @import("testing/e2e/watch_processes.zig");
     // The example of devlog Ep14, compiled with every test build so the guide cannot rot.
     _ = @import("testing/examples/server_feed.zig");
+
+    _ = @import("processes/process.zig");
+    _ = @import("processes/proc.zig");
+    _ = @import("processes/stat.zig");
+    _ = @import("processes/statm.zig");
+    _ = @import("processes/status.zig");
+    _ = @import("processes/users.zig");
+    _ = @import("processes/cmdline.zig");
+
+    _ = @import("processes.zig");
 }

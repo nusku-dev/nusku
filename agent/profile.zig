@@ -17,7 +17,6 @@ const session_file = @import("session.zig");
 const log = @import("log.zig").agent;
 
 const Timer = timer.Timer;
-const Poll = poll_file.Poll;
 const Session = session_file.Session;
 const Metric = session_file.Metric;
 const Report = session_file.Report;
@@ -39,6 +38,21 @@ pub const Options = struct {
 /// a tick sees at most 634 samples, and only the new stacks among them take ring space, so the
 /// ring (cpu_wire.records_bytes) cannot fill between two ticks.
 const tick_ms_max = 100;
+
+/// What the profile loop waits on.
+const Source = enum {
+    /// Time to report a window.
+    report_timer,
+    /// Time to drain the kernel buffers, between reports.
+    tick_timer,
+    /// The target process exited.
+    target_exit,
+    /// Another thread asked the run to stop.
+    cancel,
+};
+const Poll = poll_file.Poll(Source);
+
+const Ready = std.EnumSet(Source);
 
 /// Profiles one process from start to finish, and returns why it stopped.
 ///
@@ -120,7 +134,7 @@ pub fn profile(
         .poll = &poll,
         .report_timer = &report_timer,
         .tick_timer = &tick_timer,
-        .deadline_ns = deadline_from(options.duration_s),
+        .deadline_ns = timer.deadline_from(options.duration_s),
         .offer = &offer,
     }, context, on_report);
 
@@ -138,12 +152,6 @@ fn options_check(options: Options) !void {
     if (options.interval_ms == 0) return error.InvalidInterval;
     if (options.metrics.count() == 0) return error.NoMetrics;
     if (!process.pid_valid(options.pid)) return error.InvalidPid;
-}
-
-/// When a run of `duration_s` seconds that starts now ends; null for a run without an end.
-fn deadline_from(duration_s: u32) ?u64 {
-    if (duration_s == 0) return null;
-    return timer.monotonic_ns() + @as(u64, duration_s) * std.time.ns_per_s;
 }
 
 /// What the loop waits on.
@@ -168,7 +176,7 @@ fn loop_run(
 ) !LoopResult {
     var reports: u64 = 0;
     while (true) {
-        const ready = try sources.poll.wait(timeout_ms(sources.deadline_ns));
+        const ready = try sources.poll.wait(timer.timeout_ms(sources.deadline_ns));
 
         if (ready.contains(.tick_timer)) {
             _ = try sources.tick_timer.expirations_read();
@@ -196,24 +204,13 @@ fn loop_run(
 
 /// Why the run must stop now, or null to go on. A cancel wins over the target's exit, which
 /// wins over the duration: the most specific reason is reported.
-fn stop_reason(ready: poll_file.Ready, deadline_ns: ?u64) ?StopReason {
+fn stop_reason(ready: Ready, deadline_ns: ?u64) ?StopReason {
     if (ready.contains(.cancel)) return .cancelled;
     if (ready.contains(.target_exit)) return .target_exited;
     if (deadline_ns) |deadline| {
         if (timer.monotonic_ns() >= deadline) return .duration;
     }
     return null;
-}
-
-/// How long poll may wait: until the deadline, so it wakes for it even if nothing is ready.
-fn timeout_ms(deadline_ns: ?u64) i32 {
-    const deadline = deadline_ns orelse return -1;
-    const now = timer.monotonic_ns();
-    if (now >= deadline) return 0;
-    // divCeil fails only on a zero divisor.
-    const remaining_ms = std.math.divCeil(u64, deadline - now, std.time.ns_per_ms) catch
-        unreachable;
-    return @intCast(@min(remaining_ms, std.math.maxInt(i32)));
 }
 
 fn report_deliver(
@@ -387,14 +384,6 @@ test "a context with binary hooks gets its reports and the binaries (needs root,
     try testing.expect(counter.aborts <= 1);
     try testing.expect(counter.known_asked >= counter.begins);
     try testing.expect(counter.chunks >= counter.begins);
-}
-
-test "the timeout reaches the deadline, and none means wait for ever" {
-    try testing.expectEqual(@as(i32, -1), timeout_ms(null));
-    try testing.expectEqual(@as(i32, 0), timeout_ms(0));
-    const timeout = timeout_ms(timer.monotonic_ns() + 50 * std.time.ns_per_ms);
-    try testing.expect(timeout > 0);
-    try testing.expect(timeout <= 50);
 }
 
 test "stops when the target exits and reports its CPU use (needs root, skipped otherwise)" {
