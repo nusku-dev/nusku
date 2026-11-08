@@ -1,34 +1,25 @@
-//! A profile as text. Two forms:
-//!
-//! `write`, for a person at a terminal: a header, the functions that took the time, and the
-//! call tree, with colors when the output is a terminal.
+//! A profile as text: `write` for a terminal (a header, the top functions, the call tree),
+//! `live_write` while it runs, and `folded_write` for flame graph tools.
 //!
 //!      nusku  app [pid 4242] · 5.0 s · 495 samples at 99 Hz · duration reached
 //!
 //!      Top functions  by self time, 20 of 57 that ran
 //!        SELF               TOTAL              FUNCTION
 //!        49.4% ████▉        49.4% ████▉        hot_leaf  app
-//!        ...
 //!
 //!      Call tree  outermost frame first, hiding branches under 1.0%
-//!       100.0%  main  app
 //!       100.0%  run
 //!        49.4%  ├─ hot
 //!        49.4%  │  hot_leaf
 //!        30.3%  └─ warm
 //!        30.3%     recurse ↻
-//!
-//! "Self" is the time a function was running; "total" adds the time of all it called. The
-//! tree goes from the outermost frame in; a path that does not branch stays in one column,
-//! and only a branch indents.
-//!
-//! `folded_write`, for tools: one line per stack, "outer;...;inner count", the format that
-//! flame graph tools read (FlameGraph, inferno, speedscope).
 
 const std = @import("std");
 const server = @import("server");
+const term = @import("term.zig");
 
 const assert = std.debug.assert;
+const Style = term.Style;
 const Writer = std.Io.Writer;
 const Frame = server.Frame;
 const Profile = server.Profile;
@@ -46,9 +37,8 @@ pub const Summary = struct {
 pub const Options = struct {
     /// Rows of the function table.
     top: usize = 20,
-    /// Branches of the call tree under this share, in tenths of a percent, are hidden.
+    /// Call tree branches under this share, in tenths of a percent, are hidden.
     cutoff_tenths: u64 = 10,
-    /// ANSI colors.
     color: bool = false,
 };
 
@@ -63,7 +53,7 @@ pub fn write(
     _ = try header_write(w, style, profile, summary);
     if (profile.samples == 0) {
         try w.print("\n  {s}No samples:{s} the process was never on a CPU while it was " ++
-            "profiled.\n", .{ style.on(yellow), style.off() });
+            "profiled.\n", .{ style.on(term.yellow), style.off() });
         return;
     }
     var names = Names{ .arena = arena };
@@ -74,9 +64,8 @@ pub fn write(
     try tree.write(w, style, profile.samples, options.cutoff_tenths);
 }
 
-/// The view of a run that is still going, for a terminal: the header and the top functions so
-/// far, drawn over the last view (`lines_before` lines, what the last call returned). Returns
-/// how many lines it drew. `live_clear` takes it away for the final report.
+/// The header and the top functions so far, drawn over the last view of `lines_before` lines.
+/// Returns the lines it drew.
 pub fn live_write(
     w: *Writer,
     arena: std.mem.Allocator,
@@ -86,11 +75,14 @@ pub fn live_write(
     lines_before: usize,
 ) !usize {
     assert(summary.reason == null);
-    try live_clear(w, lines_before);
+    try term.lines_erase(w, lines_before);
     const style = Style{ .color = options.color };
     var lines = try header_write(w, style, profile, summary);
     if (profile.samples == 0) {
-        try w.print("\n  {s}waiting for samples\u{2026}{s}\n", .{ style.on(dim), style.off() });
+        try w.print("\n  {s}waiting for samples\u{2026}{s}\n", .{
+            style.on(term.dim),
+            style.off(),
+        });
         return lines + 2;
     }
     var names = Names{ .arena = arena };
@@ -100,14 +92,8 @@ pub fn live_write(
     return lines;
 }
 
-/// Takes the last `lines` lines away: the cursor goes up to their start, and they are erased.
-pub fn live_clear(w: *Writer, lines: usize) !void {
-    if (lines == 0) return;
-    try w.print("\x1b[{d}F\x1b[J", .{lines});
-}
-
-/// The stacks of `profile` in the folded format: the frames from the outermost in, joined by
-/// ";", then the count. A stack whose walk stopped early starts with "[incomplete]".
+/// One stack per line, outermost frame first: "outer;...;inner count". A stack whose walk
+/// stopped early starts with "[incomplete]".
 pub fn folded_write(w: *Writer, arena: std.mem.Allocator, profile: *const Profile) !void {
     var names = Names{ .arena = arena };
     for (profile.stacks) |stack| {
@@ -125,26 +111,26 @@ pub fn folded_write(w: *Writer, arena: std.mem.Allocator, profile: *const Profil
 
 // ------------------------------------------------------------------------------------- header
 
-/// Returns how many lines it wrote.
+/// Returns the lines it wrote.
 fn header_write(w: *Writer, style: Style, profile: *const Profile, summary: Summary) !usize {
     const lines: usize = 2;
     const separator = " \u{00b7} ";
-    try w.print("\n  {s}nusku{s}  ", .{ style.on(bold_cyan), style.off() });
-    if (summary.name) |name| try w.print("{s}{s}{s} ", .{ style.on(bold), name, style.off() });
-    try w.print("{s}[pid {d}]{s}{s}", .{ style.on(dim), summary.pid, separator, style.off() });
+    try w.print("\n  {s}nusku{s}  ", .{ style.on(term.bold_cyan), style.off() });
+    if (summary.name) |name| try w.print("{s}{s}{s} ", .{ style.on(term.bold), name, style.off() });
+    try w.print("{s}[pid {d}]{s}{s}", .{ style.on(term.dim), summary.pid, separator, style.off() });
     try w.print("{d}.{d} s", .{ summary.elapsed_ms / 1000, summary.elapsed_ms % 1000 / 100 });
-    try w.print("{s}{s}{s}", .{ style.on(dim), separator, style.off() });
+    try w.print("{s}{s}{s}", .{ style.on(term.dim), separator, style.off() });
     try w.print("{d} samples at {d} Hz", .{ profile.samples, profile.sample_hz });
     const reason = summary.reason orelse {
         try w.print("{s}{s}live \u{00b7} Ctrl-C to stop{s}\n", .{
-            style.on(dim),
+            style.on(term.dim),
             separator,
             style.off(),
         });
         return lines + try losses_write(w, style, profile);
     };
     try w.print("{s}{s}{s}{s}\n", .{
-        style.on(dim),
+        style.on(term.dim),
         separator,
         style.off(),
         switch (reason) {
@@ -156,12 +142,12 @@ fn header_write(w: *Writer, style: Style, profile: *const Profile, summary: Summ
     return lines + try losses_write(w, style, profile);
 }
 
-/// The samples and reports lost, when there are: a profile missing them. Returns its lines.
+/// The samples and reports lost, if any. Returns the lines it wrote.
 fn losses_write(w: *Writer, style: Style, profile: *const Profile) !usize {
     var lines: usize = 0;
     if (profile.samples_lost > 0) {
         try w.print("  {s}! {d} samples lost: the kernel's buffer was full{s}\n", .{
-            style.on(yellow),
+            style.on(term.yellow),
             profile.samples_lost,
             style.off(),
         });
@@ -169,7 +155,7 @@ fn losses_write(w: *Writer, style: Style, profile: *const Profile) !usize {
     }
     if (profile.windows_rejected > 0) {
         try w.print("  {s}! {d} reports lost: too big to keep{s}\n", .{
-            style.on(yellow),
+            style.on(term.yellow),
             profile.windows_rejected,
             style.off(),
         });
@@ -182,14 +168,13 @@ fn losses_write(w: *Writer, style: Style, profile: *const Profile) !usize {
 
 const Function = struct {
     name: []const u8,
-    /// The binary it is in, for the reader: its file name only.
+    /// The file name of its binary.
     module: ?[]const u8,
     self: u64,
     total: u64,
 };
 
-/// Every function of the profile, most self time first. A function counts once per stack in
-/// its total, however many times it is in it (recursion).
+/// Most self time first. A function counts once per stack in its total, however deep.
 fn functions_rank(
     arena: std.mem.Allocator,
     names: *Names,
@@ -237,7 +222,8 @@ fn function_more(_: void, a: Function, b: Function) bool {
     return std.mem.order(u8, a.name, b.name) == .lt;
 }
 
-/// Returns how many lines it wrote.
+/// Only the functions that ran: those that only called others are in the call tree. Returns
+/// the lines it wrote.
 fn functions_write(
     w: *Writer,
     style: Style,
@@ -245,20 +231,18 @@ fn functions_write(
     samples: u64,
     top: usize,
 ) !usize {
-    // Sorted by self time: the functions that ran come first. Those that only called others
-    // are in the call tree.
     var running: usize = 0;
     while (running < functions.len and functions[running].self > 0) running += 1;
     const shown = functions[0..@min(running, top)];
-    try w.print("\n  {s}Top functions{s}", .{ style.on(bold), style.off() });
+    try w.print("\n  {s}Top functions{s}", .{ style.on(term.bold), style.off() });
     try w.print("  {s}by self time, {d} of {d} that ran{s}\n", .{
-        style.on(dim),
+        style.on(term.dim),
         shown.len,
         running,
         style.off(),
     });
     try w.print("    {s}{s:<17}  {s:<17}  {s}{s}\n", .{
-        style.on(dim),
+        style.on(term.dim),
         "SELF",
         "TOTAL",
         "FUNCTION",
@@ -269,16 +253,15 @@ fn functions_write(
         try share_write(w, style, function.self, samples, true);
         try w.writeAll("  ");
         if (function.module == null and function.name[0] == '[') {
-            // Code without names, all under one label: a total of it would add up unrelated
-            // places (libc's start and its sort, say), so none is shown.
-            try w.print("{s}     \u{2013}{s}           ", .{ style.on(dim), style.off() });
+            // Unnamed code shares one label: its total would sum unrelated places.
+            try w.print("{s}     \u{2013}{s}           ", .{ style.on(term.dim), style.off() });
         } else {
             try share_write(w, style, function.total, samples, true);
         }
         try w.writeAll("  ");
-        try name_write(w, function.name);
+        try term.text_cut_write(w, function.name, name_width_max);
         if (function.module) |module| {
-            try w.print("  {s}{s}{s}", .{ style.on(dim), module, style.off() });
+            try w.print("  {s}{s}{s}", .{ style.on(term.dim), module, style.off() });
         }
         try w.writeByte('\n');
     }
@@ -287,8 +270,8 @@ fn functions_write(
 
 // ------------------------------------------------------------------------------------- call tree
 
-/// The stacks merged from the outermost frame in: each node is a function on a path, with the
-/// samples that went through it. A function that calls itself is one node (`recursive`).
+/// The stacks merged from the outermost frame in: a node is a function on a path. A function
+/// that calls itself is one node.
 const Tree = struct {
     arena: std.mem.Allocator,
     /// Node 0 is the root, above every outermost frame.
@@ -303,7 +286,7 @@ const Tree = struct {
         children: std.ArrayList(u32) = .empty,
     };
 
-    /// Where the stacks whose walk stopped early hang: their outer frames are not known.
+    /// Where stacks whose walk stopped early hang: their outer frames are unknown.
     const incomplete = "[walk stopped]";
 
     fn build(arena: std.mem.Allocator, names: *Names, stacks: []const server.SymbolStack) !Tree {
@@ -335,7 +318,7 @@ const Tree = struct {
         tree.nodes.items[current].self += stack.samples;
     }
 
-    /// The child of `parent` named `name`, made if it is new, with `samples` more through it.
+    /// The child named `name`, made if new, with `samples` more through it.
     fn step(tree: *Tree, parent: u32, name: []const u8, module: ?[]const u8, samples: u64) !u32 {
         const child = for (tree.nodes.items[parent].children.items) |child| {
             if (same(tree.nodes.items[child].name, name)) break child;
@@ -354,9 +337,9 @@ const Tree = struct {
     }
 
     fn write(tree: *const Tree, w: *Writer, style: Style, samples: u64, cutoff_tenths: u64) !void {
-        try w.print("\n  {s}Call tree{s}", .{ style.on(bold), style.off() });
+        try w.print("\n  {s}Call tree{s}", .{ style.on(term.bold), style.off() });
         try w.print("  {s}outermost frame first, hiding branches under {d}.{d}%{s}\n", .{
-            style.on(dim),
+            style.on(term.dim),
             cutoff_tenths / 10,
             cutoff_tenths % 10,
             style.off(),
@@ -367,8 +350,8 @@ const Tree = struct {
 
     const Context = struct { w: *Writer, style: Style, samples: u64 };
 
-    /// The children of `parent` worth showing, under `prefix`. One child alone continues the
-    /// path in the same column; more than one branch out, and what is hidden is summed.
+    /// A single child continues in the same column; several branch out, and the hidden ones
+    /// are summed.
     fn children_write(
         tree: *const Tree,
         context: *const Context,
@@ -386,7 +369,6 @@ const Tree = struct {
                 hidden_samples += tree.nodes.items[child].total;
             }
         }
-        // Sorted by total, most first: the shown children come first.
         const hidden = children.len - shown;
         const branches = shown + @intFromBool(hidden > 0) > 1;
 
@@ -403,7 +385,7 @@ const Tree = struct {
             try w.writeAll("  ");
             try share_write(w, context.style, hidden_samples, context.samples, false);
             try w.print("  {s}{s}{s}\u{2026} {d} more{s}\n", .{
-                context.style.on(dim),
+                context.style.on(term.dim),
                 prefix,
                 if (branches) tee_last else "",
                 hidden,
@@ -431,31 +413,30 @@ const Tree = struct {
         try share_write(w, style, node.total, context.samples, false);
         try w.writeAll("  ");
         if (prefix.len + head.len > 0) {
-            try w.print("{s}{s}{s}{s}", .{ style.on(dim), prefix, head, style.off() });
+            try w.print("{s}{s}{s}{s}", .{ style.on(term.dim), prefix, head, style.off() });
         }
-        try name_write(w, node.name);
-        if (node.recursive) try w.print(" {s}\u{21bb}{s}", .{ style.on(cyan), style.off() });
-        // Self time is worth a note where the node also calls others.
+        try term.text_cut_write(w, node.name, name_width_max);
+        if (node.recursive) try w.print(" {s}\u{21bb}{s}", .{ style.on(term.cyan), style.off() });
         if (node.self > 0 and node.children.items.len > 0) {
             const share = tenths(node.self, context.samples);
             try w.print("  {s}self {d}.{d}%{s}", .{
-                style.on(dim),
+                style.on(term.dim),
                 share / 10,
                 share % 10,
                 style.off(),
             });
         }
-        // The binary, where it changes on the path.
+        // The binary, where the path changes binary.
         const parent_module = tree.nodes.items[parent].module;
         if (node.module) |module| {
             const changed = parent_module == null or !std.mem.eql(u8, parent_module.?, module);
-            if (changed) try w.print("  {s}{s}{s}", .{ style.on(dim), module, style.off() });
+            if (changed) try w.print("  {s}{s}{s}", .{ style.on(term.dim), module, style.off() });
         }
         try w.writeByte('\n');
     }
 };
 
-// ------------------------------------------------------------------------------------- columns
+// ------------------------------------------------------------------------------------- shares
 
 /// `part` of `whole` in tenths of a percent.
 fn tenths(part: u64, whole: u64) u64 {
@@ -464,15 +445,14 @@ fn tenths(part: u64, whole: u64) u64 {
     return part * 1000 / whole;
 }
 
-/// The share right-aligned in 6 columns, colored by how hot it is, and with `bar` a bar of 10
-/// columns after it, a full one for 100%.
+/// The share in 6 columns, colored by heat, and if `bar` a bar of 10 columns.
 fn share_write(w: *Writer, style: Style, part: u64, whole: u64, bar: bool) !void {
     const share = tenths(part, whole);
-    try w.writeAll(style.heat(share));
+    try w.writeAll(style.heat(share, 250));
     try percent_write(w, part, whole);
     if (bar) {
         try w.writeByte(' ');
-        try bar_write(w, share);
+        try term.bar_write(w, share, 10);
     }
     try w.writeAll(style.off());
 }
@@ -482,71 +462,12 @@ fn percent_write(w: *Writer, part: u64, whole: u64) !void {
     try w.print("{d:>3}.{d}%", .{ share / 10, share % 10 });
 }
 
-/// 10 columns: whole blocks, then one in eighths for the rest.
-fn bar_write(w: *Writer, share_tenths: u64) !void {
-    const eighths = [_][]const u8{
-        "",
-        "\u{258f}",
-        "\u{258e}",
-        "\u{258d}",
-        "\u{258c}",
-        "\u{258b}",
-        "\u{258a}",
-        "\u{2589}",
-    };
-    const columns = 10;
-    const units = share_tenths * columns * 8 / 1000;
-    const full = units / 8;
-    for (0..full) |_| try w.writeAll("\u{2588}");
-    try w.writeAll(eighths[units % 8]);
-    const used = full + @intFromBool(units % 8 != 0);
-    try w.splatByteAll(' ', columns - used);
-}
-
-/// A name cut to a width that reads, with "…" when it is longer.
-fn name_write(w: *Writer, name: []const u8) !void {
-    const width_max = 72;
-    if (name.len <= width_max) return w.writeAll(name);
-    try w.writeAll(name[0 .. width_max - 1]);
-    try w.writeAll("\u{2026}");
-}
-
-// ------------------------------------------------------------------------------------- style
-
-const bold = "\x1b[1m";
-const bold_cyan = "\x1b[1;36m";
-const dim = "\x1b[2m";
-const cyan = "\x1b[36m";
-const yellow = "\x1b[33m";
-const red = "\x1b[1;31m";
-const reset = "\x1b[0m";
-
-/// ANSI codes when the output is a terminal, nothing otherwise.
-const Style = struct {
-    color: bool,
-
-    fn on(style: Style, code: []const u8) []const u8 {
-        return if (style.color) code else "";
-    }
-
-    fn off(style: Style) []const u8 {
-        return style.on(reset);
-    }
-
-    /// A quarter of the time or more is red, a tenth yellow, under one percent dim.
-    fn heat(style: Style, share_tenths: u64) []const u8 {
-        if (share_tenths >= 250) return style.on(red);
-        if (share_tenths >= 100) return style.on(yellow);
-        if (share_tenths < 10) return style.on(dim);
-        return "";
-    }
-};
+const name_width_max = 72;
 
 // ------------------------------------------------------------------------------------- names
 
-/// What a frame is called in the report. A frame without a function name is shown by its
-/// binary, `[libc.so.6]`; one without that either, by its kind. Each label is made once, so
-/// equal labels are the same slice and compare by address.
+/// A frame's label: its function, else its binary (`[libc.so.6]`), else its kind. Each is made
+/// once, so equal labels are the same slice.
 const Names = struct {
     arena: std.mem.Allocator,
     labels: std.StringHashMapUnmanaged([]const u8) = .empty,
@@ -576,7 +497,7 @@ fn same(a: []const u8, b: []const u8) bool {
     return a.ptr == b.ptr and a.len == b.len;
 }
 
-/// The file name of a frame's binary, for a named frame: an unnamed one says it in its name.
+/// A named frame's binary: an unnamed frame has it in its label.
 fn module_of(frame: Frame) ?[]const u8 {
     if (frame.function == null) return null;
     const module = frame.module orelse return null;
@@ -665,7 +586,7 @@ test "colors when asked, and the folded form for tools" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const colored = try report_test(arena.allocator(), .{ .color = true });
-    try testing.expect(has(colored, red ++ " 60.0%"));
+    try testing.expect(has(colored, term.red ++ " 60.0%"));
 
     var out: std.Io.Writer.Allocating = .init(arena.allocator());
     try folded_write(&out.writer, arena.allocator(), &profile_test);

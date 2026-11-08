@@ -1,19 +1,16 @@
-//! The processes of the machine as a table, for a terminal: a summary line, then one row per
-//! process, the busiest first.
+//! The processes of the machine as a table, the busiest first. CPU is a share of one CPU, so
+//! busy threads can pass 100%.
 //!
 //!      nusku ps  312 processes · 8 CPUs · CPU 143.2% · memory 5.3G · every 1.0 s
 //!
 //!          PID USER         CPU%          MEM  THR  STARTED  COMMAND
 //!        41722 ali          98.0% ████▉   812.4M  24     3h12m  /opt/google/chrome/chrome …
-//!          917 root          2.0% ▏         9.1M   1   12d04h  [kworker/3:1]
-//!
-//! CPU is a share of one CPU, so a process with busy threads can pass 100%. `write` returns
-//! how many lines it drew, so a live view can go back up over them and draw the next frame.
 
 const std = @import("std");
 const server = @import("server");
+const term = @import("term.zig");
 
-const assert = std.debug.assert;
+const Style = term.Style;
 const Writer = std.Io.Writer;
 const Frame = server.processes.Frame;
 const ProcessInfo = server.processes.ProcessInfo;
@@ -21,18 +18,18 @@ const ProcessInfo = server.processes.ProcessInfo;
 pub const Sort = enum { cpu, mem, pid };
 
 pub const Options = struct {
-    /// Rows, the busiest first; 0 shows all.
+    /// 0 shows all.
     top: usize = 20,
-    /// Columns of the terminal: a command is cut to fit. 0: never cut.
+    /// Of the terminal, to cut commands to. 0: never cut.
     width: usize = 0,
     sort: Sort = .cpu,
     color: bool = false,
-    /// The frames keep coming: the header says how to stop.
+    /// The header says how to stop.
     live: bool = false,
     cpus: usize = 1,
 };
 
-/// The table of `frame`. Returns how many lines it wrote.
+/// Returns the lines it wrote, for a live view to draw over.
 pub fn write(w: *Writer, arena: std.mem.Allocator, frame: *const Frame, options: Options) !usize {
     const style = Style{ .color = options.color };
     const rows = try arena.dupe(ProcessInfo, frame.processes);
@@ -41,7 +38,7 @@ pub fn write(w: *Writer, arena: std.mem.Allocator, frame: *const Frame, options:
 
     try header_write(w, style, frame, options);
     try w.print("\n  {s}{s:>7} {s:<10} {s:>6} {s:<6} {s:>7} {s:>4} {s:>8}  {s}{s}\n", .{
-        style.on(dim),
+        style.on(term.dim),
         "PID",
         "USER",
         "CPU%",
@@ -56,7 +53,7 @@ pub fn write(w: *Writer, arena: std.mem.Allocator, frame: *const Frame, options:
     const hidden = rows.len - shown.len;
     var lines = 3 + shown.len;
     if (hidden > 0) {
-        try w.print("  {s}\u{2026} {d} more{s}\n", .{ style.on(dim), hidden, style.off() });
+        try w.print("  {s}\u{2026} {d} more{s}\n", .{ style.on(term.dim), hidden, style.off() });
         lines += 1;
     }
     return lines;
@@ -72,27 +69,27 @@ fn header_write(w: *Writer, style: Style, frame: *const Frame, options: Options)
     const separator = " \u{00b7} ";
     var memory_buffer: [16]u8 = undefined;
     try w.print("  {s}nusku ps{s}  {d} processes{s}{s}{s}{d} CPUs", .{
-        style.on(bold_cyan),
+        style.on(term.bold_cyan),
         style.off(),
         frame.processes.len,
-        style.on(dim),
+        style.on(term.dim),
         separator,
         style.off(),
         options.cpus,
     });
     try w.print("{s}{s}{s}CPU {d:.1}%{s}{s}{s}memory {s}", .{
-        style.on(dim),
+        style.on(term.dim),
         separator,
         style.off(),
         cpu_total,
-        style.on(dim),
+        style.on(term.dim),
         separator,
         style.off(),
         memory_text(&memory_buffer, memory_total),
     });
     const every_ms = frame.interval_ns / std.time.ns_per_ms;
     try w.print("{s}{s}every {d}.{d} s{s}{s}\n", .{
-        style.on(dim),
+        style.on(term.dim),
         separator,
         every_ms / 1000,
         every_ms % 1000 / 100,
@@ -108,10 +105,10 @@ fn row_write(
     info: *const ProcessInfo,
     width: usize,
 ) !void {
-    // A kernel thread has no command line: shown by its name in brackets, as `ps` does.
+    // A kernel thread has no command line: shown by its name in brackets, as by `ps`.
     const kernel_thread = info.command.len == 0;
     try w.print("  {s}{d:>7} {s:<10}{s} ", .{
-        if (kernel_thread) style.on(dim) else "",
+        if (kernel_thread) style.on(term.dim) else "",
         info.pid,
         info.user[0..@min(info.user.len, 10)],
         if (kernel_thread) style.off() else "",
@@ -126,12 +123,11 @@ fn row_write(
         ago_text(&started_buffer, frame.unix_ns, info.started_unix_ns),
     });
 
-    // What is left of the line for the command: the columns before it take 58.
     const room = if (width > columns_before_command + 8) width - columns_before_command else 0;
     if (kernel_thread) {
-        try w.print("{s}[{s}]{s}\n", .{ style.on(dim), info.name, style.off() });
+        try w.print("{s}[{s}]{s}\n", .{ style.on(term.dim), info.name, style.off() });
     } else {
-        try text_cut_write(w, info.command, room);
+        try term.text_cut_write(w, info.command, room);
         try w.writeByte('\n');
     }
 }
@@ -139,47 +135,23 @@ fn row_write(
 /// "  " + 7 + 1 + 10 + 1 + 13 + 1 + 7 + 1 + 4 + 1 + 8 + 2.
 const columns_before_command = 58;
 
-/// The share, and a bar of 6 columns where a full one is a whole CPU. Null: the process
-/// started since the look before, so it has no CPU yet.
+/// The share, and a bar of 6 columns full at one CPU. Null: started since the last look.
 fn cpu_write(w: *Writer, style: Style, percent: ?f32) !void {
     const share = percent orelse {
-        try w.print("{s}{s:>6}{s}       ", .{ style.on(dim), "-", style.off() });
+        try w.print("{s}{s:>6}{s}       ", .{ style.on(term.dim), "-", style.off() });
         return;
     };
-    try w.print("{s}{d:>5.1}% ", .{ style.heat(share), share });
-    const eighths = [_][]const u8{
-        "",
-        "\u{258f}",
-        "\u{258e}",
-        "\u{258d}",
-        "\u{258c}",
-        "\u{258b}",
-        "\u{258a}",
-        "\u{2589}",
-    };
-    const columns = 6;
-    const clamped: f32 = @min(@max(share, 0), 100);
-    const units: usize = @intFromFloat(clamped * columns * 8 / 100);
-    const full = units / 8;
-    for (0..full) |_| try w.writeAll("\u{2588}");
-    try w.writeAll(eighths[units % 8]);
-    try w.splatByteAll(' ', columns - full - @intFromBool(units % 8 != 0));
+    const per_mille: u64 = @intFromFloat(@max(share, 0) * 10);
+    try w.print("{s}{d:>5.1}% ", .{ style.heat(per_mille, 500), share });
+    try term.bar_write(w, per_mille, 6);
     try w.writeAll(style.off());
 }
 
-/// `text`, cut to `room` columns with "…" when longer. 0: not cut.
-fn text_cut_write(w: *Writer, text: []const u8, room: usize) !void {
-    if (room == 0 or text.len <= room) return w.writeAll(text);
-    try w.writeAll(text[0 .. room - 1]);
-    try w.writeAll("\u{2026}");
-}
-
-/// The order of the rows. The pid decides between equals, so rows do not swap places from one
-/// frame to the next.
+/// The pid decides between equals, so rows do not swap places between frames.
 fn before(sort: Sort, a: ProcessInfo, b: ProcessInfo) bool {
     switch (sort) {
         .cpu => {
-            // No CPU yet (a process that just started) counts as the least busy.
+            // No CPU yet counts as the least busy.
             const a_cpu = a.cpu_percent orelse -1;
             const b_cpu = b.cpu_percent orelse -1;
             if (a_cpu != b_cpu) return a_cpu > b_cpu;
@@ -190,8 +162,8 @@ fn before(sort: Sort, a: ProcessInfo, b: ProcessInfo) bool {
     return a.pid < b.pid;
 }
 
-/// Bytes as K, M or G: at most 7 characters.
-pub fn memory_text(buffer: *[16]u8, bytes: u64) []const u8 {
+/// K, M or G: at most 7 characters.
+fn memory_text(buffer: *[16]u8, bytes: u64) []const u8 {
     const kib = bytes / 1024;
     if (kib < 1024) return std.fmt.bufPrint(buffer, "{d}K", .{kib}) catch unreachable;
     const mib = @as(f64, @floatFromInt(bytes)) / (1024 * 1024);
@@ -199,8 +171,8 @@ pub fn memory_text(buffer: *[16]u8, bytes: u64) []const u8 {
     return std.fmt.bufPrint(buffer, "{d:.1}G", .{mib / 1024}) catch unreachable;
 }
 
-/// How long ago `then_unix_ns` was, seen at `now_unix_ns`: "45s", "12m", "3h12m", "12d04h".
-pub fn ago_text(buffer: *[16]u8, now_unix_ns: u64, then_unix_ns: u64) []const u8 {
+/// "45s", "12m", "3h12m", "12d04h".
+fn ago_text(buffer: *[16]u8, now_unix_ns: u64, then_unix_ns: u64) []const u8 {
     const seconds = (now_unix_ns -| then_unix_ns) / std.time.ns_per_s;
     const minutes = seconds / 60;
     const hours = minutes / 60;
@@ -214,34 +186,6 @@ pub fn ago_text(buffer: *[16]u8, now_unix_ns: u64, then_unix_ns: u64) []const u8
     else
         std.fmt.bufPrint(buffer, "{d}d{d:0>2}h", .{ days, hours % 24 })) catch unreachable;
 }
-
-// ------------------------------------------------------------------------------------- style
-
-const bold_cyan = "\x1b[1;36m";
-const dim = "\x1b[2m";
-const yellow = "\x1b[33m";
-const red = "\x1b[1;31m";
-const reset = "\x1b[0m";
-
-const Style = struct {
-    color: bool,
-
-    fn on(style: Style, code: []const u8) []const u8 {
-        return if (style.color) code else "";
-    }
-
-    fn off(style: Style) []const u8 {
-        return style.on(reset);
-    }
-
-    /// Half a CPU or more is red, a tenth yellow, under one percent dim.
-    fn heat(style: Style, percent: f32) []const u8 {
-        if (percent >= 50) return style.on(red);
-        if (percent >= 10) return style.on(yellow);
-        if (percent < 1) return style.on(dim);
-        return "";
-    }
-};
 
 // ------------------------------------------------------------------------------------- tests
 

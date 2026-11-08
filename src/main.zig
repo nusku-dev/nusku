@@ -17,10 +17,11 @@ pub fn main(init: std.process.Init) u8 {
     var out = std.Io.File.stdout().writer(init.io, &out_buf);
     var err = std.Io.File.stderr().writer(init.io, &err_buf);
 
+    const no_color = init.environ_map.get("NO_COLOR") != null;
     var logger = log.Logger.init(.{
         .writer = &err.interface,
         .io = init.io,
-        .color = log.shouldColor(init.io, std.Io.File.stderr(), init.environ_map.get("NO_COLOR") != null),
+        .color = log.shouldColor(init.io, std.Io.File.stderr(), no_color),
     });
 
     log.setDefault(&logger);
@@ -37,7 +38,8 @@ pub fn main(init: std.process.Init) u8 {
 }
 
 test {
-    _ = @import("report.zig");
     _ = @import("clients/local.zig");
-    _ = @import("ps_view.zig");
+    _ = @import("view/term.zig");
+    _ = @import("view/profile.zig");
+    _ = @import("view/processes.zig");
 }

@@ -1,7 +1,5 @@
-//! Profiles a process of this machine: the server and the agent in this one process, the agent
-//! on a thread of the server's controller. While the run goes (until its duration, the target
-//! exiting, or Ctrl-C), it can hand the profile so far to a `Live` view; then it asks the
-//! server for the profile of the whole run.
+//! The server and the agent in this one process: profiles a process, or watches the processes
+//! of the machine, showing what is found so far to a live view.
 
 const std = @import("std");
 const server_lib = @import("server");
@@ -11,10 +9,9 @@ const assert = std.debug.assert;
 const Server = server_lib.Server;
 const Controller = server_lib.Controller;
 
-/// The most windows kept, whatever the run: past it, the oldest windows go. Each window is
-/// reserved up front (128 KiB), so this bounds the memory: 3600 is 450 MiB.
+/// Windows are reserved up front, 128 KiB each: 3600 is 450 MiB.
 const windows_max = 3600;
-/// Kept for a run with no end: ten minutes at one report a second.
+/// For a run with no end: ten minutes at one report a second.
 const windows_unbounded = 600;
 
 pub const Options = struct {
@@ -25,7 +22,7 @@ pub const Options = struct {
     duration_s: u32,
 };
 
-/// Shown the profile as it grows, every `every_ms`, on the thread that called `profile`.
+/// Shown the profile so far every `every_ms`, on the thread that called `profile`.
 pub const Live = struct {
     context: *anyopaque,
     every_ms: u32,
@@ -39,8 +36,7 @@ pub const Result = struct {
     elapsed_ms: u64,
 };
 
-/// Runs the profile, and returns it in `arena`. Ctrl-C stops the run, not the program: the
-/// profile of what was sampled until then is still returned.
+/// The profile of the whole run, in `arena`. Ctrl-C stops the run, not the program.
 pub fn profile(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -50,16 +46,10 @@ pub fn profile(
     assert(options.pid > 0);
     assert(options.interval_ms > 0);
 
-    const windows = windows_for(options);
-    // On the heap: the server and the controller are large, and threads point into them.
-    const server = try gpa.create(Server);
-    defer gpa.destroy(server);
-    try server.init(gpa, .{ .targets_max = 1, .windows_per_target_max = windows });
-    defer server.deinit(gpa);
-    const controller = try gpa.create(Controller);
-    defer gpa.destroy(controller);
-    try controller.init(gpa, server, .{ .runs_max = 1 });
-    defer controller.deinit(gpa);
+    const backend = try Backend.create(gpa, windows_for(options));
+    defer backend.destroy(gpa);
+    const server = backend.server;
+    const controller = backend.controller;
 
     const started_ms = monotonic_ms();
     const target = try controller.start(gpa, .{
@@ -74,8 +64,7 @@ pub fn profile(
     interrupt_release();
     const elapsed_ms = monotonic_ms() - started_ms;
 
-    // Names come from tables the builder may still be making: wait for the last ones.
-    server.builds_wait();
+    server.builds_wait(); // The last tables may still be building.
     return .{
         .reason = try reason,
         .profile = try server.profile(arena, .{
@@ -87,16 +76,15 @@ pub fn profile(
     };
 }
 
-/// The server and the controller of a command that has nothing to profile, only processes to
-/// watch. On the heap, as in `profile`: they are large, and the watch's thread points into them.
+/// One server and its controller, on the heap: they are large, and threads point into them.
 const Backend = struct {
     server: *Server,
     controller: *Controller,
 
-    fn create(gpa: std.mem.Allocator) !Backend {
+    fn create(gpa: std.mem.Allocator, windows: u32) !Backend {
         const server = try gpa.create(Server);
         errdefer gpa.destroy(server);
-        try server.init(gpa, .{ .targets_max = 1 });
+        try server.init(gpa, .{ .targets_max = 1, .windows_per_target_max = windows });
         errdefer server.deinit(gpa);
         const controller = try gpa.create(Controller);
         errdefer gpa.destroy(controller);
@@ -112,15 +100,14 @@ const Backend = struct {
     }
 };
 
-/// The processes of this machine, once, with CPU in them: the watch runs until its second
-/// look, then stops. The frame lives in `arena`. Ctrl-C stops the wait; the error says so.
+/// The processes of this machine once, with their CPU: the second look, in `arena`.
 pub fn processes(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     interval_ms: u32,
 ) !server_lib.processes.Frame {
     assert(interval_ms > 0);
-    const backend = try Backend.create(gpa);
+    const backend = try Backend.create(gpa, 1);
     defer backend.destroy(gpa);
     const controller = backend.controller;
 
@@ -128,7 +115,7 @@ pub fn processes(
     interrupt_arm(controller.watch_procs_cancel_of().?);
     defer interrupt_release();
 
-    // The first frame has no CPU: it is measured against the look before.
+    // The first look has no CPU: it is measured against the look before.
     while (backend.server.processes_frames() < 2) {
         if (!controller.watch_procs_running()) break; // Ctrl-C, or the watch failed.
         sleep_ms(poll_ms);
@@ -138,18 +125,16 @@ pub fn processes(
     return frame orelse error.Interrupted;
 }
 
-/// Shown each new frame of the processes, on the thread that called `processes_watch`. The
-/// frame lives until the next one.
+/// Shown each new frame, on the thread that called `processes_watch`. Valid until the next.
 pub const ProcessesLive = struct {
     context: *anyopaque,
     show: *const fn (context: *anyopaque, frame: *const server_lib.processes.Frame) void,
 };
 
-/// Watches the processes of this machine, a look every `interval_ms`, and shows each frame to
-/// `live`, until Ctrl-C. The first look is not shown: it has no CPU yet.
+/// A look every `interval_ms`, shown to `live` until Ctrl-C; not the first, which has no CPU.
 pub fn processes_watch(gpa: std.mem.Allocator, interval_ms: u32, live: ProcessesLive) !void {
     assert(interval_ms > 0);
-    const backend = try Backend.create(gpa);
+    const backend = try Backend.create(gpa, 1);
     defer backend.destroy(gpa);
     const controller = backend.controller;
 
@@ -157,10 +142,9 @@ pub fn processes_watch(gpa: std.mem.Allocator, interval_ms: u32, live: Processes
     interrupt_arm(controller.watch_procs_cancel_of().?);
     defer interrupt_release();
 
-    // Each frame's memory lives until the next one.
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
-    var shown: u64 = 1; // The first frame: no CPU in it.
+    var shown: u64 = 1; // Not the first.
     while (controller.watch_procs_running()) {
         sleep_ms(poll_ms);
         const frames = backend.server.processes_frames();
@@ -173,8 +157,7 @@ pub fn processes_watch(gpa: std.mem.Allocator, interval_ms: u32, live: Processes
     _ = try controller.watch_procs_stop();
 }
 
-/// The name of process `pid` (its comm, what `ps` shows), in `buffer`, or null when it cannot
-/// be read.
+/// Its comm, as `ps` shows it, or null.
 pub fn process_name(pid: u32, buffer: *[64]u8) ?[]const u8 {
     const linux = std.os.linux;
     var path_buffer: [32]u8 = undefined;
@@ -195,7 +178,7 @@ fn monotonic_ms() u64 {
         @as(u64, @intCast(now.nsec)) / std.time.ns_per_ms;
 }
 
-/// Until the run ends: shows the profile so far to `live`, if there is one, every `every_ms`.
+/// Until the run ends, showing the profile so far to `live` every `every_ms`.
 fn wait(
     gpa: std.mem.Allocator,
     server: *Server,
@@ -204,7 +187,6 @@ fn wait(
     started_ms: u64,
     live: ?Live,
 ) !void {
-    // Each view's profile lives until the next one.
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     var next_ms = started_ms + if (live) |view| view.every_ms else 0;
@@ -217,7 +199,7 @@ fn wait(
         next_ms = now_ms + view.every_ms;
 
         _ = arena.reset(.retain_capacity);
-        // Too early for a window, or none yet: the next view shows it.
+        // No window yet: the next view shows it.
         const so_far = server.profile(arena.allocator(), .{
             .target = target,
             .from_unix_ns = 0,
@@ -227,7 +209,7 @@ fn wait(
     }
 }
 
-/// How often the run is looked at: how late its end can be noticed.
+/// How late the run's end can be noticed.
 const poll_ms = 50;
 
 fn sleep_ms(ms: u64) void {
@@ -241,11 +223,11 @@ fn sleep_ms(ms: u64) void {
 fn windows_for(options: Options) u32 {
     if (options.duration_s == 0) return windows_unbounded;
     const reports = @as(u64, options.duration_s) * std.time.ms_per_s / options.interval_ms;
-    // The first report comes early, and the last one at the end: two more than the count.
+    // One report at the start, one at the end.
     return @intCast(@min(reports + 2, windows_max));
 }
 
-/// What Ctrl-C stops while a run is going. Only ever written outside the handler.
+/// What Ctrl-C stops. Written outside the handler only.
 var interrupt_cancel: ?*const server_lib.Cancel = null;
 
 fn interrupt_arm(cancel: *const server_lib.Cancel) void {
@@ -259,14 +241,13 @@ fn interrupt_arm(cancel: *const server_lib.Cancel) void {
     std.posix.sigaction(.TERM, &action, null);
 }
 
-/// The run is over: Ctrl-C has nothing to stop. The handler stays, so a Ctrl-C now (a late one,
-/// or the same one twice: the terminal's and the one `sudo` passes on) does not end the
-/// program before it prints the profile.
+/// The handler stays, so a late Ctrl-C (sudo passes one on twice) cannot end the program before
+/// it prints.
 fn interrupt_release() void {
     interrupt_cancel = null;
 }
 
-/// In a signal handler: only the one write that `trigger` is.
+/// Only `trigger`, one write: safe in a signal handler.
 fn interrupt_handle(_: std.posix.SIG) callconv(.c) void {
     if (interrupt_cancel) |cancel| cancel.trigger();
 }

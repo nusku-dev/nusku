@@ -1,9 +1,11 @@
+//! `nusku ps`: the processes of the machine, redrawn every interval on a terminal, else once.
+
 const std = @import("std");
 const cli = @import("cli");
-const log = @import("log");
-const utils = @import("_utils.zig");
+const flags = @import("flags.zig");
 const local = @import("../clients/local.zig");
-const view = @import("../ps_view.zig");
+const term = @import("../view/term.zig");
+const view = @import("../view/processes.zig");
 const Frame = @import("server").processes.Frame;
 
 pub const cmd: cli.Command = .{
@@ -40,18 +42,13 @@ pub const cmd: cli.Command = .{
             .kind = .bool,
             .help = "Print the table once and exit, even on a terminal",
         },
-        .{
-            .name = "color",
-            .kind = .string,
-            .default = "auto",
-            .help = "auto (when the output is a terminal and NO_COLOR is unset), always, never",
-        },
+        flags.color,
     },
     .run = run,
 };
 
 fn run(ctx: *cli.Context) anyerror!void {
-    try utils.logConfig(ctx);
+    try flags.log_apply(ctx);
     const interval = ctx.getInt("interval");
     if (interval < 100 or interval > std.time.ms_per_min) {
         return ctx.usageFail("--interval must be 100 ms to a minute (got {d} ms)", .{interval});
@@ -61,42 +58,42 @@ fn run(ctx: *cli.Context) anyerror!void {
         return ctx.usageFail("--sort must be cpu, mem or pid (got \"{s}\")", .{sort_text});
 
     const terminal = std.Io.File.stdout().isTty(ctx.io) catch false;
-    const size = if (terminal) terminal_size() else null;
+    const size = if (terminal) term.size() else null;
     var options = view.Options{
         .sort = sort,
-        .color = try color_read(ctx),
+        .color = try flags.color_read(ctx),
         .live = terminal and !ctx.getBool("once"),
         .width = if (size) |known| known.cols else 0,
         .cpus = std.Thread.getCpuCount() catch 1,
     };
     options.top = try top_read(ctx, options.live, size);
 
-    if (!options.live) {
-        const listed = local.processes(std.heap.smp_allocator, ctx.allocator, @intCast(interval));
-        const frame = listed catch |err| {
-            return ctx.fail("listing the processes failed: {t}", .{err});
-        };
-        _ = try view.write(ctx.stdout, ctx.allocator, &frame, options);
-        try ctx.stdout.flush();
-        return;
-    }
+    if (options.live) return live_run(ctx, @intCast(interval), options);
+    const listed = local.processes(std.heap.smp_allocator, ctx.allocator, @intCast(interval));
+    const frame = listed catch |err| {
+        return ctx.fail("listing the processes failed: {t}", .{err});
+    };
+    _ = try view.write(ctx.stdout, ctx.allocator, &frame, options);
+    try ctx.stdout.flush();
+}
 
+/// Until Ctrl-C, with the cursor hidden meanwhile.
+fn live_run(ctx: *cli.Context, interval_ms: u32, options: view.Options) !void {
     var live = Live{ .ctx = ctx, .options = options };
     defer live.arena.deinit();
-    try ctx.stdout.writeAll(cursor_hide);
+    try ctx.stdout.writeAll(term.cursor_hide);
     try ctx.stdout.flush();
     defer {
-        ctx.stdout.writeAll(cursor_show) catch {};
+        ctx.stdout.writeAll(term.cursor_show) catch {};
         ctx.stdout.flush() catch {};
     }
-    local.processes_watch(std.heap.smp_allocator, @intCast(interval), live.watcher()) catch |err| {
+    local.processes_watch(std.heap.smp_allocator, interval_ms, live.watcher()) catch |err| {
         return ctx.fail("watching the processes failed: {t}", .{err});
     };
 }
 
-/// The rows to show: as asked, or what fits the screen when live (the header and a margin
-/// take 5 lines), or 20 when printed once.
-fn top_read(ctx: *cli.Context, live: bool, size: ?Size) error{InvalidUsage}!usize {
+/// As asked; else what fits the screen when live (the header takes 5 lines), or 20.
+fn top_read(ctx: *cli.Context, live: bool, size: ?term.Size) error{InvalidUsage}!usize {
     if (ctx.isSet("top")) {
         const top = ctx.getInt("top");
         if (top < 0) return ctx.usageFail("--top must be 0 or more (got {d})", .{top});
@@ -112,7 +109,7 @@ fn top_read(ctx: *cli.Context, live: bool, size: ?Size) error{InvalidUsage}!usiz
 const Live = struct {
     ctx: *cli.Context,
     options: view.Options,
-    /// Lines of the last table: what the next one draws over.
+    /// Of the last table: what the next one draws over.
     lines: usize = 0,
     /// One table's memory, freed by the next.
     arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator),
@@ -125,37 +122,9 @@ const Live = struct {
         const live: *Live = @ptrCast(@alignCast(context));
         _ = live.arena.reset(.retain_capacity);
         const stdout = live.ctx.stdout;
-        // Up to where the last table started, and erase it: the next one takes its place.
-        if (live.lines > 0) stdout.print("\x1b[{d}F\x1b[J", .{live.lines}) catch return;
+        term.lines_erase(stdout, live.lines) catch return;
         // A table that cannot be drawn is skipped: the next frame tries again.
         live.lines = view.write(stdout, live.arena.allocator(), frame, live.options) catch 0;
         stdout.flush() catch {};
     }
 };
-
-const cursor_hide = "\x1b[?25l";
-const cursor_show = "\x1b[?25h";
-
-const Size = struct { rows: usize, cols: usize };
-
-/// The rows and columns of the terminal on stdout, or null when it does not say.
-fn terminal_size() ?Size {
-    var size: std.posix.winsize = undefined;
-    const linux = std.os.linux;
-    const result = linux.ioctl(std.posix.STDOUT_FILENO, linux.T.IOCGWINSZ, @intFromPtr(&size));
-    if (linux.errno(result) != .SUCCESS or size.row == 0 or size.col == 0) return null;
-    return .{ .rows = size.row, .cols = size.col };
-}
-
-/// Whether the table gets colors: always, never, or when it goes to a terminal and the user
-/// has not set NO_COLOR (no-color.org).
-fn color_read(ctx: *cli.Context) error{InvalidUsage}!bool {
-    const text = ctx.getString("color");
-    if (std.mem.eql(u8, text, "always")) return true;
-    if (std.mem.eql(u8, text, "never")) return false;
-    if (!std.mem.eql(u8, text, "auto")) {
-        return ctx.usageFail("--color must be auto, always or never (got \"{s}\")", .{text});
-    }
-    const no_color = std.c.getenv("NO_COLOR") != null;
-    return log.shouldColor(ctx.io, std.Io.File.stdout(), no_color);
-}
