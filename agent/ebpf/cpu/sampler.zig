@@ -1,4 +1,4 @@
-//! The kernel half of the CPU profiler: the sampling program (bpf/kernel/cpu.bpf.zig) loaded
+//! The kernel half of the CPU profiler: the sampling program (ebpf/kernel/cpu.bpf.zig) loaded
 //! into the kernel with its own maps, bound to the shared unwind maps.
 
 const std = @import("std");
@@ -8,9 +8,9 @@ const loader = @import("../bpf/loader.zig");
 const map_file = @import("../bpf/map.zig");
 const Object = @import("../bpf/object.zig").Object;
 const Program = @import("../bpf/program.zig").Program;
-const cpu_wire = @import("../bpf/kernel/shared/cpu_wire.zig");
-const Tables = @import("../unwind/tables.zig").Tables;
-const log = @import("../log.zig").agent;
+const cpu_wire = @import("../kernel/shared/cpu_wire.zig");
+const UnwindMaps = @import("../unwind_maps.zig").UnwindMaps;
+const log = @import("../../log.zig").agent;
 
 const Map = map_file.Map;
 const TypedMap = map_file.TypedMap;
@@ -22,7 +22,7 @@ const WalkState = cpu_wire.WalkState;
 pub const MapName = enum { cpu_config, cpu_state, cpu_walk_next, cpu_counts, cpu_records };
 
 const map_count = @typeInfo(MapName).@"enum".fields.len;
-const unwind_map_count = @typeInfo(@import("../unwind/tables.zig").MapName).@"enum".fields.len;
+const unwind_map_count = @typeInfo(@import("../unwind_maps.zig").MapName).@"enum".fields.len;
 
 /// The program's counters for the whole run, summed over the CPUs.
 pub const Counters = struct {
@@ -42,13 +42,13 @@ pub const Sampler = struct {
     /// One per possible CPU: the per-CPU state map returns one value for each.
     states: []WalkState,
 
-    /// Loads the program. `tables` must outlive the sampler: the program reads its maps.
-    pub fn init(sampler: *Sampler, gpa: std.mem.Allocator, tables: *const Tables) !void {
+    /// Loads the program. `unwind_maps` must outlive the sampler: the program reads its maps.
+    pub fn init(sampler: *Sampler, gpa: std.mem.Allocator, unwind_maps: *const UnwindMaps) !void {
         const object = try Object.init(@embedFile("cpu_bpf"));
 
         // Both sides of each shared map must agree, or the program would read past its values.
-        for (tables.bindings(), 0..) |binding, index| {
-            try loader.map_check(&object, binding.name, &tables.maps.values[index]);
+        for (unwind_maps.bindings(), 0..) |binding, index| {
+            try loader.map_check(&object, binding.name, &unwind_maps.maps.values[index]);
         }
 
         const cpu_possible_count = try libbpf.cpu_possible_count();
@@ -64,7 +64,7 @@ pub const Sampler = struct {
             const name: MapName = @enumFromInt(index);
             binding.* = .{ .name = @tagName(name), .fd = sampler.maps.get(name).fd };
         }
-        bindings[map_count..].* = tables.bindings();
+        bindings[map_count..].* = unwind_maps.bindings();
 
         sampler.program = try loader.program_load(gpa, &object, .{
             .kind = .perf_event,
@@ -190,15 +190,15 @@ test "the program's maps are declared as the agent expects them" {
 }
 
 test "init and deinit, and nothing is counted before a target is set (needs root)" {
-    var tables: Tables = undefined;
-    tables.init(testing.allocator) catch |err| switch (err) {
+    var unwind_maps: UnwindMaps = undefined;
+    unwind_maps.init() catch |err| switch (err) {
         error.PermissionDenied, error.NotSupported => return error.SkipZigTest,
         else => return err,
     };
-    defer tables.deinit(testing.allocator);
+    defer unwind_maps.deinit();
 
     var sampler: Sampler = undefined;
-    try sampler.init(testing.allocator, &tables);
+    try sampler.init(testing.allocator, &unwind_maps);
     defer sampler.deinit(testing.allocator);
 
     const counters = try sampler.counters_read();

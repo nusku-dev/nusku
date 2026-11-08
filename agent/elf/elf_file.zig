@@ -5,7 +5,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const File = @import("shared").File;
-const anonymous_memory = @import("../os/anonymous_memory.zig");
+const anonymous_memory = @import("../os.zig").anonymous_memory;
 const elf = @import("shared").elf;
 
 /// Address space only, so this can be generous. Larger files are refused, not truncated.

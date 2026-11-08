@@ -1,4 +1,4 @@
-//! A handle that lets another thread, or a signal handler, stop a running `profile`.
+//! A handle that lets another thread, or a signal handler, stop a `Run` or a `Watch`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -14,14 +14,14 @@ pub const Cancel = struct {
         return .{ .fd = @intCast(result) };
     }
 
-    /// Closes the handle. The `profile` call that uses it must have returned first.
+    /// Closes the handle. Its run or watch must be done with it.
     pub fn deinit(cancel: *Cancel) void {
         assert(cancel.fd >= 0);
         _ = linux.close(cancel.fd);
         cancel.* = undefined;
     }
 
-    /// Asks the `profile` that holds this handle to stop. Safe from any thread, from a signal
+    /// Asks what holds this handle to stop. Safe from any thread, from a signal
     /// handler (it is one write), and more than once. It stays triggered for good.
     pub fn trigger(cancel: *const Cancel) void {
         assert(cancel.fd >= 0);

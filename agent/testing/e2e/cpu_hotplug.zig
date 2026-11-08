@@ -4,12 +4,12 @@
 
 const std = @import("std");
 const testing = std.testing;
-const Tables = @import("../../unwind/tables.zig").Tables;
-const Collector = @import("../../cpu/collector.zig").Collector;
-const cpus = @import("../../os/cpus.zig");
-const libbpf = @import("../../bpf/libbpf.zig");
+const UnwindMaps = @import("../../ebpf/unwind_maps.zig").UnwindMaps;
+const Collector = @import("../../ebpf/cpu/collector.zig").Collector;
+const cpus = @import("../../os.zig").cpus;
+const libbpf = @import("../../ebpf/bpf/libbpf.zig");
 const child_process = @import("../process.zig");
-const timer = @import("../../os/timer.zig");
+const timer = @import("../../os.zig").timer;
 
 test "a CPU that comes online during a run is sampled (opt-in: NUSKU_E2E_HOTPLUG=1, root)" {
     if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
@@ -24,11 +24,12 @@ test "a CPU that comes online during a run is sampled (opt-in: NUSKU_E2E_HOTPLUG
     const child = try child_process.burner_spawn(5000);
     defer child_process.child_reap(child);
 
-    const fixture = try testing.allocator.create(struct { tables: Tables, collector: Collector });
+    const Fixture = struct { unwind_maps: UnwindMaps, collector: Collector };
+    const fixture = try testing.allocator.create(Fixture);
     defer testing.allocator.destroy(fixture);
-    try fixture.tables.init(testing.allocator);
-    defer fixture.tables.deinit(testing.allocator);
-    try fixture.collector.init(testing.allocator, &fixture.tables, .{ .sample_hz = 999 });
+    try fixture.unwind_maps.init();
+    defer fixture.unwind_maps.deinit();
+    try fixture.collector.init(testing.allocator, &fixture.unwind_maps, .{ .sample_hz = 999 });
     defer fixture.collector.deinit(testing.allocator);
 
     try fixture.collector.start(child);

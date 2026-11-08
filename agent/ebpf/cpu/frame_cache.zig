@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const cpu_wire = @import("../bpf/kernel/shared/cpu_wire.zig");
+const cpu_wire = @import("../kernel/shared/cpu_wire.zig");
 
 const RecordHeader = cpu_wire.RecordHeader;
 const header_size = @sizeOf(RecordHeader);

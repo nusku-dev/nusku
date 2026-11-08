@@ -1,176 +1,135 @@
-//! The agent's second loop, next to `profile`: a look at every process of the machine at once,
-//! then one every interval, until a cancel or the duration. All on the calling thread.
+//! The processes layer: what /proc says about every process of the machine, a frame at a time.
+//! No eBPF: files only, readable by anyone. Stands on os.
+//!   proc.zig  one look at /proc: every process's stat, status, cmdline and user
 
 const std = @import("std");
-const Cancel = @import("os/cancel.zig").Cancel;
-const log = @import("log.zig").agent;
-const procs = @import("processes/process.zig");
-const timer = @import("os/timer.zig");
-const poll_file = @import("os/poll.zig");
-const Looks = @import("processes/process.zig").Looks;
+const timer = @import("os.zig").timer;
+const assert = std.debug.assert;
 
-pub const Frame = procs.Frame;
+const Proc = @import("processes/proc.zig").Proc;
+const Stat = @import("processes/stat.zig").Stat;
 
-pub const StopReason = enum { duration, cancelled };
+const protocol = @import("shared").protocol;
+pub const ProcessInfo = protocol.ProcessInfo;
+pub const Frame = protocol.ProcessFrame;
 
-pub const Options = struct {
-    /// Milliseconds between two looks. The CPU of each process is measured over this.
-    interval_ms: u32,
-    /// Seconds to watch. 0 watches until the watch is cancelled.
-    duration_s: u32 = 0,
-    /// Lets another thread, or a signal handler, stop the watch. Null: only the duration or a
-    /// failing callback stops it.
-    cancel: ?*const Cancel = null,
+/// The look now and the look before, swapped each look, and the frame built from them.
+pub const Processes = struct {
+    procs: [2]Proc = .{ .{}, .{} },
+    /// Which of `procs` the next read fills.
+    now: usize = 0,
+    /// When the look before was taken (monotonic), or null before the first.
+    previous_ns: ?u64 = null,
+    /// Clock ticks per second, the unit of CPU time in /proc. 100 on every Linux today, but
+    /// the kernel says it in the auxiliary vector, so it is read, not assumed.
+    ticks_per_s: u64,
+    /// When the machine booted, in Unix ns: /proc counts start times from it.
+    boot_unix_ns: u64,
+    infos: std.ArrayList(ProcessInfo) = .empty,
+
+    pub fn init() Processes {
+        const ticks = std.c.getauxval(std.elf.AT_CLKTCK);
+        assert(ticks > 0);
+        // Read back to back: wall time now minus time since boot is when it booted.
+        const boot_unix_ns = timer.realtime_ns() - timer.boottime_ns();
+        return .{ .ticks_per_s = ticks, .boot_unix_ns = boot_unix_ns };
+    }
+
+    pub fn deinit(processes: *Processes, gpa: std.mem.Allocator) void {
+        for (&processes.procs) |*proc| proc.deinit(gpa);
+        processes.infos.deinit(gpa);
+        processes.* = undefined;
+    }
+
+    // Every process now. The frame points into `processes`: good until the next `take`.
+    pub fn take(processes: *Processes, gpa: std.mem.Allocator) !Frame {
+        const now_ns = timer.monotonic_ns();
+        const now = &processes.procs[processes.now];
+        const before = &processes.procs[1 - processes.now];
+        try now.read(gpa);
+        const interval_ns: u64 = if (processes.previous_ns) |previous| now_ns - previous else 0;
+
+        processes.infos.clearRetainingCapacity();
+        var entries = now.entries.valueIterator();
+        while (entries.next()) |entry| {
+            try processes.infos.append(gpa, .{
+                .pid = entry.stat.pid,
+                .name = entry.stat.name(),
+                .user = entry.user,
+                .threads = entry.status.threads,
+                .command = entry.cmdline.text(),
+                .cpu_percent = processes.cpu_of(before, &entry.stat, interval_ns),
+                .memory_bytes = entry.status.rss_kb * 1024,
+                .started_unix_ns = processes.started_of(&entry.stat),
+            });
+        }
+
+        processes.previous_ns = now_ns;
+        processes.now = 1 - processes.now;
+        return .{
+            .unix_ns = timer.realtime_ns(),
+            .interval_ns = interval_ns,
+            .processes = processes.infos.items,
+        };
+    }
+
+    /// Null on the first look, and for a process that started since the look before.
+    fn cpu_of(
+        processes: *const Processes,
+        before: *const Proc,
+        stat: *const Stat,
+        interval_ns: u64,
+    ) ?f32 {
+        if (interval_ns == 0) return null;
+        const old = before.same(stat) orelse return null;
+        return cpu_percent(old.stat.cpu_ticks, stat.cpu_ticks, interval_ns, processes.ticks_per_s);
+    }
+
+    /// When the process started, in Unix ns.
+    fn started_of(processes: *const Processes, stat: *const Stat) u64 {
+        return started_unix_ns(processes.boot_unix_ns, stat.start_ticks, processes.ticks_per_s);
+    }
+
+    /// CPU use between two processes, per core: a process busy on 2 cores shows 200, as in `top`.
+    fn cpu_percent(ticks_before: u64, ticks_now: u64, interval_ns: u64, ticks_per_s: u64) f32 {
+        assert(interval_ns > 0);
+        assert(ticks_per_s > 0);
+        // The kernel never takes CPU time back from a process: `same` made sure it is one.
+        assert(ticks_now >= ticks_before);
+        const used_s = @as(f64, @floatFromInt(ticks_now - ticks_before)) /
+            @as(f64, @floatFromInt(ticks_per_s));
+        const interval_s = @as(f64, @floatFromInt(interval_ns)) / std.time.ns_per_s;
+        return @floatCast(used_s / interval_s * 100);
+    }
+
+    /// Start ticks since boot to Unix ns. Pure, so it is tested without a process.
+    fn started_unix_ns(boot_unix_ns: u64, start_ticks: u64, ticks_per_s: u64) u64 {
+        assert(ticks_per_s > 0);
+        return boot_unix_ns + start_ticks * std.time.ns_per_s / ticks_per_s;
+    }
 };
-
-const Source = enum { look_timer, cancel };
-const Poll = poll_file.Poll(Source);
-
-/// Watches the processes of the machine, and says why it stopped.
-///
-///     fn on_frame(state: *State, frame: *const Frame) !void
-///
-/// runs once per look. The frame is valid only during the call. The first has no
-/// `cpu_percent`: CPU is measured against the look before.
-pub fn watch_processes(
-    gpa: std.mem.Allocator,
-    options: Options,
-    context: anytype,
-    comptime on_frame: anytype,
-) !StopReason {
-    comptime callback_check(@TypeOf(context), on_frame);
-    errdefer |err| log.err("watching processes failed", .{ .cause = err });
-    if (options.interval_ms == 0) return error.InvalidInterval;
-
-    var look_timer = try timer.Timer.init(options.interval_ms);
-    defer look_timer.deinit();
-    var poll = Poll.init(.init(.{
-        .look_timer = look_timer.fd,
-        .cancel = if (options.cancel) |cancel| cancel.fd else -1,
-    }));
-    const deadline_ns = timer.deadline_from(options.duration_s);
-    log.info("watching processes", .{
-        .interval_ms = options.interval_ms,
-        .duration_s = options.duration_s,
-    });
-
-    var looks = Looks.init();
-    defer looks.deinit(gpa);
-
-    try look_deliver(&looks, gpa, context, on_frame);
-    var show: u64 = 1;
-
-    // Every round waits on poll, so the loop cannot spin. A cancel wins over the duration.
-    const stop: StopReason = while (true) {
-        const ready = try poll.wait(timer.timeout_ms(deadline_ns));
-        if (ready.contains(.cancel)) break .cancelled;
-        if (deadline_ns) |deadline| {
-            if (timer.monotonic_ns() >= deadline) break .duration;
-        }
-        if (ready.contains(.look_timer)) {
-            // Missed periods are not made up: the next frame's interval_ns says how long it was.
-            _ = try look_timer.expirations_read();
-            try look_deliver(&looks, gpa, context, on_frame);
-            show += 1;
-        }
-    };
-
-    log.info("watching processes stopped", .{ .reason = stop, .looks = show });
-    return stop;
-}
-
-/// For now an empty look: the steps after this fill it from /proc.
-fn look_deliver(
-    looks: *Looks,
-    gpa: std.mem.Allocator,
-    context: anytype,
-    comptime on_frame: anytype,
-) !void {
-    const frame = try looks.take(gpa);
-
-    // The callback may return void or an error union; an error stops the watch.
-    const Return = @typeInfo(@TypeOf(on_frame)).@"fn".return_type.?;
-    if (@typeInfo(Return) == .error_union) {
-        try on_frame(context, &frame);
-    } else {
-        on_frame(context, &frame);
-    }
-}
-
-/// Clear compile errors for the easy mistakes, instead of a long error from deep inside.
-fn callback_check(comptime Context: type, comptime on_frame: anytype) void {
-    const pointer = switch (@typeInfo(Context)) {
-        .pointer => |pointer| pointer,
-        else => @compileError("watch: `context` must be a pointer to your state, like &state"),
-    };
-    if (pointer.size != .one or pointer.is_const) {
-        @compileError("watch: `context` must be a mutable pointer to one value, like &state");
-    }
-
-    const callback = switch (@typeInfo(@TypeOf(on_frame))) {
-        .@"fn" => |callback| callback,
-        else => @compileError("watch: `on_frame` must be a function"),
-    };
-    const signature = "watch: `on_frame` must be `fn (" ++ @typeName(Context) ++
-        ", *const Frame) !void`";
-    if (callback.params.len != 2) @compileError(signature);
-    if (callback.params[0].type.? != Context) @compileError(signature);
-    if (callback.params[1].type.? != *const Frame) @compileError(signature);
-}
-
-// --- tests ---
 const testing = std.testing;
-const process = @import("os/process.zig");
 
-const Counter = struct {
-    looks: u32 = 0,
-    fn on_frame(counter: *Counter, frame: *const Frame) void {
-        _ = frame;
-        counter.looks += 1;
-    }
-};
-
-test "the first look comes at once, then one per interval, until the duration" {
-    var counter = Counter{};
-    const reason = try watch_processes(testing.allocator, .{
-        .interval_ms = 300,
-        .duration_s = 1,
-    }, &counter, Counter.on_frame);
-    try testing.expectEqual(StopReason.duration, reason);
-    // At 0, 300, 600 and 900 ms; the 4th can lose the race with the deadline.
-    try testing.expect(counter.looks >= 3 and counter.looks <= 4);
+test {
+    _ = @import("processes/proc.zig");
+    _ = @import("processes/stat.zig");
+    _ = @import("processes/statm.zig");
+    _ = @import("processes/status.zig");
+    _ = @import("processes/users.zig");
+    _ = @import("processes/cmdline.zig");
 }
 
-test "a cancel stops the watch after the first look" {
-    var cancel = try Cancel.init();
-    defer cancel.deinit();
-    cancel.trigger();
-
-    var counter = Counter{};
-    const reason = try watch_processes(testing.allocator, .{
-        .interval_ms = 1000,
-        .cancel = &cancel,
-    }, &counter, Counter.on_frame);
-    try testing.expectEqual(StopReason.cancelled, reason);
-    try testing.expectEqual(@as(u32, 1), counter.looks);
+test "cpu_percent is per core" {
+    const second = std.time.ns_per_s;
+    try testing.expectApproxEqAbs(@as(f32, 50), Processes.cpu_percent(100, 150, second, 100), 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 200), Processes.cpu_percent(0, 200, second, 100), 0.01);
+    try testing.expectEqual(@as(f32, 0), Processes.cpu_percent(7, 7, second, 100));
 }
 
-const Busy = struct {
-    frames: u32 = 0,
-    first_cpu: ?f32 = 0,
-    own_cpu: ?f32 = null,
-    own_memory: u64 = 0,
-
-    fn on_frame(busy: *Busy, frame: *const Frame) void {
-        busy.frames += 1;
-        for (frame.processes) |info| {
-            if (info.pid != process.current_pid()) continue;
-            if (busy.frames == 1) busy.first_cpu = info.cpu_percent;
-            busy.own_cpu = info.cpu_percent;
-            busy.own_memory = info.memory_bytes;
-        }
-        // Work until the next look, so it sees this process on the CPU.
-        const until = timer.monotonic_ns() + 150 * std.time.ns_per_ms;
-        while (timer.monotonic_ns() < until) {}
-    }
-};
+test "started_unix_ns counts ticks from the boot" {
+    // 250 ticks at 100 per second: 2.5 s after the boot.
+    try testing.expectEqual(
+        @as(u64, 1000 + 2_500_000_000),
+        Processes.started_unix_ns(1000, 250, 100),
+    );
+}

@@ -4,8 +4,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const linux = std.os.linux;
-const timer = @import("../os/timer.zig");
-const process = @import("../os/process.zig");
+const timer = @import("../os.zig").timer;
+const process = @import("../os.zig").process;
 const vdso = @import("../target/vdso.zig");
 const elf = @import("shared").elf;
 
@@ -134,6 +134,22 @@ pub fn child_kill(pid: u32) void {
 }
 
 /// Kills the child if it still runs, and waits for it, so it leaves no zombie.
+/// Until the killed child is a zombie: it has no mappings left. Polls, instead of sleeping and
+/// hoping.
+pub fn zombie_wait(pid: u32) !void {
+    const process_maps = @import("../target/process_maps.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tries: u32 = 0;
+    while (tries < 100) : (tries += 1) {
+        _ = arena.reset(.retain_capacity);
+        const mappings = try process_maps.read(arena.allocator(), pid);
+        if (mappings.len == 0) return;
+        timer.sleep_ms(10);
+    }
+    return error.ZombieTimeout;
+}
+
 pub fn child_reap(pid: u32) void {
     child_kill(pid);
     var status: u32 = 0;

@@ -4,6 +4,9 @@ date: 2026-10-31
 
 # Ep14: Using the Agent's API
 
+> **Superseded.** `profile` and its hooks were replaced by `Run` and `Watch`, pulled with
+> `next()`: see [Ep19](ep19-layers-a-pull-api-and-one-protocol.md).
+
 The agent is a library. The CLI uses it today, and the server will use it next: it will start
 profiles with options, listen to the data in real time, and later turn the addresses into
 function names with a symbolizer. This episode is the guide for that: what to call, what comes

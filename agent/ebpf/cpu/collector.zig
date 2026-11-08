@@ -6,11 +6,11 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const cpu_wire = @import("../bpf/kernel/shared/cpu_wire.zig");
+const cpu_wire = @import("../kernel/shared/cpu_wire.zig");
 const RingBuffer = @import("../bpf/ring_buffer.zig").RingBuffer;
-const PerfEvent = @import("../os/perf_event.zig").PerfEvent;
-const cpus = @import("../os/cpus.zig");
-const Tables = @import("../unwind/tables.zig").Tables;
+const PerfEvent = @import("../../os.zig").perf_event.PerfEvent;
+const cpus = @import("../../os.zig").cpus;
+const UnwindMaps = @import("../unwind_maps.zig").UnwindMaps;
 const frame_cache = @import("frame_cache.zig");
 const sampler_file = @import("sampler.zig");
 const window = @import("window.zig");
@@ -20,7 +20,7 @@ const Sampler = sampler_file.Sampler;
 const Counters = sampler_file.Counters;
 const CountKey = cpu_wire.CountKey;
 
-const log = @import("../log.zig").agent;
+const log = @import("../../log.zig").agent;
 
 pub const Window = window.Window;
 pub const Stack = window.Stack;
@@ -67,7 +67,7 @@ pub const Collector = struct {
     pub fn init(
         collector: *Collector,
         gpa: std.mem.Allocator,
-        tables: *const Tables,
+        unwind_maps: *const UnwindMaps,
         options: Options,
     ) !void {
         assert(options.sample_hz > 0);
@@ -88,7 +88,7 @@ pub const Collector = struct {
             .records_malformed_previous = 0,
         };
 
-        try collector.sampler.init(gpa, tables);
+        try collector.sampler.init(gpa, unwind_maps);
         errdefer collector.sampler.deinit(gpa);
 
         try collector.cache.init(gpa, .{
@@ -319,26 +319,27 @@ fn window_log(result: *const Window) void {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const child_process = @import("../testing/process.zig");
-const process = @import("../os/process.zig");
+const child_process = @import("../../testing/process.zig");
+const process = @import("../../os.zig").process;
 
 const Fixture = struct {
-    tables: Tables,
+    unwind_maps: UnwindMaps,
     collector: Collector,
 
     /// Skips the test without the rights to load BPF programs.
     fn init(fixture: *Fixture) !void {
-        fixture.tables.init(testing.allocator) catch |err| switch (err) {
+        fixture.unwind_maps.init() catch |err| switch (err) {
             error.PermissionDenied, error.NotSupported => return error.SkipZigTest,
             else => return err,
         };
-        errdefer fixture.tables.deinit(testing.allocator);
-        try fixture.collector.init(testing.allocator, &fixture.tables, .{ .sample_hz = 999 });
+        errdefer fixture.unwind_maps.deinit();
+        const maps = &fixture.unwind_maps;
+        try fixture.collector.init(testing.allocator, maps, .{ .sample_hz = 999 });
     }
 
     fn deinit(fixture: *Fixture) void {
         fixture.collector.deinit(testing.allocator);
-        fixture.tables.deinit(testing.allocator);
+        fixture.unwind_maps.deinit();
     }
 
     fn report(fixture: *Fixture) !Window {
@@ -431,7 +432,7 @@ test "without unwind tables, stacks are one frame and stop at no_mapping (needs 
     try window_expect_consistent(&w);
     try testing.expect(w.samples > 0);
 
-    // The tables were never synced, so nearly every walk ends at its first frame.
+    // The unwind maps were never written, so nearly every walk ends at its first frame.
     const no_mapping = w.stops[@intFromEnum(window.StopReason.no_mapping)];
     try testing.expect(no_mapping * 10 >= w.samples * 9);
     try testing.expectEqual(@as(usize, 1), w.stacks[0].user.len);

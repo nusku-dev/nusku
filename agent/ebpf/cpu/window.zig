@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const cpu_wire = @import("../bpf/kernel/shared/cpu_wire.zig");
+const cpu_wire = @import("../kernel/shared/cpu_wire.zig");
 const frame_cache = @import("frame_cache.zig");
 
 pub const StopReason = cpu_wire.StopReason;

@@ -7,8 +7,11 @@ const assert = std.debug.assert;
 const File = @import("shared").File;
 const elf = @import("shared").elf;
 
-/// The path a kernel frame is shown under, and the binary's name in the logs.
-pub const path = "[kernel]";
+const protocol_kernel = @import("shared").protocol.kernel;
+pub const path = protocol_kernel.path;
+pub const id = protocol_kernel.id;
+pub const id_bytes_max = protocol_kernel.id_bytes_max;
+pub const segment = protocol_kernel.segment;
 
 /// The size of one Elf64_Sym.
 const sym_bytes = 24;
@@ -18,23 +21,6 @@ const symbols_max = 1 << 20;
 const names_bytes_max = 64 * 1024 * 1024;
 /// A kallsyms line: an address, a type, a name of at most KSYM_NAME_LEN (512), a module.
 const line_bytes_max = 1024;
-
-/// The identity of the kernel's symbols for this boot, in `buffer`: the build ID, then `_text`.
-/// Null when the kernel does not say either.
-pub fn id(buffer: *[id_bytes_max]u8, build_id: ?[]const u8, text_address: ?u64) ?[]const u8 {
-    const kernel_id = build_id orelse return null;
-    const text = text_address orelse return null;
-    if (kernel_id.len == 0 or kernel_id.len + 8 > id_bytes_max) return null;
-    @memcpy(buffer[0..kernel_id.len], kernel_id);
-    std.mem.writeInt(u64, buffer[kernel_id.len..][0..8], text, .little);
-    return buffer[0 .. kernel_id.len + 8];
-}
-
-/// Room for `id`: a build ID of at most 56 bytes and the 8 of `_text`.
-pub const id_bytes_max = 64;
-
-/// The one segment of the kernel's "file": every offset is its own address.
-pub const segment = elf.Segment{ .offset = 0, .vaddr = 0, .filesz = std.math.maxInt(u64) };
 
 pub const Symbols = struct {
     symtab: []const u8,
@@ -240,14 +226,6 @@ test "hidden addresses (not root) give nothing to send" {
         \\0000000000000000 t do_one_initcall
     ;
     try testing.expectEqual(@as(?Symbols, null), try parse(arena.allocator(), text, 0));
-}
-
-test "the identity is the build ID and _text, and needs both" {
-    var buffer: [id_bytes_max]u8 = undefined;
-    const both = id(&buffer, "\xab\xcd", 0x1122).?;
-    try testing.expectEqualSlices(u8, "\xab\xcd\x22\x11\x00\x00\x00\x00\x00\x00", both);
-    try testing.expectEqual(@as(?[]const u8, null), id(&buffer, null, 0x1122));
-    try testing.expectEqual(@as(?[]const u8, null), id(&buffer, "\xab", null));
 }
 
 test "kallsyms read a little at a time: hidden without root, the same symbols either way" {

@@ -1,8 +1,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const File = @import("shared").File;
-const Directory = @import("../os/directory.zig").Directory;
-const process = @import("../os/process.zig");
+const Directory = @import("../os.zig").directory.Directory;
+const process = @import("../os.zig").process;
 
 /// What /proc/<pid>/stat says about one process.
 pub const Stat = struct {

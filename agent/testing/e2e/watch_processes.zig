@@ -8,17 +8,15 @@
 const std = @import("std");
 const linux = std.os.linux;
 const testing = std.testing;
-const watch = @import("../../processes/process.zig");
+const process_file = @import("../../processes.zig");
 const child_process = @import("../process.zig");
-const anonymous_memory = @import("../../os/anonymous_memory.zig");
-const timer = @import("../../os/timer.zig");
-const ProcessInfo = @import("../../processes/process.zig").ProcessInfo;
-const processes = @import("../../processes.zig");
+const anonymous_memory = @import("../../os.zig").anonymous_memory;
+const timer = @import("../../os.zig").timer;
+const ProcessInfo = @import("../../processes.zig").ProcessInfo;
+const Watch = @import("../../watch.zig").Watch;
+const protocol = @import("shared").protocol;
 
-const watch_processes = processes.watch_processes;
-const StopReason = processes.StopReason;
-
-const Frame = watch.Frame;
+const Frame = process_file.Frame;
 
 const Role = enum { burn, sleep, memory, short };
 
@@ -131,11 +129,14 @@ test "the watch sees what known children do, and one that ends" {
         spawned.insert(role);
     }
 
-    const reason = try watch_processes(testing.allocator, .{
-        .interval_ms = 250,
-        .duration_s = 2,
-    }, &seen, Seen.on_frame);
-    try testing.expectEqual(StopReason.duration, reason);
+    var watch = try Watch.init(testing.allocator, .{ .interval_ms = 250, .duration_s = 2 });
+    defer watch.deinit();
+    var stopped: ?protocol.WatchStop = null;
+    while (try watch.next()) |event| switch (event) {
+        .frame => |frame| seen.on_frame(frame),
+        .stopped => |reason| stopped = reason,
+    };
+    try testing.expectEqual(@as(?protocol.WatchStop, .duration), stopped);
     try testing.expect(seen.frames >= 4);
 
     const burn = seen.last.get(.burn).?;

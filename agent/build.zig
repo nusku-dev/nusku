@@ -22,9 +22,9 @@ pub fn add(b: *std.Build, options: Options) *std.Build.Module {
     });
     module.addImport("log", options.log);
     add_c_libraries(b, module, options);
-    add_kernel_program(b, module, "cpu", "agent/bpf/kernel/cpu.bpf.zig");
+    add_kernel_program(b, module, "cpu", "agent/ebpf/kernel/cpu.bpf.zig");
     // Only the loader's tests use this one.
-    add_kernel_program(b, module, "loader_testing", "agent/bpf/kernel/loader_testing.bpf.zig");
+    add_kernel_program(b, module, "loader_testing", "agent/ebpf/kernel/loader_testing.bpf.zig");
 
     add_tests(b, module, options.test_step);
     return module;
@@ -48,6 +48,10 @@ fn add_kernel_program(
             .optimize = .ReleaseSmall,
             .strip = false,
         }),
+    });
+    // The unwind tables' layout, which the unwind layer owns: the programs read the tables.
+    object.root_module.addAnonymousImport("unwind_wire", .{
+        .root_source_file = b.path("agent/unwind/wire.zig"),
     });
     module.addImport(b.fmt("{s}_bpf", .{name}), b.createModule(.{
         .root_source_file = object.getEmittedBin(),

@@ -5,10 +5,10 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const cfi = @import("cfi.zig");
-const eh_frame = @import("eh_frame.zig");
+const eh_frame = @import("../elf.zig").eh_frame;
 const cfi_machine = @import("cfi_machine.zig");
 const go_pclntab = @import("go_pclntab.zig");
-const unwind_wire = @import("../bpf/kernel/shared/unwind_wire.zig");
+const unwind_wire = @import("wire.zig");
 
 const Machine = cfi_machine.Machine;
 const Program = cfi_machine.Program;

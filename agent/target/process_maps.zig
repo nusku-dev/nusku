@@ -162,7 +162,7 @@ test "reads this process's own mappings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const pid = @import("../os/process.zig").current_pid();
+    const pid = @import("../os.zig").process.current_pid();
 
     const maps = try read(arena.allocator(), pid);
     try std.testing.expect(maps.len > 0);
@@ -183,4 +183,33 @@ test "a process that does not exist is NotFound" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectError(error.NotFound, read(arena.allocator(), std.math.maxInt(i32)));
+}
+
+const testing = std.testing;
+const process = @import("../os.zig").process;
+
+test "mapping_open finds a mapping by its addresses when its path does not open" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const mappings = try read(arena.allocator(), process.current_pid());
+    const own = for (mappings) |mapping| {
+        if (mapping.path.len > 0 and mapping.path[0] == '/') break mapping;
+    } else return error.SkipZigTest;
+
+    // The path as it is: opens like `file_open`.
+    var file = try process.mapping_open(process.current_pid(), own.path, own.start, own.end);
+    file.deinit();
+
+    // A path that is not there, as in a sandbox: only the mapping is left, and opening it
+    // needs CAP_SYS_ADMIN.
+    const hidden = process.mapping_open(process.current_pid(), "/no/such/file", own.start, own.end);
+    if (std.os.linux.geteuid() != 0) {
+        try testing.expectError(error.Unreadable, hidden);
+        return;
+    }
+    var through_mapping = try hidden;
+    defer through_mapping.deinit();
+    var magic: [4]u8 = undefined;
+    _ = try through_mapping.read_at(&magic, 0);
+    try testing.expectEqualSlices(u8, "\x7fELF", &magic);
 }

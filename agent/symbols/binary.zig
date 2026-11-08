@@ -3,12 +3,10 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const target = @import("../target.zig");
 const shared = @import("shared");
-const build_id = @import("../target/build_id.zig");
-const mapped_file = @import("../target/mapped_file.zig");
-const vdso = @import("../target/vdso.zig");
-const Region = @import("../target/regions.zig").Region;
-const elf_file = @import("../unwind/elf_file.zig");
+const Region = target.Region;
+const elf_file = @import("../elf.zig").file;
 const vdso_symbols = @import("vdso_symbols.zig");
 const kernel_symbols = @import("kernel_symbols.zig");
 
@@ -18,53 +16,10 @@ const File = shared.File;
 /// More executable segments than this in one file is not a file we describe.
 const segments_max = 16;
 
-/// The sections of a binary the server reads its symbols from.
-pub const Section = enum {
-    symtab,
-    strtab,
-    dynsym,
-    dynstr,
-
-    /// The name in the ELF file.
-    pub fn name(section: Section) []const u8 {
-        return switch (section) {
-            .symtab => ".symtab",
-            .strtab => ".strtab",
-            .dynsym => ".dynsym",
-            .dynstr => ".dynstr",
-        };
-    }
-};
-
-/// Starts a binary's transfer. A section the file lacks has size 0.
-pub const Header = struct {
-    build_id: []const u8,
-    /// For display only; never opened.
-    path: []const u8,
-    /// The loadable, executable segments: how an offset in the file becomes the virtual
-    /// address that the symbols use.
-    segments: []const Segment,
-    sizes: std.EnumArray(Section, u64),
-
-    pub const Segment = elf.Segment;
-
-    /// A deep copy into `arena`.
-    pub fn clone(header: *const Header, arena: std.mem.Allocator) !Header {
-        return .{
-            .build_id = try arena.dupe(u8, header.build_id),
-            .path = try arena.dupe(u8, header.path),
-            .segments = try arena.dupe(Segment, header.segments),
-            .sizes = header.sizes,
-        };
-    }
-};
-
-/// A part of one section: `bytes` are the bytes of `section` from `offset`.
-pub const Chunk = struct {
-    section: Section,
-    offset: u64,
-    bytes: []const u8,
-};
+const stream = shared.protocol.binary;
+pub const Section = stream.Section;
+pub const Header = stream.Header;
+pub const Chunk = stream.Chunk;
 
 pub const Binary = struct {
     header: Header,
@@ -117,20 +72,21 @@ pub const Binary = struct {
     }
 };
 
-/// The binary behind `region`, its header in `arena`. `prefix` is `build_id.prefix_size` bytes
-/// of scratch. `image`, the agent's vDSO, must outlive the binary.
+/// The binary behind `region`, its header in `arena`. `prefix` is
+/// `target.build_id_prefix_size` bytes of scratch. `image`, the agent's vDSO, must outlive
+/// the binary.
 pub fn open(
     arena: std.mem.Allocator,
     pid: u32,
     region: *const Region,
     prefix: []u8,
-    image: ?*const vdso.Image,
+    image: ?*const target.VdsoImage,
 ) !Binary {
-    if (std.mem.eql(u8, region.path, vdso.path)) return open_vdso(arena, region, image);
+    if (std.mem.eql(u8, region.path, target.vdso_path)) return open_vdso(arena, region, image);
     if (region.path.len == 0 or region.path[0] != '/') return error.NotAFile;
     const id = region.build_id orelse return error.NoBuildId;
 
-    var file = try mapped_file.open(pid, region, prefix);
+    var file = try target.file_open(pid, region, prefix);
     errdefer file.deinit();
 
     // Only the headers and the section names: the symbol sections are streamed later.
@@ -145,7 +101,7 @@ pub fn open(
 fn open_vdso(
     arena: std.mem.Allocator,
     region: *const Region,
-    image_found: ?*const vdso.Image,
+    image_found: ?*const target.VdsoImage,
 ) !Binary {
     const image = image_found orelse return error.NoVdso;
     if (!image.matches(region.end - region.start)) return error.NoVdso;
@@ -155,7 +111,7 @@ fn open_vdso(
         if (!std.mem.eql(u8, expected, id)) return error.WrongFile;
     }
 
-    var layout = try layout_read(arena, id, vdso.path, image.bytes);
+    var layout = try layout_read(arena, id, target.vdso_path, image.bytes);
     // `layout_read` checked that every section lies inside the image.
     var sections = std.EnumArray(Section, []const u8).initFill(&.{});
     for (std.enums.values(Section)) |section| {
@@ -234,7 +190,8 @@ fn layout_read(
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const process = @import("../os/process.zig");
+const os = @import("../os.zig");
+const process = @import("../os.zig").process;
 
 fn region_test(path: []const u8, id: ?[]const u8) Region {
     return .{
@@ -272,23 +229,25 @@ test "the vDSO is a binary: its header, and its dynamic symbols in small chunks"
     defer arena.deinit();
     const pid = process.current_pid();
 
-    const image = (try vdso.read(arena.allocator())) orelse return error.SkipZigTest;
+    var own = try target.Target.init(testing.allocator, os.process.current_pid());
+    defer own.deinit(testing.allocator);
+    const image = own.vdso_image() orelse return error.SkipZigTest;
     const id = image.build_id orelse return error.SkipZigTest;
     const region = Region{
         .start = 0x7000,
         .end = 0x7000 + image.bytes.len,
         .offset = 0,
         .inode = 0,
-        .path = vdso.path,
+        .path = target.vdso_path,
         .build_id = id,
     };
 
-    var prefix: [build_id.prefix_size]u8 = undefined;
-    var binary = try open(arena.allocator(), pid, &region, &prefix, &image);
+    var prefix: [target.build_id_prefix_size]u8 = undefined;
+    var binary = try open(arena.allocator(), pid, &region, &prefix, image);
     defer binary.deinit();
 
     try testing.expectEqualSlices(u8, id, binary.header.build_id);
-    try testing.expectEqualStrings(vdso.path, binary.header.path);
+    try testing.expectEqualStrings(target.vdso_path, binary.header.path);
     try testing.expect(binary.header.segments.len >= 1);
     const dynsym_size = binary.header.sizes.get(.dynsym);
     try testing.expect(dynsym_size > 0 and dynsym_size % 24 == 0);
@@ -299,7 +258,7 @@ test "the vDSO is a binary: its header, and its dynamic symbols in small chunks"
     // A [vdso] of another size is not the agent's own.
     var other = region;
     other.end += 4096;
-    try testing.expectError(error.NoVdso, open(arena.allocator(), pid, &other, &prefix, &image));
+    try testing.expectError(error.NoVdso, open(arena.allocator(), pid, &other, &prefix, image));
     // Without an image of its own, the agent has nothing to send for a [vdso].
     try testing.expectError(error.NoVdso, open(arena.allocator(), pid, &region, &prefix, null));
 }
@@ -307,13 +266,13 @@ test "the vDSO is a binary: its header, and its dynamic symbols in small chunks"
 test "a system binary: chunks of any size give the same bytes" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var prefix: [build_id.prefix_size]u8 = undefined;
+    var prefix: [target.build_id_prefix_size]u8 = undefined;
     const pid = process.current_pid();
 
-    var file = try mapped_file.open(pid, &region_test("/bin/sh", null), &prefix);
+    var file = try target.file_open(pid, &region_test("/bin/sh", null), &prefix);
     const prefix_read = try file.read_at(&prefix, 0);
     file.deinit();
-    const id = build_id.from_prefix(prefix[0..prefix_read]) orelse return error.SkipZigTest;
+    const id = target.build_id_of(prefix[0..prefix_read]) orelse return error.SkipZigTest;
 
     var binary = try open(arena.allocator(), pid, &region_test("/bin/sh", id), &prefix, null);
     defer binary.deinit();
@@ -332,7 +291,7 @@ test "a system binary: chunks of any size give the same bytes" {
 test "regions without a file or without an identity are refused" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var prefix: [build_id.prefix_size]u8 = undefined;
+    var prefix: [target.build_id_prefix_size]u8 = undefined;
     const pid = process.current_pid();
 
     const anonymous = region_test("", null);
@@ -340,26 +299,4 @@ test "regions without a file or without an identity are refused" {
     try testing.expectError(error.NotAFile, open(gpa, pid, &anonymous, &prefix, null));
     const no_id = region_test("/bin/sh", null);
     try testing.expectError(error.NoBuildId, open(gpa, pid, &no_id, &prefix, null));
-}
-
-test "Header.clone copies the identity, the segments and the sizes" {
-    const segments = [_]Header.Segment{.{ .offset = 0x1000, .vaddr = 0x401000, .filesz = 0x200 }};
-    var sizes = std.EnumArray(Section, u64).initFill(0);
-    sizes.set(.dynsym, 240);
-    const original = Header{
-        .build_id = "\x01\x02\x03\x04",
-        .path = "/usr/lib/libx.so",
-        .segments = &segments,
-        .sizes = sizes,
-    };
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const copy = try original.clone(arena.allocator());
-
-    try testing.expectEqualSlices(u8, original.build_id, copy.build_id);
-    try testing.expectEqual(@as(u64, 0x401000), copy.segments[0].vaddr);
-    try testing.expectEqual(@as(u64, 240), copy.sizes.get(.dynsym));
-    try testing.expectEqual(@as(u64, 0), copy.sizes.get(.symtab));
-    try testing.expect(copy.segments.ptr != original.segments.ptr);
 }

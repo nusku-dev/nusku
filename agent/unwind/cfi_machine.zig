@@ -2,7 +2,7 @@
 //! rule that holds over each range of addresses the FDE covers.
 
 const std = @import("std");
-const eh_frame = @import("eh_frame.zig");
+const eh_frame = @import("../elf.zig").eh_frame;
 const cfi = @import("cfi.zig");
 
 /// DW_CFA_remember_state nesting. Compilers nest it once or twice; deeper is refused.

@@ -14,7 +14,7 @@ const Program = program_file.Program;
 
 pub const Error = libbpf.Error || object_file.Error || error{ UnknownMap, MapMismatch };
 
-const log = @import("../log.zig").agent;
+const log = @import("../../log.zig").agent;
 
 /// R_BPF_64_64: the relocation kind of a map reference.
 const relocation_map: u32 = 1;

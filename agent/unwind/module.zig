@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const eh_frame = @import("eh_frame.zig");
+const eh_frame = @import("../elf.zig").eh_frame;
 const elf = @import("shared").elf;
 const go_pclntab = @import("go_pclntab.zig");
 const table = @import("table.zig");
@@ -158,9 +158,9 @@ test "a merge keeps .eh_frame, and adds .debug_frame only where nothing else is"
     try testing.expectEqual(@as(usize, 2), none.len);
 }
 
-const process_maps = @import("../target/process_maps.zig");
-const process = @import("../os/process.zig");
-const elf_file = @import("elf_file.zig");
+const target_layer = @import("../target.zig");
+const process = @import("../os.zig").process;
+const elf_file = @import("../elf.zig").file;
 const File = @import("shared").File;
 
 test "C built without unwind tables (musl's, here) gets its rows from .debug_frame" {
@@ -169,8 +169,9 @@ test "C built without unwind tables (musl's, here) gets its rows from .debug_fra
 
     // Where clock_gettime is in this process, and the file mapped there.
     const address = @intFromPtr(&std.c.clock_gettime);
-    const mappings = try process_maps.read(arena.allocator(), process.current_pid());
-    const mapping = for (mappings) |found| {
+    var own = try target_layer.Target.init(testing.allocator, process.current_pid());
+    defer own.deinit(testing.allocator);
+    const mapping = for (own.regions) |found| {
         if (address >= found.start and address < found.end) break found;
     } else return error.SkipZigTest;
     if (mapping.path.len == 0 or mapping.path[0] != '/') return error.SkipZigTest;

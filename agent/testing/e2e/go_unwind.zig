@@ -6,13 +6,14 @@ const std = @import("std");
 const testing = std.testing;
 const go_build = @import("../go_build.zig");
 const child_process = @import("../process.zig");
-const timer = @import("../../os/timer.zig");
-const elf_file = @import("../../unwind/elf_file.zig");
+const timer = @import("../../os.zig").timer;
+const elf_file = @import("../../elf.zig").file;
 const module = @import("../../unwind/module.zig");
 const table = @import("../../unwind/table.zig");
 const File = @import("shared").File;
-const session_file = @import("../../session.zig");
-const collector_file = @import("../../cpu/collector.zig");
+const Target = @import("../../target.zig").Target;
+const Ebpf = @import("../../ebpf.zig").Ebpf;
+const collector_file = @import("../../ebpf/cpu/collector.zig");
 const build_id = @import("../../target/build_id.zig");
 
 const source = @embedFile("go/frameless.go");
@@ -108,21 +109,20 @@ test "a running Go program: the caller of a frameless function is found (needs r
     defer child_process.child_reap(child);
     timer.sleep_ms(50); // Long enough for exec: the maps must show the Go binary, not our fork.
 
-    const session = try testing.allocator.create(session_file.Session);
-    defer testing.allocator.destroy(session);
-    try session.init(testing.allocator, .{
-        .pid = child,
-        .metrics = std.EnumSet(session_file.Metric).initOne(.cpu),
-    });
-    defer session.deinit(testing.allocator);
+    var target = try Target.init(testing.allocator, child);
+    defer target.deinit(testing.allocator);
+    const ebpf = try testing.allocator.create(Ebpf);
+    defer testing.allocator.destroy(ebpf);
+    try ebpf.init(testing.allocator, &target, .{ .metrics = .initOne(.cpu) });
+    defer ebpf.deinit(testing.allocator);
 
     var round: u32 = 0;
     while (round < 5) : (round += 1) {
         timer.sleep_ms(100);
-        try session.tick();
+        try ebpf.tick();
     }
-    const report = try session.report(testing.allocator);
-    const window = report.cpu orelse return error.TestUnexpectedResult;
+    const windows = try ebpf.collect(testing.allocator, &target);
+    const window = windows.cpu orelse return error.TestUnexpectedResult;
 
     var leaf_samples: u64 = 0;
     var leaf_samples_called_by_middle: u64 = 0;

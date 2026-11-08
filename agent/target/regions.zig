@@ -10,19 +10,7 @@ const Mapping = process_maps.Mapping;
 
 const assert = std.debug.assert;
 
-/// One executable region of the target process.
-pub const Region = struct {
-    start: u64,
-    end: u64,
-    /// The offset inside the file that `start` corresponds to.
-    offset: u64,
-    inode: u64,
-    /// As the process sees it. Special regions have names like "[vdso]"; anonymous memory
-    /// (for example JIT code) has an empty path.
-    path: []const u8,
-    /// Null when there is none, or nothing to read it from (see build_id.for_mapping).
-    build_id: ?[]const u8,
-};
+pub const Region = @import("shared").protocol.Region;
 
 /// The regions of `mappings`, with their build IDs. A build ID already known, in this table or
 /// in `previous`, is reused; only a file not seen before is read. Everything lives in `arena`.
@@ -92,7 +80,7 @@ fn region_find(regions: []const Region, mapping: Mapping) ?*const Region {
 // ------------------------------------------------------------------------------------- tests
 
 const read = process_maps.read;
-const process = @import("../os/process.zig");
+const process = @import("../os.zig").process;
 
 const Location = struct {
     region: *const Region,

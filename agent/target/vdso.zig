@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const process = @import("../os/process.zig");
+const process = @import("../os.zig").process;
 const process_maps = @import("process_maps.zig");
 const build_id = @import("build_id.zig");
 const log = @import("../log.zig").agent;

@@ -56,30 +56,3 @@ test "file_open reads a file as the process sees it" {
     file.deinit();
     try std.testing.expectError(error.Unreadable, file_open(current_pid(), "/no/such/file"));
 }
-
-test "mapping_open finds a mapping by its addresses when its path does not open" {
-    const maps = @import("../target/process_maps.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const mappings = try maps.read(arena.allocator(), current_pid());
-    const own = for (mappings) |mapping| {
-        if (mapping.path.len > 0 and mapping.path[0] == '/') break mapping;
-    } else return error.SkipZigTest;
-
-    // The path as it is: opens like `file_open`.
-    var file = try mapping_open(current_pid(), own.path, own.start, own.end);
-    file.deinit();
-
-    // A path that is not there, as in a sandbox: only the mapping is left, and opening it
-    // needs CAP_SYS_ADMIN.
-    const hidden = mapping_open(current_pid(), "/no/such/file", own.start, own.end);
-    if (std.os.linux.geteuid() != 0) {
-        try std.testing.expectError(error.Unreadable, hidden);
-        return;
-    }
-    var through_mapping = try hidden;
-    defer through_mapping.deinit();
-    var magic: [4]u8 = undefined;
-    _ = try through_mapping.read_at(&magic, 0);
-    try std.testing.expectEqualSlices(u8, "\x7fELF", &magic);
-}

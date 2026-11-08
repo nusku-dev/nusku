@@ -4,7 +4,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const registry = @import("registry.zig");
-const unwind_wire = @import("../bpf/kernel/shared/unwind_wire.zig");
+const unwind_wire = @import("wire.zig");
 
 pub const Mapping = unwind_wire.Mapping;
 pub const ProcessEntry = unwind_wire.ProcessEntry;

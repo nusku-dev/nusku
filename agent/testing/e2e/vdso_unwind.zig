@@ -4,12 +4,12 @@
 
 const std = @import("std");
 const testing = std.testing;
-const session_file = @import("../../session.zig");
+const Target = @import("../../target.zig").Target;
+const Ebpf = @import("../../ebpf.zig").Ebpf;
 const vdso = @import("../../target/vdso.zig");
-const timer = @import("../../os/timer.zig");
+const timer = @import("../../os.zig").timer;
 const child_process = @import("../process.zig");
 
-const Session = session_file.Session;
 const Region = @import("../../target/regions.zig").Region;
 
 test "stacks inside the vDSO keep their callers (needs root, skipped otherwise)" {
@@ -21,25 +21,24 @@ test "stacks inside the vDSO keep their callers (needs root, skipped otherwise)"
     const child = try child_process.clock_reader_spawn(3000, clock_gettime);
     defer child_process.child_reap(child);
 
-    const session = try testing.allocator.create(Session);
-    defer testing.allocator.destroy(session);
-    try session.init(testing.allocator, .{
-        .pid = child,
-        .metrics = std.EnumSet(session_file.Metric).initOne(.cpu),
-    });
-    defer session.deinit(testing.allocator);
+    var target = try Target.init(testing.allocator, child);
+    defer target.deinit(testing.allocator);
+    const ebpf = try testing.allocator.create(Ebpf);
+    defer testing.allocator.destroy(ebpf);
+    try ebpf.init(testing.allocator, &target, .{ .metrics = .initOne(.cpu) });
+    defer ebpf.deinit(testing.allocator);
 
     var round: u32 = 0;
     while (round < 5) : (round += 1) {
         timer.sleep_ms(100);
-        try session.tick();
+        try ebpf.tick();
     }
-    const report = try session.report(testing.allocator);
-    const window = report.cpu orelse return error.TestUnexpectedResult;
+    const windows = try ebpf.collect(testing.allocator, &target);
+    const window = windows.cpu orelse return error.TestUnexpectedResult;
     try testing.expect(window.samples >= 20);
-    try testing.expectEqual(@as(u32, 0), report.unwind.unavailable.get(.vdso_unknown));
+    try testing.expectEqual(@as(u32, 0), windows.unwind.unavailable.get(.vdso_unknown));
 
-    const vdso_region = region_find(report.regions, vdso.path) orelse
+    const vdso_region = region_find(target.regions, vdso.path) orelse
         return error.TestUnexpectedResult;
 
     var vdso_samples: u64 = 0;

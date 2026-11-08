@@ -3,8 +3,9 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const target = @import("../target.zig");
 const elf = @import("shared").elf;
-const eh_frame = @import("../unwind/eh_frame.zig");
+const eh_frame = @import("../elf.zig").eh_frame;
 
 /// The size of one Elf64_Sym.
 const sym_bytes = 24;
@@ -108,7 +109,7 @@ fn file_offset(segments: []const elf.Segment, address: u64) ?u64 {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const vdso = @import("../target/vdso.zig");
+const os = @import("../os.zig");
 
 fn name_at(strtab: []const u8, sym: []const u8) []const u8 {
     const at = std.mem.readInt(u32, sym[0..4], .little);
@@ -118,7 +119,9 @@ fn name_at(strtab: []const u8, sym: []const u8) []const u8 {
 test "the vDSO's stubs lead to bodies that get the stubs' names" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const image = (try vdso.read(arena.allocator())) orelse return error.SkipZigTest;
+    var own = try target.Target.init(testing.allocator, os.process.current_pid());
+    defer own.deinit(testing.allocator);
+    const image = own.vdso_image() orelse return error.SkipZigTest;
     // A kernel whose vDSO exports its functions directly has nothing to add.
     const found = (try symbols(arena.allocator(), image.bytes)) orelse return error.SkipZigTest;
 

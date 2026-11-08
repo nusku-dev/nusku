@@ -5,7 +5,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const File = @import("shared").File;
 const build_id = @import("build_id.zig");
-const process = @import("../os/process.zig");
+const process = @import("../os.zig").process;
 const Region = @import("regions.zig").Region;
 
 pub const Error = error{

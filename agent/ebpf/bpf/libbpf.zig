@@ -2,7 +2,7 @@
 //! ring buffer reader. Everything else in the agent talks to the kernel through std.os.linux.
 
 const std = @import("std");
-const log = @import("../log.zig").agent;
+const log = @import("../../log.zig").agent;
 
 pub const c = @cImport({
     @cInclude("errno.h");

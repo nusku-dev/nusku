@@ -15,7 +15,7 @@
 
 const helpers = @import("helpers.zig");
 const cpu_wire = @import("shared/cpu_wire.zig");
-const unwind_wire = @import("shared/unwind_wire.zig");
+const unwind_wire = @import("unwind_wire");
 
 const map_lookup_elem = helpers.map_lookup_elem;
 const map_update_elem = helpers.map_update_elem;

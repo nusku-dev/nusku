@@ -4,7 +4,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const table = @import("table.zig");
-const unwind_wire = @import("../bpf/kernel/shared/unwind_wire.zig");
+const unwind_wire = @import("wire.zig");
 
 const Row = table.Row;
 const CfaType = table.CfaType;

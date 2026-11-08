@@ -1,6 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const process = @import("../os/process.zig");
+const process = @import("../os.zig").process;
 const File = @import("shared").File;
 
 pub const Statm = struct {
