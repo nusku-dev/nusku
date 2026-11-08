@@ -6,6 +6,11 @@ const assert = std.debug.assert;
 /// Uploads refuse longer build IDs.
 pub const id_bytes_max = 256;
 
+comptime {
+    // The log prints any build ID the server keeps.
+    assert(@import("../log.zig").hex_bytes_max == 2 * id_bytes_max);
+}
+
 pub fn IdSet(comptime slots_max: usize) type {
     return struct {
         const Set = @This();

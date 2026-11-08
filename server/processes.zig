@@ -1,39 +1,53 @@
-//! The newest frame of the processes watch, copied into memory the server owns.
+//! The processes layer: the newest frame of the processes watch, copied into memory the server
+//! owns, and how many came so far. Safe from any thread: its own lock guards it. Stands on os.
 
 const std = @import("std");
-const procs = @import("agent").processes;
-const Frame = procs.Frame;
-const ProcessInfo = procs.ProcessInfo;
+const protocol = @import("shared").protocol;
+const os = @import("os.zig");
+const Frame = protocol.ProcessFrame;
+const ProcessInfo = protocol.ProcessInfo;
 
-pub const LatestFrame = struct {
-    /// Received since the server started.
-    frames: u64 = 0,
+/// What `latest` gives.
+pub const Latest = struct {
+    /// Received since the server started: a client waits for it to grow.
+    frames: u64,
+    /// Null before the first.
+    frame: ?Frame,
+};
+
+pub const Processes = struct {
+    lock: os.Lock,
+    frames: u64,
     /// Null before the first. Points into `arena`.
-    frame: ?Frame = null,
+    frame: ?Frame,
     /// Reset for each frame, keeping its memory.
     arena: std.heap.ArenaAllocator,
 
-    pub fn init(gpa: std.mem.Allocator) LatestFrame {
-        return .{ .arena = .init(gpa) };
+    pub fn init(gpa: std.mem.Allocator) Processes {
+        return .{ .lock = .{}, .frames = 0, .frame = null, .arena = .init(gpa) };
     }
 
-    pub fn deinit(latest: *LatestFrame) void {
-        latest.arena.deinit();
-        latest.* = undefined;
+    pub fn deinit(processes: *Processes) void {
+        processes.arena.deinit();
+        processes.* = undefined;
     }
 
     /// Keeps a copy of `frame` in place of the last one: the agent reuses its memory.
-    pub fn put(latest: *LatestFrame, frame: *const Frame) !void {
-        latest.frame = null;
-        _ = latest.arena.reset(.retain_capacity);
-        latest.frame = try frame_copy(latest.arena.allocator(), frame);
-        latest.frames += 1;
+    pub fn put(processes: *Processes, frame: *const Frame) !void {
+        processes.lock.lock();
+        defer processes.lock.unlock();
+        processes.frame = null;
+        _ = processes.arena.reset(.retain_capacity);
+        processes.frame = try frame_copy(processes.arena.allocator(), frame);
+        processes.frames += 1;
     }
 
-    /// A copy in `arena`, which the next `put` cannot change.
-    pub fn get(latest: *const LatestFrame, arena: std.mem.Allocator) !?Frame {
-        const frame = latest.frame orelse return null;
-        return try frame_copy(arena, &frame);
+    /// The newest frame, copied into `arena`: the next `put` cannot change it.
+    pub fn latest(processes: *Processes, arena: std.mem.Allocator) !Latest {
+        processes.lock.lock();
+        defer processes.lock.unlock();
+        const frame = processes.frame orelse return .{ .frames = processes.frames, .frame = null };
+        return .{ .frames = processes.frames, .frame = try frame_copy(arena, &frame) };
     }
 };
 
@@ -73,13 +87,13 @@ fn info_test(pid: u32, name: []const u8) ProcessInfo {
 }
 
 test "nothing is kept before the first frame" {
-    var latest = LatestFrame.init(testing.allocator);
+    var latest = Processes.init(testing.allocator);
     defer latest.deinit();
-    try testing.expectEqual(@as(?Frame, null), try latest.get(testing.allocator));
+    try testing.expectEqual(@as(?Frame, null), (try latest.latest(testing.allocator)).frame);
 }
 
 test "a kept frame is a copy: it outlives the frame it came from" {
-    var latest = LatestFrame.init(testing.allocator);
+    var latest = Processes.init(testing.allocator);
     defer latest.deinit();
 
     var name_buffer = "worker".*;
@@ -89,7 +103,7 @@ test "a kept frame is a copy: it outlives the frame it came from" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const frame = (try latest.get(arena.allocator())).?;
+    const frame = (try latest.latest(arena.allocator())).frame.?;
     try testing.expectEqual(@as(u64, 5), frame.unix_ns);
     try testing.expectEqual(@as(u64, 7), frame.interval_ns);
     try testing.expectEqual(@as(usize, 2), frame.processes.len);
@@ -103,7 +117,7 @@ test "a kept frame is a copy: it outlives the frame it came from" {
 }
 
 test "a new frame takes the place of the one before" {
-    var latest = LatestFrame.init(testing.allocator);
+    var latest = Processes.init(testing.allocator);
     defer latest.deinit();
 
     const one = [_]ProcessInfo{info_test(1, "first")};
@@ -113,14 +127,14 @@ test "a new frame takes the place of the one before" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const frame = (try latest.get(arena.allocator())).?;
+    const frame = (try latest.latest(arena.allocator())).frame.?;
     try testing.expectEqual(@as(u64, 2), frame.unix_ns);
     try testing.expectEqualStrings("second", frame.processes[0].name);
     try testing.expectEqual(@as(u64, 2), latest.frames);
 }
 
 test "what get gives is the caller's: the next put does not change it" {
-    var latest = LatestFrame.init(testing.allocator);
+    var latest = Processes.init(testing.allocator);
     defer latest.deinit();
 
     const one = [_]ProcessInfo{info_test(1, "first")};
@@ -128,7 +142,7 @@ test "what get gives is the caller's: the next put does not change it" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const read = (try latest.get(arena.allocator())).?;
+    const read = (try latest.latest(arena.allocator())).frame.?;
 
     const two = [_]ProcessInfo{info_test(2, "other")};
     try latest.put(&.{ .unix_ns = 2, .interval_ns = 0, .processes = &two });

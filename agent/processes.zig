@@ -7,6 +7,7 @@ const timer = @import("os.zig").timer;
 const assert = std.debug.assert;
 
 const Proc = @import("processes/proc.zig").Proc;
+const Entry = @import("processes/proc.zig").Entry;
 const Stat = @import("processes/stat.zig").Stat;
 
 const protocol = @import("shared").protocol;
@@ -58,7 +59,7 @@ pub const Processes = struct {
                 .user = entry.user,
                 .threads = entry.status.threads,
                 .command = entry.cmdline.text(),
-                .cpu_percent = processes.cpu_of(before, &entry.stat, interval_ns),
+                .cpu_percent = processes.cpu_of(before, entry),
                 .memory_bytes = entry.status.rss_kb * 1024,
                 .started_unix_ns = processes.started_of(&entry.stat),
             });
@@ -74,15 +75,14 @@ pub const Processes = struct {
     }
 
     /// Null on the first look, and for a process that started since the look before.
-    fn cpu_of(
-        processes: *const Processes,
-        before: *const Proc,
-        stat: *const Stat,
-        interval_ns: u64,
-    ) ?f32 {
+    fn cpu_of(processes: *const Processes, before: *const Proc, entry: *const Entry) ?f32 {
+        const old = before.same(&entry.stat) orelse return null;
+        // Between this process's own two reads: a look takes a while, and the processes read
+        // late in one look may be read early in the next.
+        const interval_ns = entry.read_ns - old.read_ns;
         if (interval_ns == 0) return null;
-        const old = before.same(stat) orelse return null;
-        return cpu_percent(old.stat.cpu_ticks, stat.cpu_ticks, interval_ns, processes.ticks_per_s);
+        const ticks_per_s = processes.ticks_per_s;
+        return cpu_percent(old.stat.cpu_ticks, entry.stat.cpu_ticks, interval_ns, ticks_per_s);
     }
 
     /// When the process started, in Unix ns.

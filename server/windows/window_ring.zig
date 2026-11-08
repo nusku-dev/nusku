@@ -2,10 +2,10 @@
 //! its slot's bytes, and never allocates.
 
 const std = @import("std");
-const agent = @import("agent");
+const protocol = @import("shared").protocol;
 
 const assert = std.debug.assert;
-const Message = agent.Message;
+const Message = protocol.Message;
 
 pub const WindowRing = struct {
     /// One `window_bytes_max` slice per slot: slot `i`'s message lives in slice `i`.

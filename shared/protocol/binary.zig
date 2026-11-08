@@ -21,6 +21,13 @@ pub const Section = enum {
     }
 };
 
+/// A binary the agent can send: the server says whether it wants it.
+pub const Offer = struct {
+    build_id: []const u8,
+    /// For display only; never opened.
+    path: []const u8,
+};
+
 /// A section the file lacks has size 0.
 pub const Header = struct {
     build_id: []const u8,

@@ -3,48 +3,42 @@
 
 const std = @import("std");
 const testing = std.testing;
-const agent = @import("agent");
+const protocol = @import("shared").protocol;
 const Server = @import("../../server.zig").Server;
-const Controller = @import("../../control/controller.zig").Controller;
-const Frame = @import("../../query.zig").Frame;
+const Controller = @import("../../control.zig").Controller;
+const Frame = @import("../../naming.zig").Frame;
 const burn = @import("../burn.zig").burn;
 
 test "a profile of this process names its functions and their callers (root)" {
     if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
 
     var server: Server = undefined;
-    try server.init(testing.allocator, .{
+    try server.init(testing.allocator, .{ .windows = .{
         .targets_max = 1,
         .windows_per_target_max = 8,
         .window_bytes_max = 128 * 1024,
-    });
-    defer server.deinit(testing.allocator);
+    } });
+    defer server.deinit();
     var controller: Controller = undefined;
-    try controller.init(testing.allocator, &server, .{ .runs_max = 1 });
-    defer controller.deinit(testing.allocator);
+    try controller.init(testing.allocator, &server, .{ .jobs_max = 1 });
+    defer controller.deinit();
 
-    const target = try controller.start(testing.allocator, .{
+    const started = controller.start(.{ .profile = .{
         .pid = @intCast(std.os.linux.getpid()),
-        .metrics = std.EnumSet(agent.Metric).initOne(.cpu),
         .interval_ms = 300,
         .duration_s = 2,
-    });
-    burn(2300); // Past the end of the run: every window has samples in `burn`.
-    _ = controller.join(testing.allocator, target) catch |err| switch (err) {
+    } }) catch |err| switch (err) {
         error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
-
-    // The tables are built on the server's builder thread: wait for the last one.
-    server.builds_wait();
+    burn(2300); // Past the end of the run: every window has samples in `burn`.
+    _ = try controller.wait(started.job);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const profile = try server.profile(arena.allocator(), .{
-        .target = target,
-        .from_unix_ns = 0,
-        .to_unix_ns = std.math.maxInt(u64),
-    });
+    // The tables are built on the symbols' own thread: `all_built` waits for the last one.
+    const query = @import("../../windows.zig").Query{ .target = started.target.? };
+    const profile = try server.profile(arena.allocator(), query, .all_built);
 
     var burn_samples: u64 = 0;
     var burn_samples_caller_named: u64 = 0;
@@ -83,9 +77,8 @@ fn burn_index(frames: []const Frame) ?usize {
 }
 
 fn binaries_used(server: *Server) struct { usize, u64 } {
-    server.lock.lock();
-    defer server.lock.unlock();
-    return .{ server.binaries.count, server.binaries.bytes_used };
+    const stats = server.symbols.stats();
+    return .{ stats.binaries, stats.binaries_bytes };
 }
 
 /// The heaviest stacks, to see what the profile looks like when the test fails.

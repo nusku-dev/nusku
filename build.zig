@@ -29,6 +29,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("shared/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
     // The agent: its libraries, kernel programs, module and tests all live in agent/build.zig.
@@ -62,6 +63,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("cli", cli_mod);
     exe.root_module.addImport("log", log_mod);
     exe.root_module.addImport("server", server_mod);
+    exe.root_module.addImport("shared", shared);
 
     b.installArtifact(exe);
 
@@ -75,6 +77,9 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
+
+    const shared_tests = b.addTest(.{ .root_module = shared });
+    test_step.dependOn(&b.addRunArtifact(shared_tests).step);
 
     const mod_tests = b.addTest(.{ .root_module = cli_mod });
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);

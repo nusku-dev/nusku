@@ -81,10 +81,7 @@ pub const Event = union(enum) {
     abort,
 };
 
-pub const Offered = struct {
-    build_id: []const u8,
-    path: []const u8,
-};
+pub const Offered = @import("shared").protocol.binary.Offer;
 
 pub const Symbols = struct {
     /// False: every call is a no-op.

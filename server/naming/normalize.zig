@@ -2,11 +2,11 @@
 //! place is the same in every process and run, whatever ASLR did.
 
 const std = @import("std");
-const agent = @import("agent");
+const protocol = @import("shared").protocol;
 const regions_file = @import("regions.zig");
 
 const assert = std.debug.assert;
-const Region = agent.Region;
+const Region = protocol.Region;
 
 /// Marks a location in no region (anonymous memory, a gap, address 0).
 pub const region_none: u32 = std.math.maxInt(u32);

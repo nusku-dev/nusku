@@ -5,9 +5,9 @@ const log = @import("log");
 const cli = @import("cli");
 const server = @import("server");
 const flags = @import("flags.zig");
-const local = @import("../clients/local.zig");
-const term = @import("../view/term.zig");
-const view = @import("../view/profile.zig");
+const client = @import("../client.zig");
+const term = @import("../term.zig");
+const view = @import("../view.zig").profile;
 
 const slog = log.scope("prof");
 const Metric = server.Metric;
@@ -104,18 +104,18 @@ fn run(ctx: *cli.Context) anyerror!void {
     const name = if (child != null)
         std.fs.path.basename(ctx.getString("exec"))
     else
-        local.process_name(target, &name_buffer);
+        process_name(target, &name_buffer);
 
     const terminal = std.Io.File.stdout().isTty(ctx.io) catch false;
     var live = Live{ .ctx = ctx, .pid = target, .name = name, .options = settings.view };
     defer live.arena.deinit();
-    const watcher: ?local.Live = if (terminal and !settings.no_live)
+    const watcher: ?client.Live = if (terminal and !settings.no_live)
         live.watcher(settings.interval_ms)
     else
         null;
 
     // The server frees as it goes, from several threads: not the command's arena.
-    const result = local.profile(std.heap.smp_allocator, ctx.allocator, .{
+    const result = client.profile(std.heap.smp_allocator, ctx.allocator, .{
         .pid = target,
         .metrics = settings.metrics,
         .interval_ms = settings.interval_ms,
@@ -153,7 +153,7 @@ const Live = struct {
     /// One view's memory, freed by the next.
     arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator),
 
-    fn watcher(live: *Live, every_ms: u32) local.Live {
+    fn watcher(live: *Live, every_ms: u32) client.Live {
         return .{ .context = live, .every_ms = every_ms, .show = show };
     }
 
@@ -286,4 +286,18 @@ fn hint(err: anyerror) []const u8 {
         error.MetricNotImplemented => "only the cpu metric exists so far",
         else => "",
     };
+}
+
+/// Its comm, as `ps` shows it, or null.
+fn process_name(pid: u32, buffer: *[64]u8) ?[]const u8 {
+    const linux = std.os.linux;
+    var path_buffer: [32]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/comm", .{pid}) catch unreachable;
+    const opened = linux.open(path, .{ .CLOEXEC = true }, 0);
+    if (linux.errno(opened) != .SUCCESS) return null;
+    const fd: i32 = @intCast(opened);
+    defer _ = linux.close(fd);
+    const read = linux.read(fd, buffer, buffer.len);
+    if (linux.errno(read) != .SUCCESS or read == 0) return null;
+    return std.mem.trimEnd(u8, buffer[0..read], "\n");
 }

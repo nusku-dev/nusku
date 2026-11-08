@@ -22,12 +22,7 @@ pub const Options = struct {
 };
 
 /// Each is valid until the next `next`.
-pub const Event = union(enum) {
-    /// The first has no `cpu_percent`: CPU is measured against the frame before.
-    frame: *const protocol.ProcessFrame,
-    /// The last event: `next` returns null after it.
-    stopped: protocol.WatchStop,
-};
+pub const Event = protocol.WatchEvent;
 
 const Source = enum { look_timer, cancel };
 const Poll = poll_file.Poll(Source);
@@ -48,6 +43,11 @@ pub const Watch = struct {
         if (options.interval_ms == 0) return error.InvalidInterval;
         var cancel = try Cancel.init();
         errdefer cancel.deinit();
+        // The first look now, and the timer armed right after it: the second frame's CPU is
+        // measured over a whole interval, however long the caller takes to call `next`.
+        var processes = Processes.init();
+        errdefer processes.deinit(gpa);
+        const first = try processes.take(gpa);
         var look_timer = try timer.Timer.init(options.interval_ms);
         errdefer look_timer.deinit();
         log.info("watching processes", .{
@@ -56,14 +56,14 @@ pub const Watch = struct {
         });
         return .{
             .gpa = gpa,
-            .processes = Processes.init(),
-            .frame = undefined,
+            .processes = processes,
+            .frame = first,
             .cancel = cancel,
             .look_timer = look_timer,
             .poll = Poll.init(.init(.{ .look_timer = look_timer.fd, .cancel = cancel.fd })),
             .deadline_ns = timer.deadline_from(options.duration_s),
             .phase = .first,
-            .frames = 0,
+            .frames = 1,
         };
     }
 
@@ -80,7 +80,7 @@ pub const Watch = struct {
             .ended => return null,
             .first => {
                 watch.phase = .watching;
-                return try watch.look();
+                return .{ .frame = &watch.frame };
             },
             .watching => {},
         }

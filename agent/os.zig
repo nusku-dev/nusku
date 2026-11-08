@@ -9,7 +9,7 @@ pub const cancel = @import("os/cancel.zig");
 pub const pidfd = @import("os/pidfd.zig");
 pub const perf_event = @import("os/perf_event.zig");
 pub const cpus = @import("os/cpus.zig");
-pub const directory = @import("os/directory.zig");
+pub const directory = @import("shared").directory;
 pub const anonymous_memory = @import("os/anonymous_memory.zig");
 
 test {

@@ -4,10 +4,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const linux = std.os.linux;
-const shared = @import("shared");
-const File = shared.File;
+const file = @import("file.zig");
+const File = file.File;
 
-pub const FilError = shared.FileError;
+pub const FilError = file.OpenError || file.ReadError;
 
 const buffer_bytes = 8192;
 const interrupt_retries_max = 16;

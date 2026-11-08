@@ -39,18 +39,7 @@ pub const Options = struct {
 };
 
 /// Each is valid until the next `next`.
-pub const Event = union(enum) {
-    report: *const protocol.Message,
-    /// A binary to send: `binary_want(true)` before the next `next` has it sent.
-    binary_offer: symbols_layer.Offered,
-    binary_begin: *const protocol.binary.Header,
-    binary_chunk: protocol.binary.Chunk,
-    binary_end,
-    /// The binary begun will not end.
-    binary_abort,
-    /// The last event: `next` returns null after it.
-    stopped: protocol.RunStop,
-};
+pub const Event = protocol.RunEvent;
 
 /// The ring cannot fill between two ticks: at 99 Hz on 64 CPUs a tick sees 634 samples.
 const tick_ms_max = 100;

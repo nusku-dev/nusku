@@ -2,12 +2,12 @@
 //! the store is full, the oldest finished one makes room. Not thread-safe on its own.
 
 const std = @import("std");
-const agent = @import("agent");
+const protocol = @import("shared").protocol;
 const WindowRing = @import("window_ring.zig").WindowRing;
 const log = @import("../log.zig").server;
 
 const assert = std.debug.assert;
-const Message = agent.Message;
+const Message = protocol.Message;
 
 pub const TargetId = u64;
 
@@ -119,12 +119,6 @@ pub const Store = struct {
             target.windows_rejected += 1;
             return err;
         };
-    }
-
-    /// A window the run could not copy: counted with the rejected ones.
-    pub fn window_dropped(store: *Store, id: TargetId) error{TargetUnknown}!void {
-        const target = store.target_find(id) orelse return error.TargetUnknown;
-        target.windows_rejected += 1;
     }
 
     pub fn deinit(store: *Store, gpa: std.mem.Allocator) void {

@@ -1,54 +1,60 @@
 //! The server: keeps what the agents report, names it with their binaries' symbols, and
-//! answers with profiles. The controller runs the agent on threads of this process.
+//! answers with profiles. Two things to use:
+//!
+//!     Server      takes the agents' events (`feed`, `watch_take`) and answers (`profile`,
+//!                 `processes`)
+//!     Controller  the local client: runs the agent on threads of this process, feeding the
+//!                 server (`start`, `stop`, `wait`, `running`, `interrupt`)
+//!
+//! The layers, bottom up. Each is a file, and a folder of the same name when it has more; the
+//! file is the one struct the layers above may import. A layer imports only the layers below
+//! it, never one beside it:
+//!   os         Lock, Condition
+//!   windows    Windows: each target's ring of windows
+//!   symbols    Symbols: the binaries' symbol tables, their uploads and their builder
+//!   processes  Processes: the newest frame of the processes watch
+//!   naming     profile(): windows named with the symbols, equal stacks merged
+//!   server     Server and Feed: the layers together, taking events and answering queries
+//!   control    Controller: the agent on threads, feeding the server
 
+const protocol = @import("shared").protocol;
 const server_file = @import("server.zig");
-const controller_file = @import("control/controller.zig");
-const query_file = @import("query.zig");
+const control_file = @import("control.zig");
+const naming = @import("naming.zig");
 
 pub const Server = server_file.Server;
+pub const Options = server_file.Options;
+pub const Feed = server_file.Feed;
 pub const TargetId = server_file.TargetId;
+pub const Query = server_file.Query;
+pub const Names = server_file.Names;
+pub const Profile = server_file.Profile;
+pub const Latest = server_file.Latest;
+pub const SymbolStack = naming.SymbolStack;
+pub const Frame = naming.Frame;
 
-pub const Query = query_file.Query;
-pub const Profile = query_file.Profile;
-pub const SymbolStack = query_file.SymbolStack;
-pub const Frame = query_file.Frame;
-pub const Stats = query_file.Stats;
+pub const Controller = control_file.Controller;
+pub const Spec = control_file.Spec;
+pub const Started = control_file.Started;
+pub const Done = control_file.Done;
+pub const JobId = control_file.JobId;
 
-pub const Controller = controller_file.Controller;
-pub const Spec = controller_file.Spec;
-
-pub const WatchProcsSpec = controller_file.WatchProcsSpec;
-
-/// The agent's, so a caller needs no other module.
-pub const Metric = @import("agent").Metric;
-pub const StopReason = @import("agent").StopReason;
-pub const Cancel = @import("agent").Cancel;
-pub const processes = @import("agent").processes;
+pub const Metric = protocol.Metric;
+pub const RunStop = protocol.RunStop;
+pub const WatchStop = protocol.WatchStop;
+pub const ProcessFrame = protocol.ProcessFrame;
+pub const ProcessInfo = protocol.ProcessInfo;
 
 test {
-    _ = @import("os/lock.zig");
     _ = @import("log.zig");
-
-    _ = @import("store/store.zig");
-    _ = @import("store/window_ring.zig");
-    _ = @import("store/binaries.zig");
-    _ = @import("store/id_set.zig");
-    _ = @import("store/latest_frame.zig");
-
-    _ = @import("symbolize/regions.zig");
-    _ = @import("symbolize/normalize.zig");
-    _ = @import("symbolize/resolve.zig");
-    _ = @import("symbolize/merge.zig");
-    _ = @import("symbolize/lookup.zig");
-    _ = @import("symbolize/symbol_table.zig");
-    _ = @import("symbolize/upload.zig");
-    _ = @import("symbolize/builder.zig");
-
-    _ = query_file;
+    _ = @import("os.zig");
+    _ = @import("windows.zig");
+    _ = @import("symbols.zig");
+    _ = @import("processes.zig");
+    _ = naming;
     _ = server_file;
-    _ = @import("control/run.zig");
-    _ = @import("control/watch_procs.zig");
-    _ = controller_file;
+    _ = control_file;
 
+    _ = @import("testing/layers.zig");
     _ = @import("testing/e2e/profile_named.zig");
 }

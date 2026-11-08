@@ -30,7 +30,7 @@ pub const Live = struct {
 };
 
 pub const Result = struct {
-    reason: server_lib.StopReason,
+    reason: server_lib.RunStop,
     profile: server_lib.Profile,
     /// From the run's start to its stop.
     elapsed_ms: u64,
@@ -52,26 +52,23 @@ pub fn profile(
     const controller = backend.controller;
 
     const started_ms = monotonic_ms();
-    const target = try controller.start(gpa, .{
+    const started = try controller.start(.{ .profile = .{
         .pid = options.pid,
         .metrics = options.metrics,
         .interval_ms = options.interval_ms,
         .duration_s = options.duration_s,
-    });
-    interrupt_arm(controller.cancel_of(target).?);
-    try wait(gpa, server, controller, target, started_ms, live);
-    const reason = controller.join(gpa, target);
-    interrupt_release();
+    } });
+    const target = started.target.?;
+    interrupt_arm(controller);
+    try wait(gpa, server, controller, started.job, target, started_ms, live);
+    interrupt_release(); // Before the wait frees what the handler stops.
+    const done = controller.wait(started.job);
     const elapsed_ms = monotonic_ms() - started_ms;
 
-    server.builds_wait(); // The last tables may still be building.
     return .{
-        .reason = try reason,
-        .profile = try server.profile(arena, .{
-            .target = target,
-            .from_unix_ns = 0,
-            .to_unix_ns = std.math.maxInt(u64),
-        }),
+        .reason = (try done).profile,
+        // The last tables may still be building: `all_built` waits for them.
+        .profile = try server.profile(arena, .{ .target = target }, .all_built),
         .elapsed_ms = elapsed_ms,
     };
 }
@@ -84,18 +81,21 @@ const Backend = struct {
     fn create(gpa: std.mem.Allocator, windows: u32) !Backend {
         const server = try gpa.create(Server);
         errdefer gpa.destroy(server);
-        try server.init(gpa, .{ .targets_max = 1, .windows_per_target_max = windows });
-        errdefer server.deinit(gpa);
+        try server.init(gpa, .{ .windows = .{
+            .targets_max = 1,
+            .windows_per_target_max = windows,
+        } });
+        errdefer server.deinit();
         const controller = try gpa.create(Controller);
         errdefer gpa.destroy(controller);
-        try controller.init(gpa, server, .{ .runs_max = 1 });
+        try controller.init(gpa, server, .{ .jobs_max = 1 });
         return .{ .server = server, .controller = controller };
     }
 
     fn destroy(backend: Backend, gpa: std.mem.Allocator) void {
-        backend.controller.deinit(gpa);
+        backend.controller.deinit();
         gpa.destroy(backend.controller);
-        backend.server.deinit(gpa);
+        backend.server.deinit();
         gpa.destroy(backend.server);
     }
 };
@@ -105,30 +105,34 @@ pub fn processes(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     interval_ms: u32,
-) !server_lib.processes.Frame {
+) !server_lib.ProcessFrame {
     assert(interval_ms > 0);
     const backend = try Backend.create(gpa, 1);
     defer backend.destroy(gpa);
     const controller = backend.controller;
 
-    try controller.watch_procs_start(gpa, .{ .interval_ms = interval_ms });
-    interrupt_arm(controller.watch_procs_cancel_of().?);
-    defer interrupt_release();
+    const started = try controller.start(.{ .processes = .{ .interval_ms = interval_ms } });
+    interrupt_arm(controller);
 
-    // The first look has no CPU: it is measured against the look before.
-    while (backend.server.processes_frames() < 2) {
-        if (!controller.watch_procs_running()) break; // Ctrl-C, or the watch failed.
+    // The first frame has no CPU: it is measured against the frame before. Each look is a
+    // copy, so they go into a scratch arena, and only the one returned into `arena`.
+    var scratch = std.heap.ArenaAllocator.init(gpa);
+    defer scratch.deinit();
+    while ((try backend.server.processes(scratch.allocator())).frames < 2) {
+        if (!controller.running(started.job)) break; // Ctrl-C, or the watch failed.
         sleep_ms(poll_ms);
+        _ = scratch.reset(.retain_capacity);
     }
-    const frame = try backend.server.processes(arena);
-    _ = try controller.watch_procs_stop();
-    return frame orelse error.Interrupted;
+    interrupt_release();
+    const latest = try backend.server.processes(arena);
+    _ = try controller.stop(started.job);
+    return latest.frame orelse error.Interrupted;
 }
 
 /// Shown each new frame, on the thread that called `processes_watch`. Valid until the next.
 pub const ProcessesLive = struct {
     context: *anyopaque,
-    show: *const fn (context: *anyopaque, frame: *const server_lib.processes.Frame) void,
+    show: *const fn (context: *anyopaque, frame: *const server_lib.ProcessFrame) void,
 };
 
 /// A look every `interval_ms`, shown to `live` until Ctrl-C; not the first, which has no CPU.
@@ -138,37 +142,23 @@ pub fn processes_watch(gpa: std.mem.Allocator, interval_ms: u32, live: Processes
     defer backend.destroy(gpa);
     const controller = backend.controller;
 
-    try controller.watch_procs_start(gpa, .{ .interval_ms = interval_ms });
-    interrupt_arm(controller.watch_procs_cancel_of().?);
-    defer interrupt_release();
+    const started = try controller.start(.{ .processes = .{ .interval_ms = interval_ms } });
+    interrupt_arm(controller);
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     var shown: u64 = 1; // Not the first.
-    while (controller.watch_procs_running()) {
+    while (controller.running(started.job)) {
         sleep_ms(poll_ms);
-        const frames = backend.server.processes_frames();
-        if (frames <= shown) continue;
-        shown = frames;
         _ = arena.reset(.retain_capacity);
-        const frame = (try backend.server.processes(arena.allocator())) orelse continue;
+        const latest = try backend.server.processes(arena.allocator());
+        if (latest.frames <= shown) continue;
+        shown = latest.frames;
+        const frame = latest.frame orelse continue;
         live.show(live.context, &frame);
     }
-    _ = try controller.watch_procs_stop();
-}
-
-/// Its comm, as `ps` shows it, or null.
-pub fn process_name(pid: u32, buffer: *[64]u8) ?[]const u8 {
-    const linux = std.os.linux;
-    var path_buffer: [32]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/comm", .{pid}) catch unreachable;
-    const opened = linux.open(path, .{ .CLOEXEC = true }, 0);
-    if (linux.errno(opened) != .SUCCESS) return null;
-    const fd: i32 = @intCast(opened);
-    defer _ = linux.close(fd);
-    const read = linux.read(fd, buffer, buffer.len);
-    if (linux.errno(read) != .SUCCESS or read == 0) return null;
-    return std.mem.trimEnd(u8, buffer[0..read], "\n");
+    interrupt_release();
+    _ = try controller.stop(started.job);
 }
 
 fn monotonic_ms() u64 {
@@ -183,6 +173,7 @@ fn wait(
     gpa: std.mem.Allocator,
     server: *Server,
     controller: *Controller,
+    job: server_lib.JobId,
     target: server_lib.TargetId,
     started_ms: u64,
     live: ?Live,
@@ -191,7 +182,7 @@ fn wait(
     defer arena.deinit();
     var next_ms = started_ms + if (live) |view| view.every_ms else 0;
 
-    while (controller.running(target)) {
+    while (controller.running(job)) {
         sleep_ms(poll_ms);
         const view = live orelse continue;
         const now_ms = monotonic_ms();
@@ -200,11 +191,8 @@ fn wait(
 
         _ = arena.reset(.retain_capacity);
         // No window yet: the next view shows it.
-        const so_far = server.profile(arena.allocator(), .{
-            .target = target,
-            .from_unix_ns = 0,
-            .to_unix_ns = std.math.maxInt(u64),
-        }) catch continue;
+        const query = server_lib.Query{ .target = target };
+        const so_far = server.profile(arena.allocator(), query, .as_they_are) catch continue;
         view.show(view.context, &so_far, now_ms - started_ms);
     }
 }
@@ -228,10 +216,10 @@ fn windows_for(options: Options) u32 {
 }
 
 /// What Ctrl-C stops. Written outside the handler only.
-var interrupt_cancel: ?*const server_lib.Cancel = null;
+var interrupt_controller: ?*const Controller = null;
 
-fn interrupt_arm(cancel: *const server_lib.Cancel) void {
-    interrupt_cancel = cancel;
+fn interrupt_arm(controller: *const Controller) void {
+    interrupt_controller = controller;
     const action = std.posix.Sigaction{
         .handler = .{ .handler = interrupt_handle },
         .mask = std.posix.sigemptyset(),
@@ -244,12 +232,11 @@ fn interrupt_arm(cancel: *const server_lib.Cancel) void {
 /// The handler stays, so a late Ctrl-C (sudo passes one on twice) cannot end the program before
 /// it prints.
 fn interrupt_release() void {
-    interrupt_cancel = null;
+    interrupt_controller = null;
 }
 
-/// Only `trigger`, one write: safe in a signal handler.
 fn interrupt_handle(_: std.posix.SIG) callconv(.c) void {
-    if (interrupt_cancel) |cancel| cancel.trigger();
+    if (interrupt_controller) |controller| controller.interrupt();
 }
 
 test "the windows kept cover the whole run, up to a limit" {

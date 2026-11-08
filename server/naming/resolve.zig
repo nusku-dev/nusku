@@ -3,14 +3,14 @@
 //! into `message` (module paths) and `arena` (names).
 
 const std = @import("std");
-const agent = @import("agent");
-const query = @import("../query.zig");
+const protocol = @import("shared").protocol;
+const query = @import("../naming.zig");
 const regions_file = @import("regions.zig");
 const normalize = @import("normalize.zig");
 
 const assert = std.debug.assert;
-const Message = agent.Message;
-const Region = agent.Region;
+const Message = protocol.Message;
+const Region = protocol.Region;
 const Frame = query.Frame;
 const SymbolStack = query.SymbolStack;
 const Location = normalize.Location;
@@ -46,9 +46,9 @@ const Kernel = struct {
 };
 
 fn kernel_of(arena: std.mem.Allocator, message: *const Message) !?Kernel {
-    var buffer: [agent.kernel_symbols.id_bytes_max]u8 = undefined;
+    var buffer: [protocol.kernel.id_bytes_max]u8 = undefined;
     const kernel = &message.kernel;
-    const id = agent.kernel_symbols.id(&buffer, kernel.build_id, kernel.text_address) orelse
+    const id = protocol.kernel.id(&buffer, kernel.build_id, kernel.text_address) orelse
         return null;
     return .{ .id = try arena.dupe(u8, id), .text_address = kernel.text_address.? };
 }
@@ -70,7 +70,7 @@ fn stack_resolve(
     for (stack.kernel, frames[0..stack.kernel.len], 0..) |address, *frame, index| {
         frame.* = .{ .address = address, .kernel = true };
         const known = kernel orelse continue;
-        frame.module = agent.kernel_symbols.path;
+        frame.module = protocol.kernel.path;
         const offset = address -% known.text_address -% @intFromBool(index > 0);
         frame.function = try lookup.name(arena, known.id, offset);
     }
@@ -256,8 +256,8 @@ test "kernel frames are named at their distance from _text, with the kernel's id
             return try names.dupe(u8, if (offset < 0x200) "do_syscall_64" else "entry_SYSCALL_64");
         }
     };
-    var id_buffer: [agent.kernel_symbols.id_bytes_max]u8 = undefined;
-    var fake = KernelFake{ .id_expected = agent.kernel_symbols.id(&id_buffer, "kk", text).? };
+    var id_buffer: [protocol.kernel.id_bytes_max]u8 = undefined;
+    var fake = KernelFake{ .id_expected = protocol.kernel.id(&id_buffer, "kk", text).? };
 
     const stacks = [_]Message.Stack{.{
         .samples = 1,

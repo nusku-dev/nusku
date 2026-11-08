@@ -2,10 +2,10 @@
 //! overlaps. `valid` checks that once per message.
 
 const std = @import("std");
-const agent = @import("agent");
+const protocol = @import("shared").protocol;
 
 const assert = std.debug.assert;
-const Region = agent.Region;
+const Region = protocol.Region;
 
 /// Each region is non-empty and starts at or after the end of the one before.
 pub fn valid(regions: []const Region) bool {

@@ -8,12 +8,12 @@
 
 const std = @import("std");
 const server = @import("server");
-const term = @import("term.zig");
+const term = @import("../term.zig");
 
 const Style = term.Style;
 const Writer = std.Io.Writer;
-const Frame = server.processes.Frame;
-const ProcessInfo = server.processes.ProcessInfo;
+const Frame = server.ProcessFrame;
+const ProcessInfo = server.ProcessInfo;
 
 pub const Sort = enum { cpu, mem, pid };
 

@@ -3,10 +3,10 @@
 const std = @import("std");
 const cli = @import("cli");
 const flags = @import("flags.zig");
-const local = @import("../clients/local.zig");
-const term = @import("../view/term.zig");
-const view = @import("../view/processes.zig");
-const Frame = @import("server").processes.Frame;
+const client = @import("../client.zig");
+const term = @import("../term.zig");
+const view = @import("../view.zig").processes;
+const Frame = @import("server").ProcessFrame;
 
 pub const cmd: cli.Command = .{
     .name = "ps",
@@ -69,7 +69,7 @@ fn run(ctx: *cli.Context) anyerror!void {
     options.top = try top_read(ctx, options.live, size);
 
     if (options.live) return live_run(ctx, @intCast(interval), options);
-    const listed = local.processes(std.heap.smp_allocator, ctx.allocator, @intCast(interval));
+    const listed = client.processes(std.heap.smp_allocator, ctx.allocator, @intCast(interval));
     const frame = listed catch |err| {
         return ctx.fail("listing the processes failed: {t}", .{err});
     };
@@ -87,7 +87,7 @@ fn live_run(ctx: *cli.Context, interval_ms: u32, options: view.Options) !void {
         ctx.stdout.writeAll(term.cursor_show) catch {};
         ctx.stdout.flush() catch {};
     }
-    local.processes_watch(std.heap.smp_allocator, interval_ms, live.watcher()) catch |err| {
+    client.processes_watch(std.heap.smp_allocator, interval_ms, live.watcher()) catch |err| {
         return ctx.fail("watching the processes failed: {t}", .{err});
     };
 }
@@ -114,7 +114,7 @@ const Live = struct {
     /// One table's memory, freed by the next.
     arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator),
 
-    fn watcher(live: *Live) local.ProcessesLive {
+    fn watcher(live: *Live) client.ProcessesLive {
         return .{ .context = live, .show = show };
     }
 

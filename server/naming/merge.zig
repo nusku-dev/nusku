@@ -2,7 +2,7 @@
 //! functions, into one with the sum of their samples.
 
 const std = @import("std");
-const query = @import("../query.zig");
+const query = @import("../naming.zig");
 
 const Order = std.math.Order;
 const Frame = query.Frame;

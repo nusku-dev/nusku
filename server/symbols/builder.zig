@@ -3,12 +3,12 @@
 //! loop.
 
 const std = @import("std");
-const agent = @import("agent");
+const protocol = @import("shared").protocol;
 const elf = @import("shared").elf;
 const SymbolTable = @import("symbol_table.zig").SymbolTable;
 
 const assert = std.debug.assert;
-const Section = agent.binary.Section;
+const Section = protocol.binary.Section;
 
 /// One binary's sections, arrived whole. Owns its buffers.
 pub const Received = struct {

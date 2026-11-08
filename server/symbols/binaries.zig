@@ -2,7 +2,7 @@
 //! table does not fit, the least recently used go: used by a query, or by a window that needs it.
 
 const std = @import("std");
-const SymbolTable = @import("../symbolize/symbol_table.zig").SymbolTable;
+const SymbolTable = @import("symbol_table.zig").SymbolTable;
 const log_file = @import("../log.zig");
 const log = log_file.server;
 

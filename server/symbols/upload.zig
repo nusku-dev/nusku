@@ -3,16 +3,16 @@
 //! header ends the upload.
 
 const std = @import("std");
-const agent = @import("agent");
+const protocol = @import("shared").protocol;
 const elf = @import("shared").elf;
 const Received = @import("builder.zig").Received;
 const log_file = @import("../log.zig");
 const log = log_file.server;
 
 const assert = std.debug.assert;
-const Header = agent.binary.Header;
-const Chunk = agent.binary.Chunk;
-const Section = agent.binary.Section;
+const Header = protocol.binary.Header;
+const Chunk = protocol.binary.Chunk;
+const Section = protocol.binary.Section;
 const sections = std.enums.values(Section);
 
 pub const Error = error{
@@ -25,7 +25,7 @@ pub const Error = error{
     OutOfMemory,
 };
 
-const id_bytes_max = @import("../store/id_set.zig").id_bytes_max;
+const id_bytes_max = @import("id_set.zig").id_bytes_max;
 /// The agent sends at most 16.
 const segments_max = 64;
 /// PATH_MAX.

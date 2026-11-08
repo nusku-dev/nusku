@@ -16,7 +16,7 @@
 
 const std = @import("std");
 const server = @import("server");
-const term = @import("term.zig");
+const term = @import("../term.zig");
 
 const assert = std.debug.assert;
 const Style = term.Style;
@@ -31,7 +31,7 @@ pub const Summary = struct {
     /// How long the run took, from start to stop.
     elapsed_ms: u64 = 0,
     /// Null while the run goes: the live view.
-    reason: ?server.StopReason,
+    reason: ?server.RunStop,
 };
 
 pub const Options = struct {

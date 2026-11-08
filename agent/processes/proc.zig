@@ -6,14 +6,18 @@ const assert = std.debug.assert;
 const File = @import("shared").File;
 const Directory = @import("../os.zig").directory.Directory;
 const process = @import("../os.zig").process;
+const timer = @import("../os.zig").timer;
 const Stat = @import("stat.zig").Stat;
 const Statm = @import("statm.zig").Statm;
 const Status = @import("status.zig").Status;
 const Users = @import("users.zig").Users;
 const CmdLine = @import("cmdline.zig").CmdLine;
 
-const Entry = struct {
+pub const Entry = struct {
     stat: Stat,
+    /// When `stat` was read, on the monotonic clock. A look takes a while, and a process's CPU
+    /// is measured between its own two reads, not between the starts of two looks.
+    read_ns: u64,
     statm: Statm,
     status: Status,
     cmdline: CmdLine,
@@ -48,6 +52,7 @@ pub const Proc = struct {
                 error.ProcessNotFound => continue, // Ended while we walked.
                 else => return err,
             };
+            const read_ns = timer.monotonic_ns();
 
             var statm: Statm = undefined;
             statm.read(pid) catch |err| switch (err) {
@@ -71,6 +76,7 @@ pub const Proc = struct {
 
             try proc.entries.put(gpa, pid, .{
                 .stat = stat,
+                .read_ns = read_ns,
                 .statm = statm,
                 .status = status,
                 .user = user,

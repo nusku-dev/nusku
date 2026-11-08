@@ -150,6 +150,9 @@ test "the watch sees what known children do, and one that ends" {
     try testing.expect(seen.threads_ok);
     try testing.expect(seen.commands_ok);
 
+    std.debug.print("watch e2e: {d} frames, burn {d:.1}%, sleep {d:.1}%\n", .{
+        seen.frames, burn.cpu_percent.?, sleep.cpu_percent.?,
+    });
     // One busy core is about 100%; loose bounds, for a loaded machine.
     try testing.expect(burn.cpu_percent.? > 50 and burn.cpu_percent.? < 130);
     try testing.expect(sleep.cpu_percent.? < 5);

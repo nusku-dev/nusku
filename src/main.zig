@@ -1,7 +1,7 @@
 const std = @import("std");
 const cli = @import("cli");
 const log = @import("log");
-const cmd = @import("cmd/root.zig");
+const cmd = @import("cmd.zig");
 
 pub fn main(init: std.process.Init) u8 {
     const root = cmd.root;
@@ -37,9 +37,16 @@ pub fn main(init: std.process.Init) u8 {
     });
 }
 
+// The layers, bottom up. Each is a file, and a folder of the same name when it has more; the
+// file is what the layers above may import:
+//   term    the terminal: colors, bars, the cursor, its size
+//   client  how a command reaches a server: local, in this process, today
+//   view    what the commands print: a profile, the processes table
+//   cmd     the commands, `prof` and `ps`: flags in, a client's answer through a view out
 test {
-    _ = @import("clients/local.zig");
-    _ = @import("view/term.zig");
-    _ = @import("view/profile.zig");
-    _ = @import("view/processes.zig");
+    _ = @import("term.zig");
+    _ = @import("client.zig");
+    _ = @import("view.zig");
+    _ = cmd;
+    _ = @import("testing/layers.zig");
 }

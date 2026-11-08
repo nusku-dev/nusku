@@ -5,7 +5,8 @@
 
 const std = @import("std");
 const logger = @import("log");
-const id_bytes_max = @import("store/id_set.zig").id_bytes_max;
+/// The longest build ID the server accepts (see symbols/id_set.zig).
+const id_bytes_max = 256;
 
 pub const server = logger.scope("server");
 
