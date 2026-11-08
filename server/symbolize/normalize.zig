@@ -1,7 +1,5 @@
-//! Turns the raw addresses of a stack into places in files: which region of the target an
-//! address is in, and where in that region's file. That is what a profile keeps and what a
-//! symbol lookup uses: the same function has the same place in every process and every run,
-//! whatever the address randomization did.
+//! Places the user addresses of a stack in files: the region, and the offset in its file. That
+//! place is the same in every process and run, whatever ASLR did.
 
 const std = @import("std");
 const agent = @import("agent");
@@ -16,8 +14,7 @@ pub const region_none: u32 = std.math.maxInt(u32);
 pub const Location = struct {
     /// Index into the message's regions, or `region_none`.
     region: u32,
-    /// The offset in the region's file of the instruction to name. For `region_none` it is the
-    /// raw address, so the profile still shows something.
+    /// In the region's file, of the instruction to name. The raw address for `region_none`.
     offset: u64,
 
     pub fn mapped(location: Location) bool {
@@ -25,11 +22,9 @@ pub const Location = struct {
     }
 };
 
-/// The locations of the user frames of one stack, into `out` (same length as `user`).
-///
-/// The first frame is the instruction that was running, unless `leaf_is_return` says the sample
-/// was taken in a system call. Every other frame is a return address: it points after the call,
-/// possibly into the next function, so the call itself is at the address minus one.
+/// The locations of `user`, into `out`. A return address points after its call, maybe into
+/// the next function, so it is looked up one byte back: every frame but the first, and the
+/// first too when `leaf_is_return` (a sample in a system call).
 pub fn user_locate(
     regions: []const Region,
     user: []const u64,
@@ -46,7 +41,7 @@ pub fn user_locate(
 }
 
 fn address_locate(regions: []const Region, address: u64, is_return: bool) Location {
-    // Address 0 cannot be a return address, and there is no address before it.
+    // There is no address before 0.
     if (is_return and address == 0) return .{ .region = region_none, .offset = address };
 
     const lookup = if (is_return) address - 1 else address;

@@ -37,16 +37,16 @@ pub const Looks = struct {
     /// Clock ticks per second, the unit of CPU time in /proc. 100 on every Linux today, but
     /// the kernel says it in the auxiliary vector, so it is read, not assumed.
     ticks_per_s: u64,
-    /// When the machine booted, in Unix ns: /proc counts start times from it.   // NEW
-    boot_unix_ns: u64, // NEW
+    /// When the machine booted, in Unix ns: /proc counts start times from it.
+    boot_unix_ns: u64,
     infos: std.ArrayList(ProcessInfo) = .empty,
 
     pub fn init() Looks {
         const ticks = std.c.getauxval(std.elf.AT_CLKTCK);
         assert(ticks > 0);
-        // Read back to back: wall time now minus time since boot is when it booted. // NEW
-        const boot_unix_ns = timer.realtime_ns() - timer.boottime_ns(); // NEW
-        return .{ .ticks_per_s = ticks, .boot_unix_ns = boot_unix_ns }; // CHANGED
+        // Read back to back: wall time now minus time since boot is when it booted.
+        const boot_unix_ns = timer.realtime_ns() - timer.boottime_ns();
+        return .{ .ticks_per_s = ticks, .boot_unix_ns = boot_unix_ns };
     }
 
     pub fn deinit(looks: *Looks, gpa: std.mem.Allocator) void {
@@ -74,7 +74,7 @@ pub const Looks = struct {
                 .command = entry.cmdline.text(),
                 .cpu_percent = looks.cpu_of(before, &entry.stat, interval_ns),
                 .memory_bytes = entry.status.rss_kb * 1024,
-                .started_unix_ns = looks.started_of(&entry.stat), // CHANGED
+                .started_unix_ns = looks.started_of(&entry.stat),
             });
         }
 
@@ -94,8 +94,8 @@ pub const Looks = struct {
         return cpu_percent(old.stat.cpu_ticks, stat.cpu_ticks, interval_ns, looks.ticks_per_s);
     }
 
-    /// When the process started, in Unix ns.   // NEW
-    fn started_of(looks: *const Looks, stat: *const Stat) u64 { // NEW
+    /// When the process started, in Unix ns.
+    fn started_of(looks: *const Looks, stat: *const Stat) u64 {
         return started_unix_ns(looks.boot_unix_ns, stat.start_ticks, looks.ticks_per_s);
     }
 
@@ -111,8 +111,8 @@ pub const Looks = struct {
         return @floatCast(used_s / interval_s * 100);
     }
 
-    /// Start ticks since boot to Unix ns. Pure, so it is tested without a process.   // NEW
-    fn started_unix_ns(boot_unix_ns: u64, start_ticks: u64, ticks_per_s: u64) u64 { // NEW
+    /// Start ticks since boot to Unix ns. Pure, so it is tested without a process.
+    fn started_unix_ns(boot_unix_ns: u64, start_ticks: u64, ticks_per_s: u64) u64 {
         assert(ticks_per_s > 0);
         return boot_unix_ns + start_ticks * std.time.ns_per_s / ticks_per_s;
     }

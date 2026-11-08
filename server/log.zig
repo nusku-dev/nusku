@@ -1,12 +1,7 @@
-//! The server's log: every line the server writes goes through here, under the scope "server".
+//! The server's log, under the scope "server". Quiet until the program installs a logger.
 //!
-//!     const log = @import("log.zig").server;     // "../log.zig" from a folder
+//!     const log = @import("log.zig").server;
 //!     log.info("run started", .{ .target = target, .pid = pid });
-//!
-//! It writes to the logger the program installs (logger/, `log.setDefault`), and does nothing
-//! without one, so the server is quiet as a library until its host asks for logs. Nothing on
-//! the path of every report or every frame logs: lines come once per run, per binary, per
-//! query, or when something is refused or goes wrong.
 
 const std = @import("std");
 const logger = @import("log");
@@ -17,12 +12,12 @@ pub const server = logger.scope("server");
 /// Room for the hex of any build ID the server accepts.
 pub const hex_bytes_max = 2 * id_bytes_max;
 
-/// A size for a log line, in KiB, rounded up: a small binary shows as 1, not as 0.
+/// KiB, rounded up: a small binary shows as 1, not 0.
 pub fn kib(bytes: u64) u64 {
     return std.math.divCeil(u64, bytes, 1024) catch unreachable;
 }
 
-/// A build ID as `readelf -n` shows it, for a log line: the bytes as hex, in `buffer`.
+/// A build ID in hex, as `readelf -n` shows it.
 pub fn hex(buffer: *[hex_bytes_max]u8, bytes: []const u8) []const u8 {
     const digits = "0123456789abcdef";
     const length = @min(bytes.len, id_bytes_max);

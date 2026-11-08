@@ -1,12 +1,6 @@
-//! Loads just enough of an ELF file to read its unwind information: the headers, the section
-//! names, and the .eh_frame and .debug_frame sections (or .gopclntab for a Go binary). The
-//! result is as long as the file, so every offset in it is the real file offset, but only the
-//! parts that were read cost memory: the rest is anonymous address space that reads as zeros.
-//! Everything in the file is untrusted, so each offset is checked against the file size before
-//! it is used.
-//!
-//! Sketch: libc is 2 MiB, of which about 60 KiB are headers and .eh_frame. Reading only those
-//! is 30 times less memory and disk traffic than reading the file.
+//! Loads the headers and the asked-for sections of an ELF file into a buffer as long as the
+//! file, so offsets stay file offsets; the rest is unread zero pages. Of libc's 2 MiB, about
+//! 60 KiB are read. Every offset is untrusted and checked.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -41,9 +35,7 @@ pub const Loaded = struct {
     }
 };
 
-/// Reads the headers and the `sections` asked for from an open file. A file without section
-/// headers loads fine; it just has no sections to find. A section that would take the bytes
-/// read past `read_max` is refused with `error.TooLarge`, before it is read.
+/// `TooLarge` when the sections would take the bytes read past `read_max`.
 pub fn load(file: *const File, sections: []const []const u8, read_max: u64) !Loaded {
     const size = try file.size_bytes();
     if (size < elf_header_size) return error.NotElf;

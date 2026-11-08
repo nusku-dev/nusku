@@ -1,12 +1,6 @@
-//! End to end: Go programs are unwound with their pclntab, frameless functions included.
-//!
-//! How: build testing/e2e/go/frameless.go with the Go toolchain, once as is and once stripped
-//! (-s -w, as production images are). Its `leaf` has no frame: a frame-pointer walk from inside
-//! it reads `middle`'s rbp and skips `middle`. The first test checks the rows built from the
-//! pclntab, without root. The second profiles the running program and checks that every sample
-//! in `leaf` has `middle` as its caller.
-//!
-//! Test-only, like everything under testing/. Skipped without a Go toolchain.
+//! End to end: Go is unwound with its pclntab, stripped or not. go/frameless.go's `leaf` has no
+//! frame, so a frame-pointer walk would skip `middle`; every sample in `leaf` must have
+//! `middle` as its caller. Skipped without a Go toolchain.
 
 const std = @import("std");
 const testing = std.testing;

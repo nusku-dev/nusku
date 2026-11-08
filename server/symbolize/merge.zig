@@ -1,5 +1,5 @@
-//! Merges equal stacks. Samples of the same call path, taken in different windows or at
-//! different instructions of the same function, become one stack with the sum of the samples.
+//! Merges stacks of the same call path, from any window and at any instruction of the same
+//! functions, into one with the sum of their samples.
 
 const std = @import("std");
 const query = @import("../query.zig");
@@ -8,8 +8,7 @@ const Order = std.math.Order;
 const Frame = query.Frame;
 const SymbolStack = query.SymbolStack;
 
-/// Merges `stacks` in place and returns the front of it that is kept, most samples first. The
-/// frames are not copied: they stay where they were.
+/// Merges in place, and returns the front that is kept, most samples first.
 pub fn stacks_merge(stacks: []SymbolStack) []SymbolStack {
     std.mem.sort(SymbolStack, stacks, {}, stack_less);
 
@@ -32,8 +31,7 @@ fn stack_less(_: void, a: SymbolStack, b: SymbolStack) bool {
     return stack_order(a, b) == .lt;
 }
 
-/// More samples first; the identity decides between equal counts, so the order is the same
-/// every time.
+/// Most samples first, and the same order every time.
 fn samples_more(_: void, a: SymbolStack, b: SymbolStack) bool {
     if (a.samples != b.samples) return a.samples > b.samples;
     return stack_order(a, b) == .lt;
@@ -50,8 +48,7 @@ fn stack_order(a: SymbolStack, b: SymbolStack) Order {
     return std.math.order(@intFromBool(a.complete), @intFromBool(b.complete));
 }
 
-/// Two frames are the same when they are in the same place of the same module. A named
-/// frame is the function (not the instruction in it); an unnamed one is its raw address.
+/// A named frame is its function, not its instruction; an unnamed one is its raw address.
 fn frame_order(a: Frame, b: Frame) Order {
     var order = std.math.order(@intFromBool(a.kernel), @intFromBool(b.kernel));
     if (order != .eq) return order;
@@ -68,8 +65,7 @@ fn string_order(a: ?[]const u8, b: ?[]const u8) Order {
     if (a == null or b == null) {
         return std.math.order(@intFromBool(a != null), @intFromBool(b != null));
     }
-    // The same slice, mostly: the lookup's cache hands out one copy of each name, and frames
-    // of one window share their module paths.
+    // Mostly the same slice: the lookup hands out one copy of each name.
     if (a.?.ptr == b.?.ptr and a.?.len == b.?.len) return .eq;
     return std.mem.order(u8, a.?, b.?);
 }

@@ -1,11 +1,5 @@
-//! Names for the code of the vDSO. The kernel exports each vDSO function as a stub of one
-//! instruction, `jmp` to the real body, and strips every other symbol: a sample is nearly
-//! always in a body, which has no name of its own. So the agent writes a `.symtab` for it: the
-//! exported symbols, plus one for each body, named after the stub that jumps there and sized
-//! by the vDSO's own unwind entry for it.
-//!
-//! The bytes come from the agent's own image of the vDSO, which is the target's (see
-//! target/vdso.zig), so nothing here is read from the target.
+//! A `.symtab` for the vDSO. Each exported function is a one-`jmp` stub to its unnamed body,
+//! where samples land: the body gets the stub's name, and its size from its unwind entry.
 
 const std = @import("std");
 const assert = std.debug.assert;

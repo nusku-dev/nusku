@@ -1,15 +1,6 @@
-//! The vDSO: the small shared library the kernel maps into every process, so that reading the
-//! clock (clock_gettime, gettimeofday, time) and getcpu need no system call. A program that reads
-//! the clock in a hot path spends many of its samples inside it.
-//!
-//! It has no file on disk, so the agent cannot open it like other libraries. But every 64-bit
-//! process on one kernel maps the same image, so the agent copies its own, once: reading its own
-//! memory needs no rights, where reading the target's (/proc/<pid>/mem) needs ptrace rights the
-//! agent may not have. The image is a complete ELF file, .eh_frame included, so the unwind tables
-//! are built from it like from any other binary.
-//!
-//! A target whose vDSO is not this one (a 32-bit process maps the 32-bit vDSO) is told apart by
-//! the size of its [vdso] mapping, and gets no table rather than a wrong one.
+//! The vDSO, the kernel's library for clock_gettime and the like. It has no file, but every
+//! 64-bit process maps the same image, so the agent copies its own: a whole ELF file, unwind
+//! entries included. A target with another vDSO (a 32-bit one) is told apart by its size.
 
 const std = @import("std");
 const assert = std.debug.assert;

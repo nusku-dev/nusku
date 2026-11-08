@@ -1,7 +1,5 @@
-//! One binary on its way to the server, a few chunks at a time. The loop that profiles calls
-//! `pump` once per round, so sending never holds it up for longer than `chunks_max` chunks
-//! (it must keep draining the kernel's buffers). The receiver (`sink`) gets the same three
-//! calls a network stream would: begin, chunk, end.
+//! One binary on its way, at most `chunks_max` chunks per `pump`, so the loop keeps draining.
+//! The sink gets what a network stream would: begin, chunks, end.
 
 const std = @import("std");
 const assert = std.debug.assert;

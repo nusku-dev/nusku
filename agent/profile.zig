@@ -1,8 +1,5 @@
-//! Runs a profile from start to finish: the agent's main loop.
-//!
-//! The loop runs at its own pace, not in reaction to what the target does: a tick timer drains
-//! the kernel's buffers, a report timer hands out a window, and the target's exit or a cancel
-//! ends the run. Everything happens on the calling thread, so there are no locks.
+//! The agent's main loop: a tick timer drains the kernel's buffers, a report timer hands out a
+//! window, and the target's exit or a cancel ends the run. All on the calling thread.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -34,9 +31,8 @@ pub const Options = struct {
     cancel: ?*const Cancel = null,
 };
 
-/// How often the kernel's ring buffer is drained between reports. Sketch: at 99 Hz on 64 CPUs
-/// a tick sees at most 634 samples, and only the new stacks among them take ring space, so the
-/// ring (cpu_wire.records_bytes) cannot fill between two ticks.
+/// At 99 Hz on 64 CPUs a tick sees at most 634 samples, and only new stacks take ring space:
+/// the ring cannot fill between two ticks.
 const tick_ms_max = 100;
 
 /// What the profile loop waits on.
@@ -54,32 +50,24 @@ const Poll = poll_file.Poll(Source);
 
 const Ready = std.EnumSet(Source);
 
-/// Profiles one process from start to finish, and returns why it stopped.
-///
-/// `context` is a pointer to the caller's state, and `on_report` a function that takes it first:
+/// Profiles one process until its duration, its exit or a cancel, and says why it stopped.
+/// Blocks the calling thread. Needs root, or CAP_BPF and CAP_PERFMON (and CAP_SYSLOG for
+/// kernel addresses).
 ///
 ///     fn on_report(state: *State, report: *const Report) !void
 ///
-/// - Blocks the calling thread. `on_report` runs on that thread, once per `interval_ms`, and
-///   once more with the last, partial window.
-/// - The report is valid only during the call. Copy whatever must outlive it.
-/// - `on_report` returns void, or an error that stops the run: `profile` then releases what it
-///   loaded into the kernel and returns that error.
-/// - To stop the run from another thread, pass a `Cancel` and `trigger()` it.
-/// - Needs root, or CAP_BPF and CAP_PERFMON. CAP_SYSLOG is needed too for the kernel's text
-///   address in `Report.kernel`; without it that is null and kernel frames cannot be placed.
+/// runs once per `interval_ms`, and once more with the last window. The report is valid only
+/// during the call. An error stops the run and is returned.
 ///
-/// The state may also take the target's binaries, so the server can name addresses. It then
-/// has all five of these, on the same thread as `on_report`:
+/// To be sent the target's binaries, the state also has all five of:
 ///
 ///     fn binary_known(state: *State, build_id: []const u8) bool   // true: do not send it
 ///     fn binary_begin(state: *State, header: *const binary_file.Header) !void
 ///     fn binary_chunk(state: *State, chunk: *const binary_file.Chunk) !void
 ///     fn binary_end(state: *State) !void
-///     fn binary_abort(state: *State) void   // the binary begun will not end: drop it
+///     fn binary_abort(state: *State) void   // the binary begun will not end
 ///
-/// Each binary is offered once per run. Its stream is begin, chunks, then end or abort. An
-/// error from a hook drops that binary only; the run goes on.
+/// Each binary is offered once per run. An error from a hook drops that binary only.
 pub fn profile(
     gpa: std.mem.Allocator,
     options: Options,

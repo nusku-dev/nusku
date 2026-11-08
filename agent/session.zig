@@ -1,9 +1,6 @@
-//! A profiling session: one target process, the metrics asked for, and what they share.
-//!
-//! What every metric shares lives here: the target's identity, its executable regions, and the
-//! unwind tables of its binaries. Each metric is a collector with the same shape (init, start,
-//! tick, collect, deinit), and each fills its own field of the report. A new metric is a new
-//! collector and a new field; nothing else changes.
+//! One target, the metrics asked for, and what they share: the target's identity, its regions
+//! and its unwind tables. Each metric is a collector (init, start, tick, collect, deinit) that
+//! fills its own field of the report.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -23,9 +20,7 @@ const CpuCollector = collector_file.Collector;
 
 pub const Metric = enum { cpu, offcpu, mem, io, net, locks, sched };
 
-/// One window of every metric that was asked for. A metric's field is null when it was not.
-///
-/// Everything in it refers to the session's memory: it is valid until the next `report`.
+/// One window of each metric asked for; null for the others. Valid until the next `report`.
 pub const Report = struct {
     /// When the window began, in wall-clock nanoseconds since the Unix epoch.
     start_unix_ns: u64,

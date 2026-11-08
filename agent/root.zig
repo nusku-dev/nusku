@@ -1,8 +1,5 @@
-//! The agent: watches one process with eBPF and hands out a report of what it saw at every
-//! interval. Reports carry raw addresses and the regions they resolve against; turning them
-//! into symbols is the server's job, so the agent stays small on the machine it profiles.
-//!
-//! The layers, bottom up:
+//! The agent: profiles a process with eBPF and reports raw addresses and their regions every
+//! interval; naming them is the server's job. The layers, bottom up:
 //!   os/       system calls: files, timers, poll, perf events, process descriptors
 //!   bpf/      loading BPF objects and talking to their maps; kernel/ holds the programs
 //!   target/   what is known about the target: its mappings, build IDs, files, the kernel
@@ -15,7 +12,7 @@ const profile_file = @import("profile.zig");
 const session_file = @import("session.zig");
 const collector_file = @import("cpu/collector.zig");
 const binary_file = @import("symbols/binary.zig");
-
+const procs = @import("processes.zig");
 pub const profile = profile_file.profile;
 pub const Options = profile_file.Options;
 pub const StopReason = profile_file.StopReason;
@@ -55,10 +52,10 @@ pub const kernel_symbols = struct {
 
 /// Watching every process of the machine: see `processes.watch`.
 pub const processes = struct {
-    // pub const watch = watch_file.watch_processes;
-    // pub const Options = watch_file.Options;
-    // pub const StopReason = watch_file.StopReason;
-    // pub const Frame = watch_file.Frame;
+    pub const watch = procs.watch_processes;
+    pub const Options = procs.Options;
+    pub const StopReason = procs.StopReason;
+    pub const Frame = procs.Frame;
     pub const ProcessInfo = @import("processes/process.zig").ProcessInfo;
 };
 
@@ -115,17 +112,6 @@ test {
 
     _ = @import("message.zig");
 
-    _ = session_file;
-    _ = profile_file;
-
-    // Test-only code lives under testing/: end-to-end tests, and the child processes they run.
-    _ = @import("testing/e2e/vdso_unwind.zig");
-    _ = @import("testing/e2e/cpu_hotplug.zig");
-    _ = @import("testing/e2e/go_unwind.zig");
-    _ = @import("testing/e2e/watch_processes.zig");
-    // The example of devlog Ep14, compiled with every test build so the guide cannot rot.
-    _ = @import("testing/examples/server_feed.zig");
-
     _ = @import("processes/process.zig");
     _ = @import("processes/proc.zig");
     _ = @import("processes/stat.zig");
@@ -134,5 +120,13 @@ test {
     _ = @import("processes/users.zig");
     _ = @import("processes/cmdline.zig");
 
+    _ = session_file;
+    _ = profile_file;
     _ = @import("processes.zig");
+
+    _ = @import("testing/e2e/vdso_unwind.zig");
+    _ = @import("testing/e2e/cpu_hotplug.zig");
+    _ = @import("testing/e2e/go_unwind.zig");
+    _ = @import("testing/e2e/watch_processes.zig");
+    _ = @import("testing/examples/server_feed.zig");
 }

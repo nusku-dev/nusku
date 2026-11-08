@@ -1,20 +1,15 @@
-//! The frames of the stacks the kernel program sent through the ring buffer, kept until the
-//! window that counts them is built. All memory is allocated at init and reused.
+//! The frames of the stacks sent through the ring buffer, kept until their window is built.
 //!
-//! Why two epochs. The kernel sends a stack's record before it inserts the stack's count key
-//! (see bpf/kernel/cpu.bpf.zig), and the collector drains the counts before it reads the ring.
-//! So every drained count finds its record in the ring, or earlier in the cache. A record can
-//! arrive one report early: sent just before a report's drain, its key inserted just after it.
-//! So a record must outlive the report after the one it arrived in, and no longer. Each report
-//! starts a new epoch and forgets the epoch before the previous one:
+//! Two epochs: a record is sent before its count key, so it can arrive one report early, and
+//! must outlive the next report, no longer. Each report starts an epoch and forgets the one
+//! before the last:
 //!
 //!     report N-1: advance   drain   read ring -> epoch A   build window N-1 from A and B
 //!     ticks:                        read ring -> epoch A
 //!     report N:   advance (B forgotten, A kept)   drain   read ring -> epoch B
 //!                 build window N from B and A
 //!
-//! The window refers to the frames in the cache instead of copying them, so the frames must stay
-//! put until the next report: only `epoch_advance`, at the start of a report, forgets frames.
+//! Windows point into the cache, so only `epoch_advance`, at a report, forgets frames.
 
 const std = @import("std");
 const assert = std.debug.assert;

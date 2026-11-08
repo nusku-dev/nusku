@@ -1,16 +1,12 @@
-//! Reads the GNU build ID of an ELF file: a unique fingerprint the backend uses to find the
-//! matching binary or debug info. Only the first part of the file is read, and the section
-//! headers when the program headers do not lead to the ID (Go's linker leaves it out of its
-//! note segment).
+//! The GNU build ID of an ELF file, from its first bytes, or from its section headers when its
+//! note segments lack it (Go's linker leaves it out).
 
 const std = @import("std");
 const File = @import("shared").File;
 const process_maps = @import("process_maps.zig");
 const process = @import("../os/process.zig");
 
-/// How much of the start of a file we read. The ELF header, the program headers and the
-/// note segments lie in there for practically every binary. If a note does not, the file is
-/// reported as having no build ID.
+/// Holds the ELF header, the program headers and the notes of practically every binary.
 pub const prefix_size = 64 * 1024;
 /// Longer build IDs are refused. GNU ld writes 20 bytes (SHA-1); 64 leaves room for any hash.
 pub const id_bytes_max = 64;
@@ -24,9 +20,8 @@ const section_header_size = 64;
 /// dozen.
 const sections_max = 256;
 
-/// The build ID of an open ELF file, read into `prefix_buffer` (at least `prefix_size` bytes):
-/// from its note segments, else from its note sections. Null if it has none. The result points
-/// into `prefix_buffer`.
+/// From the note segments, else the note sections. Points into `prefix_buffer`, at least
+/// `prefix_size` bytes.
 pub fn from_file(file: *const File, prefix_buffer: []u8) ?[]const u8 {
     std.debug.assert(prefix_buffer.len >= prefix_size);
     const prefix_read = file.read_at(prefix_buffer[0..prefix_size], 0) catch return null;
@@ -48,9 +43,7 @@ pub fn from_file(file: *const File, prefix_buffer: []u8) ?[]const u8 {
     return from_sections(prefix, headers);
 }
 
-/// The build ID in a note section of the file whose first bytes are `prefix` and whose section
-/// header table is `headers`, when that section lies inside `prefix`. The result points into
-/// `prefix`.
+/// From a note section inside `prefix`, given the section header table. Points into `prefix`.
 pub fn from_sections(prefix: []const u8, headers: []const u8) ?[]const u8 {
     var at: usize = 0;
     while (at + section_header_size <= headers.len) : (at += section_header_size) {
@@ -92,12 +85,8 @@ pub fn from_prefix(prefix: []const u8) ?[]const u8 {
     return null;
 }
 
-/// The build ID of the file behind `mapping`, opened from inside process `pid`'s view of the
-/// filesystem (/proc/<pid>/root), so files that only exist inside a container work too, or
-/// through the mapping itself when a sandbox hides the path (`process.mapping_open`).
-/// Null when the mapping is not a regular file, was deleted, cannot be read, or has no build
-/// ID. A missing build ID is normal and must never fail a profile, so read problems also give
-/// null. The result lives in `arena`.
+/// The build ID of the file behind `mapping`, as process `pid` sees it. Null when there is none
+/// or it cannot be read: that must never fail a profile. In `arena`.
 pub fn for_mapping(arena: std.mem.Allocator, pid: u32, mapping: process_maps.Mapping) !?[]const u8 {
     if (mapping.deleted or mapping.path.len == 0 or mapping.path[0] != '/') return null;
 

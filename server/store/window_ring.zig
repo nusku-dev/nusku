@@ -1,5 +1,5 @@
-//! The last windows of one target, in memory reserved at init. `push` never allocates: it
-//! copies the message into the slot's own bytes, and fails if the message does not fit.
+//! The last windows of one target, in memory reserved at init: `push` copies a message into
+//! its slot's bytes, and never allocates.
 
 const std = @import("std");
 const agent = @import("agent");
@@ -8,17 +8,17 @@ const assert = std.debug.assert;
 const Message = agent.Message;
 
 pub const WindowRing = struct {
-    /// One `window_bytes_max` slice per window; the message in slot `i` lives in slice `i`.
+    /// One `window_bytes_max` slice per slot: slot `i`'s message lives in slice `i`.
     bytes: []align(8) u8,
     messages: []Message,
     window_bytes_max: u32,
-    /// The slot the next push writes. The newest window is the one before it.
+    /// The slot the next push writes; the newest window is the one before.
     head: u32,
     count: u32,
 
     pub const Options = struct {
         windows_max: u32,
-        /// Bytes one window may take, multiple of 8: it bounds the memory of the ring.
+        /// A multiple of 8.
         window_bytes_max: u32,
     };
 
@@ -32,7 +32,6 @@ pub const WindowRing = struct {
         errdefer gpa.free(bytes);
 
         const messages = try gpa.alloc(Message, options.windows_max);
-
         ring.* = .{
             .bytes = bytes,
             .messages = messages,
@@ -48,15 +47,13 @@ pub const WindowRing = struct {
         ring.* = undefined;
     }
 
-    /// Keeps a copy of `message` as the newest window; when the ring is full, the oldest
-    /// window goes. A message that does not fit in one window is rejected, and the oldest
-    /// window is still gone then, because its slot was the one being written.
+    /// Keeps a copy of `message` as the newest window; a full ring loses its oldest. A message
+    /// too big for a slot is rejected, and the oldest window is lost all the same.
     pub fn push(ring: *WindowRing, message: *const Message) error{WindowTooLarge}!void {
         assert(ring.count <= ring.messages.len);
         assert(ring.head < ring.messages.len);
 
-        // A full ring writes over its oldest window, which sits at `head`: drop it first,
-        // so a failed copy leaves the ring consistent.
+        // The oldest window is at `head`: dropped first, so a failed copy leaves no half window.
         if (ring.count == ring.messages.len) ring.count -= 1;
 
         const start = @as(usize, ring.head) * ring.window_bytes_max;

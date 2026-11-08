@@ -1,11 +1,6 @@
-//! Names the frames of one window. A window comes with its own regions, so each user address
-//! is placed (region, file offset) with `normalize`, and the name is asked from `lookup`:
-//! anything with `name(arena, build_id, offset) !?[]const u8` that copies the name it finds
-//! into `arena`. The server's lookup takes its lock only inside that call, so no table is
-//! held while a query runs.
-//!
-//! The strings of the result point into `message` (module paths) and into `arena` (names):
-//! `message` must live as long as the result.
+//! Names the frames of one window: each address is placed in its region's file, then named by
+//! `lookup`, anything with `name(arena, build_id, offset) !?[]const u8`. The result points
+//! into `message` (module paths) and `arena` (names).
 
 const std = @import("std");
 const agent = @import("agent");
@@ -26,12 +21,10 @@ pub fn window_resolve(
     lookup: anytype,
     message: *const Message,
 ) ![]SymbolStack {
-    // The agent sends regions sorted and apart; a window that does not is not trusted for
-    // placing addresses (the binary search would give wrong answers), but its frames are kept:
-    // with no regions, every address is in none.
+    // Regions not sorted and apart would mislead the search: then every address is in none.
     const regions = if (regions_file.valid(message.regions)) message.regions else &.{};
 
-    // One scratch for the locations of every stack: the longest one sets its size.
+    // One scratch for every stack's locations.
     var user_max: usize = 0;
     for (message.stacks) |stack| user_max = @max(user_max, stack.user.len);
     const locations = try arena.alloc(Location, user_max);
@@ -45,10 +38,9 @@ pub fn window_resolve(
     return stacks;
 }
 
-/// What names a kernel frame: the identity of the kernel's symbols for this boot, and where
-/// `_text` was. The window says both, or the kernel frames keep their addresses.
+/// What names a kernel frame: the kernel's identity for this boot, and its `_text`.
 const Kernel = struct {
-    /// In `arena`: the lookup may keep it as long as the query.
+    /// In `arena`: the lookup's cache keeps it for the query.
     id: []const u8,
     text_address: u64,
 };
@@ -73,8 +65,8 @@ fn stack_resolve(
     assert(locations.len == stack.user.len);
     const frames = try arena.alloc(Frame, stack.kernel.len + stack.user.len);
 
-    // Kernel frames come first: they are the innermost. Each is named at its distance from
-    // `_text`; after the first, a frame is a return address, so the call is one byte back.
+    // Kernel frames are innermost. Named at their distance from `_text`; after the first, a
+    // frame is a return address, so the call is one byte back.
     for (stack.kernel, frames[0..stack.kernel.len], 0..) |address, *frame, index| {
         frame.* = .{ .address = address, .kernel = true };
         const known = kernel orelse continue;
@@ -91,7 +83,6 @@ fn stack_resolve(
 
         const region = &regions[location.region];
         if (region.path.len > 0) frame.module = region.path;
-        // Without a build ID the server cannot know which file this was.
         const build_id = region.build_id orelse continue;
         frame.function = try lookup.name(arena, build_id, location.offset);
     }

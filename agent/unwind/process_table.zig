@@ -1,6 +1,5 @@
-//! What the kernel program needs to turn a pc into table rows: for one process, its executable
-//! mappings sorted by address. Each says which module's table applies, and the bias that turns
-//! a runtime address into a file address. `find` searches the way the kernel program must.
+//! One process's executable mappings, sorted, each with its module and its bias: how the kernel
+//! program turns a pc into rows. `find` searches as the kernel program must.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -22,9 +21,7 @@ pub fn build(entry: *ProcessEntry, inputs: []const Input) error{Unsorted}!void {
     assert(entry.count + entry.dropped == inputs.len);
 }
 
-/// Fills an entry one mapping at a time, so a process with any number of mappings needs no
-/// buffer. The first `mappings_max` mappings are kept and the rest counted: the kernel's search
-/// is bounded by that size.
+/// One mapping at a time: the first `mappings_max` are kept, the rest counted.
 pub const Builder = struct {
     entry: *ProcessEntry,
     previous_end: u64,

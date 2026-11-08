@@ -1,9 +1,5 @@
-//! The kernel helpers and map definitions the BPF programs use, written for Zig.
-//!
-//! A helper is called through a pointer whose value is its number: the verifier rewrites the
-//! call into the real function. The names follow the C names in bpf-helpers(7), so the man page
-//! can be searched for each one:
-//! https://man7.org/linux/man-pages/man7/bpf-helpers.7.html
+//! The kernel helpers and map definitions of the BPF programs. A helper is a pointer whose value
+//! is its number, rewritten by the verifier. Named as in bpf-helpers(7).
 
 /// void *bpf_map_lookup_elem(struct bpf_map *map, const void *key)
 /// The value for `key`, or null if the map has none.

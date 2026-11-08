@@ -35,11 +35,8 @@ pub fn clock_reader_spawn(duration_ms: u64, clock_gettime: ClockGettime) error{F
     return @intCast(pid);
 }
 
-/// `__vdso_clock_gettime` in this process, found in the vDSO's own symbol table. A forked child
-/// maps the vDSO at the same address, so the pointer is valid there too.
-///
-/// Not std.os.linux.clock_gettime: in a static musl build Zig's std does not find the vDSO and
-/// makes a system call every time, so a loop over it never runs vDSO code.
+/// `__vdso_clock_gettime`, from the vDSO's symbols; valid in a forked child too. Not std's, which
+/// in a static musl build makes a system call every time.
 pub fn vdso_clock_gettime(gpa: std.mem.Allocator) !?ClockGettime {
     var image = (try vdso.read(gpa)) orelse return null;
     defer image.deinit(gpa);
@@ -77,11 +74,8 @@ pub fn sleeper_spawn() error{ForkFailed}!u32 {
     return @intCast(pid);
 }
 
-/// Keeps the calling thread busy for `duration_ms`, in its own code.
-///
-/// The clock is read only every `burn_iterations_per_check` iterations: reading it is a vDSO
-/// call, and a loop that read it every time would spend most of its samples inside the vDSO, so
-/// the tests would profile the clock instead of this loop.
+/// Keeps the thread busy in its own code. The clock is read only every
+/// `burn_iterations_per_check` iterations, or the samples would land in the vDSO.
 pub fn cpu_burn(duration_ms: u64) void {
     const deadline_ns = timer.monotonic_ns() + duration_ms * std.time.ns_per_ms;
     var counter: u64 = 0;
@@ -119,9 +113,8 @@ pub fn cpu_pin(pid: u32, cpu: u32) !void {
     try linux.sched_setaffinity(@intCast(pid), &set);
 }
 
-/// Takes `cpu` offline or brings it back, through sysfs. Needs root. CPU 0 often cannot go
-/// offline at all. This changes the machine for every process on it: only an opt-in test uses
-/// it, and it must always bring the CPU back.
+/// Through sysfs, as root. This changes the machine: only an opt-in test uses it, and always
+/// brings the CPU back.
 pub fn cpu_online_set(cpu: u32, online: bool) !void {
     assert(cpu > 0);
     var path_buffer: [64]u8 = undefined;

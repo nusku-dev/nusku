@@ -1,14 +1,8 @@
-//! The CPU metric: samples the target's stacks on every CPU, and hands out one window of
-//! samples per report.
+//! The CPU metric. Samples are counted in the kernel; a tick reads the ring buffer, and a report
+//! drains one window of counts. Nothing is allocated after init.
 //!
-//! Control plane and data plane. Samples are taken and counted in the kernel, at the sampling
-//! rate, and never cross into the agent one by one. The agent runs at its own pace: a tick reads
-//! the ring buffer, and a report advances the generation and drains one window of counts in two
-//! system calls. Every buffer is allocated at init, so a report allocates nothing.
-//!
-//! A report is two calls, `generation_advance` and then `collect`. The work the caller does in
-//! between (reading the target's mappings) gives the samples that read the old generation time
-//! to finish before its counts are drained.
+//! A report is `generation_advance`, then `collect`: the caller's work in between gives the
+//! samples still counting the old generation time to finish.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -33,9 +27,7 @@ pub const Stack = window.Stack;
 pub const Loss = window.Loss;
 pub const StopReason = window.StopReason;
 
-/// Frames kept per cache epoch. Sketch: a busy service has a few hundred distinct stacks per
-/// window, of about 48 frames: 20k frames. 512k frames (4 MiB per epoch) leaves room for 10k
-/// distinct stacks of 48 frames. Untouched pages cost no memory.
+/// Per epoch: 10k distinct stacks of 48 frames, where a busy service has a few hundred.
 const cache_frames_max = 512 * 1024;
 
 const Records = RingBuffer(FrameCache, FrameCache.record_add);

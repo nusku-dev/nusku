@@ -1,8 +1,5 @@
-//! Where the server keeps what the agents report: one ring of windows per target, found by
-//! id. Single-threaded: whoever shares a store between threads puts a lock around it.
-//!
-//! A target outlives its run, so its windows can still be queried. When the store is full, the
-//! oldest finished target makes room for a new one; targets still running are never dropped.
+//! The reports of each target, a ring of windows per target. A target outlives its run; when
+//! the store is full, the oldest finished one makes room. Not thread-safe on its own.
 
 const std = @import("std");
 const agent = @import("agent");
@@ -24,9 +21,9 @@ pub const Store = struct {
         id: TargetId,
         pid: u32,
         ring: WindowRing,
-        /// Windows lost on the way: too big for the run's buffer, or for a slot of the ring.
+        /// Too big for the run's buffer, or for a slot of the ring.
         windows_rejected: u64,
-        /// No more reports will come: the target may make room for a new one.
+        /// No more reports will come: it may make room for a new target.
         finished: bool,
     };
 
@@ -46,7 +43,7 @@ pub const Store = struct {
         };
     }
 
-    /// Registers a process and reserves its ring. Not for the hot path: this allocates.
+    /// Registers a process and allocates its ring.
     pub fn target_add(
         store: *Store,
         gpa: std.mem.Allocator,
@@ -75,14 +72,13 @@ pub const Store = struct {
         return target.id;
     }
 
-    /// Marks the target as done: it keeps its windows until it is removed, or until its room
-    /// is needed.
+    /// The target keeps its windows until it is removed or its room is needed.
     pub fn target_finish(store: *Store, id: TargetId) error{TargetUnknown}!void {
         const target = store.target_find(id) orelse return error.TargetUnknown;
         target.finished = true;
     }
 
-    /// Drops the target and its windows. Its id is never handed out again.
+    /// Drops the target and its windows. Ids are never reused.
     pub fn target_remove(
         store: *Store,
         gpa: std.mem.Allocator,
@@ -91,11 +87,10 @@ pub const Store = struct {
         const target = store.target_find(id) orelse return error.TargetUnknown;
         target.ring.deinit(gpa);
         store.count -= 1;
-        // The last target fills the hole: the order of targets does not matter.
-        target.* = store.targets[store.count];
+        target.* = store.targets[store.count]; // The order does not matter.
     }
 
-    /// The finished target that started first (ids grow with time), if there is one.
+    /// The finished target that started first: ids grow with time.
     fn finished_oldest(store: *const Store) ?TargetId {
         var oldest: ?TargetId = null;
         for (store.targets[0..store.count]) |target| {
@@ -105,8 +100,7 @@ pub const Store = struct {
         return oldest;
     }
 
-    /// Null for an id that was never handed out, or removed. A linear scan: `targets_max` is
-    /// small.
+    /// A linear scan: there are few targets.
     pub fn target_find(store: *Store, id: TargetId) ?*Target {
         for (store.targets[0..store.count]) |*target| {
             if (target.id == id) return target;
@@ -114,7 +108,7 @@ pub const Store = struct {
         return null;
     }
 
-    /// Keeps a copy of the message as the target's newest window. Does not allocate.
+    /// Keeps a copy of `message` as the target's newest window. Does not allocate.
     pub fn ingest(
         store: *Store,
         id: TargetId,
@@ -127,8 +121,7 @@ pub const Store = struct {
         };
     }
 
-    /// A window that never reached `ingest` (the run could not copy it): counted with the
-    /// rejected ones.
+    /// A window the run could not copy: counted with the rejected ones.
     pub fn window_dropped(store: *Store, id: TargetId) error{TargetUnknown}!void {
         const target = store.target_find(id) orelse return error.TargetUnknown;
         target.windows_rejected += 1;

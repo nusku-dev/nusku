@@ -50,10 +50,8 @@ pub fn build(
     return regions;
 }
 
-/// The vDSO has no file to read a build ID from, but it is the agent's own image, and its
-/// identity is what the server needs to find the vDSO's symbols. Gives the [vdso] region that
-/// ID, when the image is the same as the target's (their sizes agree; a 32-bit target's is not).
-/// The ID points into the image, which must outlive the regions.
+/// Gives the [vdso] region the build ID of the agent's own image, when it is the same vDSO
+/// (the sizes agree; a 32-bit target's is not). The image must outlive the regions.
 pub fn vdso_mark(regions: []Region, image: ?*const vdso.Image) void {
     const found = image orelse return;
     const id = found.build_id orelse return;

@@ -1,8 +1,4 @@
-//! One window of on-CPU samples: what the CPU metric reports at every interval.
-//!
-//! The types here are the CPU part of the report the agent hands out, and later sends over the
-//! wire, so they are plain data: numbers, enums, and slices of addresses. Symbols are resolved
-//! elsewhere (the server), from the addresses and the target's regions.
+//! One window of on-CPU samples, as plain data: numbers, enums and addresses.
 
 const std = @import("std");
 const assert = std.debug.assert;

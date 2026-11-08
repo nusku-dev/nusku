@@ -1,13 +1,6 @@
-//! End to end: a process that spends its time reading the clock must still be profiled with
-//! its callers.
-//!
-//! How: fork a child whose hot loop calls the vDSO's clock_gettime directly. Profile it
-//! for real (BPF program, perf events, unwind tables), and look at the stacks whose innermost
-//! frame is in the vDSO. Each must climb out of the vDSO into the child's own code and reach
-//! the outermost frame. Without the vDSO's table they stop at the first frame, or skip the
-//! caller.
-//!
-//! Test-only, like everything under testing/. Needs root, and is skipped otherwise.
+//! End to end: a child that calls the vDSO's clock_gettime in a loop is profiled with its
+//! callers. Its stacks in the vDSO must climb out into its own code, to the outermost frame.
+//! Needs root.
 
 const std = @import("std");
 const testing = std.testing;

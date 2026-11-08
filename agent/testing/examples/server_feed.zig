@@ -1,11 +1,6 @@
-//! The example of devlog Ep14: how a server feeds itself from the agent's public API.
-//!
-//! The pattern: run `profile` on a thread of its own; in the report callback, copy what the
-//! server needs into owned memory (the report is only valid during the callback), and hand the
-//! copy over; stop the run from any thread with a `Cancel`.
-//!
-//! It only uses the public API (root.zig), as a server would. Test-only: the test at the end
-//! runs it for real (as root), and every test build compiles it, so the guide cannot go stale.
+//! The example of devlog Ep14, on the public API only: `profile` on its own thread, each report
+//! copied into owned memory and handed over, a `Cancel` to stop it. Built by every test build,
+//! so the guide cannot go stale.
 
 const std = @import("std");
 const agent = @import("../../root.zig");

@@ -32,10 +32,8 @@ pub fn add(b: *std.Build, options: Options) *std.Build.Module {
 
 // ------------------------------------------------------------ kernel programs
 
-/// Compiles a kernel program written in Zig for the BPF target, and embeds the object in the
-/// agent as the import "<name>_bpf". It must be optimized: the verifier rejects the code of an
-/// unoptimized build. Debug information is kept; the loader ignores it, but it helps when
-/// inspecting the object with llvm-objdump or bpftool.
+/// Compiles a Zig kernel program for BPF, embedded as the import "<name>_bpf". Optimized: the
+/// verifier rejects an unoptimized build. Debug info is kept for llvm-objdump and bpftool.
 fn add_kernel_program(
     b: *std.Build,
     module: *std.Build.Module,
@@ -70,13 +68,9 @@ fn add_tests(b: *std.Build, module: *std.Build.Module, test_step: *std.Build.Ste
 }
 
 // ---------------------------------------------------------------- C libraries
-// The C code the agent still links, built from source as static libraries so the final
-// binary needs nothing installed:
-//
-//   libbpf  the low-level kernel calls used by bpf/libbpf.zig (map create, update, lookup,
-//           delete, program load). Pinned in build.zig.zon.
-//   libelf  not called by our code, but libbpf needs it at link time. Vendored in
-//           third_party/libelf (elfutils has no tarball that Zig can fetch).
+// Built from source, so the binary needs nothing installed:
+//   libbpf  the kernel calls of bpf/libbpf.zig. Pinned in build.zig.zon.
+//   libelf  needed by libbpf. Vendored in third_party/libelf: elfutils has no fetchable tarball.
 //   zlib    needed by libelf. Pinned in build.zig.zon.
 
 const c_flags = [_][]const u8{

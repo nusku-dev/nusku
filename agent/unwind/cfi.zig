@@ -1,12 +1,8 @@
-//! Runs the instructions of .eh_frame entries (DWARF call frame information) to find out how
-//! to get from a function's frame to its caller's frame at any address of that function.
-//!
-//! Only x86-64 is known here: the register numbers, their names, and the return address in
-//! column 16. This file computes rules only; applying them to register values comes next.
+//! The rules of DWARF call frame information: how to reach the caller's frame from any address
+//! of a function. x86-64 only.
 
-/// DWARF register numbers on x86-64: 0 to 15 are rax, rdx, rcx, rbx, rsi, rdi, rbp, rsp, r8 to
-/// r15, and 16 is the return address. Rules for any other register (the vector registers)
-/// are read and ignored, because they never matter for finding the caller.
+/// rax, rdx, rcx, rbx, rsi, rdi, rbp, rsp, r8 to r15, then 16, the return address. Rules for
+/// other registers are read and ignored: they never matter for finding the caller.
 pub const num_regs = 17;
 pub const reg_rbp = 6;
 pub const reg_rsp = 7;

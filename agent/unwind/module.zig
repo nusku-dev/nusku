@@ -1,5 +1,4 @@
-//! The unwind table of one mapped executable or library, from whichever source it has: Go's
-//! pclntab for a Go binary, .eh_frame for everything else, and .debug_frame for the code that
+//! The unwind table of one binary: Go's pclntab, else .eh_frame and .debug_frame for the code
 //! .eh_frame does not cover.
 
 const std = @import("std");
@@ -28,10 +27,8 @@ pub const Built = struct {
     fdes_debug_frame: u32 = 0,
 };
 
-/// Builds the table of the file behind `mapping` into `target`.
-///
-/// A Go binary has no .eh_frame for its Go code, so its pclntab wins when it has one. (Its C
-/// code, in a cgo binary, then has no rows: frame pointers unwind it, as before.)
+/// The pclntab wins: Go code has no .eh_frame. A cgo binary's C code then has no rows, and
+/// frame pointers unwind it.
 pub fn table_build(target: *table.Table, gpa: std.mem.Allocator, mapping: Mapping) !Built {
     assert(mapping.start < mapping.end);
     const bias_found = try elf.load_bias(mapping.file, mapping.start, mapping.offset);
@@ -92,9 +89,7 @@ fn fdes_of(
     return fdes.toOwnedSlice(gpa);
 }
 
-/// Every FDE of `eh`, and those of `debug` that overlap none of them nor each other, sorted.
-/// Where both describe a function, .eh_frame wins: it is what the program itself unwinds with.
-/// Both are sorted.
+/// Every FDE of `eh`, and those of `debug` that overlap nothing, sorted. Both are sorted.
 fn fdes_merge(
     gpa: std.mem.Allocator,
     eh: []const eh_frame.Fde,

@@ -1,6 +1,5 @@
-//! One binary of the target, opened to send its symbols to the server, and the types of that
-//! stream: a `Header`, then the section bytes as `Chunk`s. Nothing is parsed here beyond the
-//! headers: the server reads the symbol tables, and treats them as untrusted.
+//! A binary opened to send its symbols, and that stream's types: a `Header`, then `Chunk`s.
+//! Only its headers are parsed here; the server reads the symbols.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -37,9 +36,7 @@ pub const Section = enum {
     }
 };
 
-/// Starts the transfer of one binary, sent once per build ID. The section bytes follow as
-/// `Chunk`s, so the agent holds one chunk in memory whatever the size of the program. A section
-/// the file lacks (a stripped file has no `symtab`) has size 0.
+/// Starts a binary's transfer. A section the file lacks has size 0.
 pub const Header = struct {
     build_id: []const u8,
     /// For display only; never opened.
@@ -120,9 +117,8 @@ pub const Binary = struct {
     }
 };
 
-/// Opens the binary behind `region` in process `pid`. `prefix` is `build_id.prefix_size` bytes
-/// of scratch. The header and the path are copies in `arena`. `image` is the agent's own vDSO
-/// image, if it has one: the [vdso] region is that, and must outlive the binary.
+/// The binary behind `region`, its header in `arena`. `prefix` is `build_id.prefix_size` bytes
+/// of scratch. `image`, the agent's vDSO, must outlive the binary.
 pub fn open(
     arena: std.mem.Allocator,
     pid: u32,
@@ -177,9 +173,7 @@ fn open_vdso(
     return .{ .header = layout.header, .starts = layout.starts, .origin = .{ .memory = sections } };
 }
 
-/// The running kernel as a binary: its symbols, read from /proc/kallsyms as distances from
-/// `_text` (kernel_symbols.zig), under `id`, its identity for this boot. The symbols are in
-/// `arena` and must outlive the binary.
+/// The running kernel as a binary, under `id`. The symbols must outlive it.
 pub fn kernel_binary(
     arena: std.mem.Allocator,
     id: []const u8,

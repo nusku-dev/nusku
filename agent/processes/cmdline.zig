@@ -36,7 +36,9 @@ pub const CmdLine = struct {
             .len = 0,
         };
 
-        for (cmd_line.buffer[0..raw_text.len], raw_text) |*out, byte| out.* = if (byte == 0) ' ' else byte;
+        for (cmd_line.buffer[0..raw_text.len], raw_text) |*out, byte| {
+            out.* = if (byte == 0) ' ' else byte;
+        }
         cmd_line.len = @intCast(raw_text.len);
 
         cmdline.* = cmd_line;

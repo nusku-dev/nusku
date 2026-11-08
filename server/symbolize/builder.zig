@@ -1,8 +1,6 @@
-//! What happens to a binary between its last chunk and its symbol table. Building the table
-//! sorts every function of the file, which takes long for a big one, so it is not done on the
-//! run's thread: that thread is the agent's loop, and while it waits the agent drains no
-//! samples. The upload hands its buffers over as one `Received`, the server queues it, and a
-//! thread of its own builds the tables, one at a time.
+//! A binary between its last chunk and its symbol table. Tables are built on the server's
+//! builder thread, not the run's: a big one takes long, and the run's thread is the agent's
+//! loop.
 
 const std = @import("std");
 const agent = @import("agent");
@@ -12,17 +10,17 @@ const SymbolTable = @import("symbol_table.zig").SymbolTable;
 const assert = std.debug.assert;
 const Section = agent.binary.Section;
 
-/// Every section of one binary, arrived whole and checked against its header. Owns its buffers.
+/// One binary's sections, arrived whole. Owns its buffers.
 pub const Received = struct {
     id: []u8,
-    /// For the logs: what a person recognizes the binary by.
+    /// For the logs only.
     path: []u8,
     segments: []elf.Segment,
-    /// The sections one after the other.
+    /// The sections, one after the other.
     data: []u8,
     starts: std.EnumArray(Section, usize),
     sizes: std.EnumArray(Section, usize),
-    /// What the server reserved for it from the upload budget; given back once it is freed.
+    /// Of the upload budget, given back once it is freed.
     reserved: u64 = 0,
 
     pub fn deinit(received: *Received, gpa: std.mem.Allocator) void {
@@ -33,7 +31,7 @@ pub const Received = struct {
         received.* = undefined;
     }
 
-    /// The symbol table of the binary. The buffers are only read: they are still to be freed.
+    /// Only reads the buffers: they are still to be freed.
     pub fn build(received: *const Received, gpa: std.mem.Allocator) !SymbolTable {
         return SymbolTable.init(gpa, .{
             .segments = received.segments,
@@ -50,8 +48,7 @@ pub const Received = struct {
     }
 };
 
-/// The binaries waiting for their table, oldest first. Fixed in size: each run has one upload
-/// in flight, so a few slots per run is plenty, and a full queue refuses instead of growing.
+/// Binaries waiting for their table, oldest first. Full, it refuses rather than grows.
 pub const Queue = struct {
     items: [items_max]Received = undefined,
     head: usize = 0,
@@ -59,7 +56,7 @@ pub const Queue = struct {
 
     pub const items_max = 32;
 
-    /// Takes `received`, or gives it back as an error when the queue is full.
+    /// On `QueueFull`, `received` is still the caller's.
     pub fn push(queue: *Queue, received: Received) error{QueueFull}!void {
         assert(queue.count <= items_max);
         if (queue.count == items_max) return error.QueueFull;

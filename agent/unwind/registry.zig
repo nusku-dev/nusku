@@ -1,6 +1,4 @@
-//! Every binary the agent has met, by identity, and what came of building its table: a module
-//! in the table set, or why there is none. A binary is parsed once for the whole run, however
-//! many times and in however many processes it is mapped.
+//! Every binary met, by identity, and its module or why it has none: each is parsed once per run.
 
 const std = @import("std");
 const assert = std.debug.assert;

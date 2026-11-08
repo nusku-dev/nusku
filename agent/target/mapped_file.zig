@@ -15,11 +15,8 @@ pub const Error = error{
     WrongFile,
 };
 
-/// The file of `region` in process `pid`'s view of the file system (/proc/<pid>/root), so
-/// files that exist only inside a container work too, or through the mapping itself when a
-/// sandbox hides the path (`process.mapping_open`). When the region has a build ID, the
-/// file must have the same one. `prefix_buffer` is where the start of the file is read to
-/// check it: `build_id.prefix_size` bytes. The caller closes the file.
+/// The file of `region` as process `pid` sees it, with the region's build ID if it has one.
+/// `prefix_buffer` is `build_id.prefix_size` bytes of scratch. The caller closes the file.
 pub fn open(pid: u32, region: *const Region, prefix_buffer: []u8) Error!File {
     assert(prefix_buffer.len >= build_id.prefix_size);
 

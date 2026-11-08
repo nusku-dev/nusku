@@ -1,11 +1,6 @@
-//! End to end: a CPU that comes online during a run is sampled.
-//!
-//! How: take the last CPU offline, start sampling a busy child, bring the CPU back, pin the
-//! child to it, and report. Every sample of a pinned child is taken on that CPU, so samples in
-//! the window prove the collector opened an event on the CPU that came back.
-//!
-//! This changes the machine (a CPU goes offline for a moment), so it is opt-in: it runs only as
-//! root, with NUSKU_E2E_HOTPLUG=1 in the environment, and always brings the CPU back.
+//! End to end: a CPU that comes online during a run is sampled. The last CPU goes offline, a
+//! child is sampled, the CPU comes back and the child is pinned to it: its samples prove an
+//! event was opened there. Opt-in, as it changes the machine: root and NUSKU_E2E_HOTPLUG=1.
 
 const std = @import("std");
 const testing = std.testing;

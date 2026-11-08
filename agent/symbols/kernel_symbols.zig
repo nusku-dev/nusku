@@ -1,17 +1,6 @@
-//! The running kernel's symbols, sent to the server like a binary's, so kernel frames get names.
-//!
-//! The kernel's symbol table is /proc/kallsyms: one line per symbol, its address, its type and
-//! its name, and the module for a symbol of a module. Root reads the real addresses; anyone else
-//! reads zeros (kptr_restrict), and then there is nothing to send.
-//!
-//! Those addresses move with every boot (KASLR), so each symbol is kept as its distance from
-//! `_text`: a kernel frame is named by `address - _text`, its "file offset". The modules are
-//! loaded where there is room, at other places on every boot, so the distances are only good
-//! for one boot: the identity of what is sent is the kernel's build ID *and* `_text`. A reboot
-//! is a new identity, and the symbols are sent again, once.
-//!
-//! It is sent as a `.symtab` and a `.strtab` written here, with one segment that maps every
-//! offset to itself, so the server builds its table as for any binary.
+//! The kernel's code symbols from /proc/kallsyms, sent like a binary's. Each is kept at its
+//! distance from `_text`, which KASLR moves. Modules load elsewhere on every boot, so the
+//! identity is the build ID and `_text`: good for one boot. Only root reads real addresses.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -53,9 +42,8 @@ pub const Symbols = struct {
     count: usize,
 };
 
-/// Reading /proc/kallsyms costs the kernel time: it writes every line as it is read, some 13 MB
-/// and 0.6 s of CPU for a kernel with its modules. So it is read a piece at a time (`step`),
-/// over many rounds of the agent's loop, never in one go that would hold up the loop.
+/// Reads kallsyms a piece per `step`: the kernel writes it as it is read, 0.6 s of CPU for all
+/// of it, too long to hold up the agent's loop.
 pub const Reader = struct {
     file: File,
     builder: Builder,

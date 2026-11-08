@@ -171,9 +171,8 @@ pub fn TypedMap(comptime Key: type, comptime Value: type) type {
     };
 }
 
-/// Keys and values are copied byte for byte to and from the kernel, so their layout must be
-/// fixed: integers, arrays, or extern structs. Padding is refused: it holds garbage, and the
-/// kernel compares keys byte by byte.
+/// Copied byte for byte: integers, arrays or extern structs, without padding, which would hold
+/// garbage the kernel compares.
 fn plain_data_assert(comptime T: type) void {
     switch (@typeInfo(T)) {
         .int => {},

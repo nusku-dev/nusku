@@ -1,12 +1,5 @@
-//! End to end: from a running process to a profile with names in it.
-//!
-//! How: the controller profiles this test process for real (BPF program, perf events, unwind
-//! tables) while it spins in `burn`. On the way, the agent offers the binaries it sees, and the
-//! server builds their symbol tables on a thread of its own. Then the profile must name `burn`,
-//! and name its caller too: that frame is a return address, looked up one byte back, inside
-//! the call.
-//!
-//! Test-only, like everything under testing/. Needs root, and is skipped otherwise.
+//! End to end: the controller profiles this process while it spins in `burn`, and the profile
+//! must name `burn` and its caller (a return address). Needs root.
 
 const std = @import("std");
 const testing = std.testing;

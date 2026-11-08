@@ -1,6 +1,4 @@
-//! A mutex for the few places where threads meet: the server's store, and a condition to wait
-//! on under it. Thin wrappers over the libc ones, which need no setup and no `io`. Keep what
-//! runs under the lock short and bounded.
+//! A mutex and a condition, over libc's: no setup and no `io` needed.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -8,7 +6,6 @@ const assert = std.debug.assert;
 pub const Lock = struct {
     inner: std.c.pthread_mutex_t = std.c.PTHREAD_MUTEX_INITIALIZER,
 
-    // The receiver is not called `lock`: that is the name of the method.
     pub fn lock(mutex: *Lock) void {
         const result = std.c.pthread_mutex_lock(&mutex.inner);
         assert(result == .SUCCESS);
@@ -20,18 +17,16 @@ pub const Lock = struct {
     }
 };
 
-/// Waits for something that another thread changes under a `Lock`. As with every condition, a
-/// wake-up may be spurious: wait in a loop that checks what is waited for.
+/// A wake-up may be spurious: wait in a loop that checks the state.
 pub const Condition = struct {
     inner: std.c.pthread_cond_t = std.c.PTHREAD_COND_INITIALIZER,
 
-    /// Lets go of `held` while waiting, and holds it again when it returns.
+    /// Lets go of `held` while it waits.
     pub fn wait(condition: *Condition, held: *Lock) void {
         const result = std.c.pthread_cond_wait(&condition.inner, &held.inner);
         assert(result == .SUCCESS);
     }
 
-    /// Wakes every waiter.
     pub fn broadcast(condition: *Condition) void {
         const result = std.c.pthread_cond_broadcast(&condition.inner);
         assert(result == .SUCCESS);

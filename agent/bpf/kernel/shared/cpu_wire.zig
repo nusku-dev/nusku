@@ -1,8 +1,5 @@
-//! What the on-CPU sampler and the agent exchange: the config the agent writes, the records the
-//! program sends through the ring buffer, the keys it counts stacks under, and its per-CPU state.
-//!
-//! This file is compiled into the kernel program (bpfel, freestanding) and into the agent, so it
-//! holds only extern structs and constants, and does not import std.
+//! What the on-CPU sampler and the agent exchange: config, ring records, count keys, per-CPU
+//! state. Compiled into both, so only extern structs and constants, and no std.
 
 pub const user_frames_max: u32 = 128;
 /// Kernel frames appended after the user frames when a sample is taken in kernel mode.
@@ -15,14 +12,11 @@ pub const frames_per_run: u32 = 4;
 /// The kernel allows 33 tail calls in a chain (MAX_TAIL_CALL_CNT), so a walk has 34 runs.
 pub const tail_calls_max: u32 = 33;
 
-/// Distinct stacks counted in one window. Sketch: 99 Hz on 64 CPUs for a 1 s window is at most
-/// 6336 samples, so even if every sample were a new stack this holds 2.5 windows. Two
-/// generations share the map while the older one is drained.
+/// 2.5 windows of 6336 samples (99 Hz on 64 CPUs for 1 s), all new stacks: two generations
+/// share the map while the older is drained.
 pub const counts_max: u32 = 16384;
 
-/// The ring buffer. Sketch: a new stack's record is 16 + 8 * frames bytes, 400 bytes for a
-/// typical 48-frame stack. The agent drains the ring every 100 ms, so 512 KiB holds about 1300
-/// new stacks per drain, far above what a real workload sends (most samples repeat a stack).
+/// About 1300 new stacks of 48 frames (400 bytes) per 100 ms drain: far more than real ones send.
 pub const records_bytes: u32 = 512 * 1024;
 
 /// Slot 0 of the config map. The agent writes it; the program only reads it.
@@ -92,10 +86,8 @@ pub const CountKey = extern struct {
     generation: u32,
 };
 
-/// The per-CPU state of the program: the walk in progress, and counters for the whole run.
-///
-/// `record` and `stack_frames` must stay adjacent: the ring receives the bytes starting at
-/// `record`, header and frames in one copy.
+/// The walk in progress and the run's counters. `record` and `stack_frames` stay adjacent: the
+/// ring gets both in one copy.
 pub const WalkState = extern struct {
     /// 1 between the first run of a walk and its last.
     walk_in_progress: u64,

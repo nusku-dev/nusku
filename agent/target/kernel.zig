@@ -47,9 +47,8 @@ pub fn read(arena: std.mem.Allocator) !Identity {
     return identity;
 }
 
-/// The run-time address of `_text`, falling back to `_stext`, which sits at the same address on
-/// current kernels. Reads kallsyms front to back in chunks and stops at `_text`: the first lines
-/// are per-CPU variables with tiny addresses, so `_text` can be tens of kilobytes in.
+/// The run-time address of `_text`, else `_stext` (the same on current kernels). Stops reading
+/// kallsyms there: tens of KiB in, after the per-CPU variables.
 fn text_address_scan(comptime chunk: usize, source: *const File) ?u64 {
     var buffer: [chunk]u8 = undefined;
     var kept: usize = 0; // bytes of an unfinished line, kept at the start of buffer

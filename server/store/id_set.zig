@@ -1,11 +1,9 @@
-//! A few build IDs, copied into fixed slots: no allocation, ever. The server keeps two: the
-//! binaries a run is sending now (claimed, so no other run sends them too), and the binaries
-//! whose table could not be built (refused, so no run sends them again).
+//! A few build IDs in fixed slots, never allocating: the server's claims and refusals.
 
 const std = @import("std");
 const assert = std.debug.assert;
 
-/// A build ID is a few bytes to a few dozen; the upload refuses longer ones.
+/// Uploads refuse longer build IDs.
 pub const id_bytes_max = 256;
 
 pub fn IdSet(comptime slots_max: usize) type {
@@ -15,12 +13,11 @@ pub fn IdSet(comptime slots_max: usize) type {
         ids: [slots_max][id_bytes_max]u8 = undefined,
         /// 0 for a free slot.
         lengths: [slots_max]u16 = @splat(0),
-        /// Where `add_over_oldest` writes next: the slots are reused in turn.
+        /// Where `add_over_oldest` writes next.
         next: usize = 0,
 
         pub const Slot = usize;
 
-        /// How many slots are taken.
         pub fn count(set: *const Set) usize {
             var taken: usize = 0;
             for (set.lengths) |length| taken += @intFromBool(length != 0);
@@ -31,7 +28,7 @@ pub fn IdSet(comptime slots_max: usize) type {
             return set.find(id) != null;
         }
 
-        /// Puts `id` in a free slot and returns it, or null when every slot is taken.
+        /// Null when every slot is taken.
         pub fn add(set: *Set, id: []const u8) ?Slot {
             for (set.lengths, 0..) |length, slot| {
                 if (length != 0) continue;
@@ -41,8 +38,7 @@ pub fn IdSet(comptime slots_max: usize) type {
             return null;
         }
 
-        /// Puts `id` in the set, over the slot written longest ago if there is no room: for a
-        /// set that only has to remember the recent ones.
+        /// Over the oldest slot when there is no room: for a set of recent ids.
         pub fn add_over_oldest(set: *Set, id: []const u8) void {
             if (set.has(id)) return;
             set.write(set.next, id);

@@ -89,10 +89,8 @@ pub const Program = struct {
     }
 };
 
-/// A mirror of libbpf 1.5's `struct bpf_prog_load_opts`. Zig's C import turns that struct into
-/// an opaque type (it ends in a zero-width bit-field), so it is declared again here. libbpf
-/// checks `sz`, so the fields left at zero are ignored. After a libbpf upgrade, compare this
-/// with the struct in bpf.h again: the layout assertions below catch a wrong size or offset.
+/// libbpf 1.5's `struct bpf_prog_load_opts`, which Zig imports as opaque (it ends in a zero-width
+/// bit-field). The assertions below catch a layout change after a libbpf upgrade.
 const LoadOptions = extern struct {
     sz: usize = 0,
     attempts: c_int = 0,

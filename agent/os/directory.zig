@@ -52,7 +52,8 @@ pub const Directory = struct {
     fn refill(directory: *Directory) FilError!usize {
         var interrupts: u32 = 0;
         while (true) {
-            const result = linux.getdents64(directory.file.fd, &directory.buffer, directory.buffer.len);
+            const buffer = &directory.buffer;
+            const result = linux.getdents64(directory.file.fd, buffer, buffer.len);
             switch (linux.errno(result)) {
                 .SUCCESS => {
                     directory.len = result;

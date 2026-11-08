@@ -1,13 +1,7 @@
-//! The unwind tables of every binary the target maps, mirrored into the kernel's maps.
-//!
-//! This is the one owner of the three unwind maps. Every program that walks user stacks (the
-//! CPU sampler today, others later) binds them by name, so the tables are built and written once
-//! however many programs read them.
-//!
-//! `sync` runs at every report, so it is written for the case where nothing changed: a lookup
-//! per region that allocates nothing, and no system call unless something did change. When it
-//! did, it writes in dependency order, rows, then module descriptors, then the process entry,
-//! so the kernel never follows a reference to something that is not there yet.
+//! The unwind tables of the target's binaries, mirrored into the three unwind maps, which every
+//! stack-walking program binds by name. `sync`, at every report, does nothing when nothing
+//! changed; else it writes rows, then modules, then the process entry, so the kernel never
+//! follows a reference to something not there yet.
 
 const std = @import("std");
 const assert = std.debug.assert;

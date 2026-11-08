@@ -1,9 +1,5 @@
-//! Reads a BPF object file: the 64-bit little-endian ELF file the Zig compiler writes for the
-//! bpfel target. Only what the loader needs is read: sections by name, global symbols by name,
-//! the relocations of a program, and map definitions.
-//!
-//! The objects are embedded in the agent at build time, but they are still checked as if they
-//! were untrusted: every offset is bounds-checked before it is read.
+//! Reads what the loader needs of a bpfel ELF object: sections, global symbols, relocations and
+//! map definitions. Embedded at build time, still checked as untrusted.
 
 const std = @import("std");
 const assert = std.debug.assert;

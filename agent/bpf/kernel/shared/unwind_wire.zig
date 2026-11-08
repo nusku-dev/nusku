@@ -1,12 +1,8 @@
-//! The unwind tables as the kernel program reads them from its maps.
-//!
-//! This file is compiled twice: into the kernel program (bpfel, freestanding) and into the
-//! agent. Both sides must agree on every byte, so it holds only extern structs and constants,
-//! and it does not import std: the BPF target has no operating system to build std against.
+//! The unwind tables as the kernel program reads them. Compiled into both, so only extern
+//! structs and constants, and no std.
 
-/// All rows of all modules live in one array map value: 2^18 rows of 12 bytes is 3 MiB.
-/// One value (instead of one map entry per row) lets the program reach any row with a single
-/// lookup, and the verifier can bound every index by this constant.
+/// Every row in one map value (3 MiB): one lookup reaches any row, and the verifier bounds every
+/// index by this.
 pub const rows_max: u32 = 1 << 18;
 /// A binary search over n rows needs floor(log2(n)) + 1 steps.
 pub const row_search_steps_max: u32 = 19;
@@ -14,9 +10,8 @@ pub const row_search_steps_max: u32 = 19;
 /// Distinct binaries (executables and libraries) with a table, over the whole run.
 pub const modules_max: u32 = 256;
 
-/// Executable mappings remembered for one process. More are counted in `ProcessEntry.dropped`.
-/// Most libraries map their code once, so this is about the number of libraries: a JVM maps
-/// about a hundred, a browser two or three hundred.
+/// About the number of libraries: a JVM has a hundred, a browser two or three hundred. More are
+/// counted in `ProcessEntry.dropped`.
 pub const mappings_max: u32 = 512;
 pub const mapping_search_steps_max: u32 = 10;
 

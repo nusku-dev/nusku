@@ -1,4 +1,4 @@
-//! Everything the build needs for the server, in one place.
+//! The server's module and tests.
 
 const std = @import("std");
 
@@ -10,7 +10,6 @@ pub const Options = struct {
     agent: *std.Build.Module,
 };
 
-/// Builds the server and returns its module.
 pub fn add(b: *std.Build, options: Options) *std.Build.Module {
     const module = b.createModule(.{
         .root_source_file = b.path("server/root.zig"),
@@ -25,13 +24,10 @@ pub fn add(b: *std.Build, options: Options) *std.Build.Module {
     return module;
 }
 
-/// Runs the server's tests, and also installs the test binary as zig-out/bin/server-tests, so
-/// the tests that need root can be run with sudo without building as root.
+/// Also installs zig-out/bin/server-tests, to run the root tests with sudo.
 fn add_tests(b: *std.Build, module: *std.Build.Module, test_step: *std.Build.Step) void {
-    // Tests inside server/** (root.zig and everything it @imports by file).
     const server_tests = b.addTest(.{ .root_module = module });
-    // The e2e test profiles the test binary itself, and the agent only sends binaries that
-    // have a GNU build ID: LLD writes one, as for the agent's tests.
+    // The e2e test profiles this binary, and the agent sends only binaries with a build ID.
     server_tests.build_id = .fast;
     server_tests.use_llvm = true;
     server_tests.use_lld = true;

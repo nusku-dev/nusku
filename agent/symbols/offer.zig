@@ -1,10 +1,6 @@
-//! Offers the target's binaries to the server, once per build ID, a few chunks per loop round.
-//!
-//! Each report's regions are looked at for build IDs not seen in this run (`regions_see`). Those
-//! wait in a small queue; the loop then calls `pump` once per round, which asks the server
-//! whether it knows the binary, opens it if not, and streams it (transfer.zig). A stream that
-//! stops before its end (a failure, or the run ends) is closed with `binary_abort`, so the
-//! server never keeps half a binary.
+//! Offers the target's binaries to the server once per build ID: `regions_see` queues the new
+//! ones, and `pump`, once per loop round, sends a few chunks. A stream that stops early ends in
+//! `binary_abort`.
 
 const std = @import("std");
 const assert = std.debug.assert;

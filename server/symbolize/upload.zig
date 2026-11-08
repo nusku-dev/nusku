@@ -1,8 +1,6 @@
-//! One binary arriving from one agent: `begin`, `chunk` ..., `end`. The header says how big
-//! each section will be, so everything is allocated once, up front, within a budget. At `end`
-//! the buffers are handed over as a `Received`, for the server to build the symbol table from.
-//! Whatever arrives is untrusted: anything that does not fit what the header announced ends the
-//! upload.
+//! One binary arriving from an agent: `begin`, `chunk`s, `end`. The header fixes every size,
+//! so the buffers are allocated once. What arrives is untrusted: anything that does not fit the
+//! header ends the upload.
 
 const std = @import("std");
 const agent = @import("agent");
@@ -18,22 +16,22 @@ const Section = agent.binary.Section;
 const sections = std.enums.values(Section);
 
 pub const Error = error{
-    /// A call that does not fit the state: a chunk with no begin, a begin in the middle of one.
+    /// A chunk with no begin, or a begin during an upload.
     OutOfOrder,
-    /// Data that does not fit what the header announced.
+    /// Not what the header announced.
     Malformed,
-    /// The sections together are bigger than the budget.
+    /// Bigger than `bytes_max`.
     TooLarge,
     OutOfMemory,
 };
 
 const id_bytes_max = @import("../store/id_set.zig").id_bytes_max;
-/// The agent sends at most 16 executable segments; more than this is not a real file.
+/// The agent sends at most 16.
 const segments_max = 64;
-/// The agent sends paths of at most 4096 bytes, the longest Linux has.
+/// PATH_MAX.
 const path_bytes_max = 4096;
 
-/// What the sections of `header` take together: what an upload of it allocates.
+/// What an upload of `header` allocates.
 pub fn bytes_of(header: *const Header) error{TooLarge}!u64 {
     var total: u64 = 0;
     for (sections) |section| {
@@ -43,14 +41,13 @@ pub fn bytes_of(header: *const Header) error{TooLarge}!u64 {
 }
 
 pub const Upload = struct {
-    /// What the buffers of one upload may take.
     bytes_max: u64,
     receiving: bool,
     id: []u8,
-    /// For the logs: what a person recognizes the binary by. Never opened.
+    /// For the logs only: never opened.
     path: []u8,
     segments: []elf.Segment,
-    /// The four sections one after the other.
+    /// The four sections, one after the other.
     data: []u8,
     starts: std.EnumArray(Section, usize),
     sizes: std.EnumArray(Section, usize),
@@ -70,13 +67,12 @@ pub const Upload = struct {
         };
     }
 
-    /// Frees what an upload in progress holds.
     pub fn deinit(upload: *Upload, gpa: std.mem.Allocator) void {
         upload.abort(gpa);
         upload.* = undefined;
     }
 
-    /// Starts a binary. A begin while another upload is in progress is an error and drops it.
+    /// A begin during another upload is refused, and drops that one too.
     pub fn begin(upload: *Upload, gpa: std.mem.Allocator, header: *const Header) Error!void {
         upload.begin_checked(gpa, header) catch |err| {
             const bytes = bytes_of(header) catch std.math.maxInt(u64);
@@ -145,8 +141,8 @@ pub const Upload = struct {
         };
     }
 
-    /// The next bytes of a section. They must come in order, with no gap, and fit the size the
-    /// header announced; otherwise the upload is dropped.
+    /// The next bytes of a section: in order, with no gap, within its size. Else the upload is
+    /// dropped.
     pub fn chunk(upload: *Upload, gpa: std.mem.Allocator, part: *const Chunk) Error!void {
         if (!upload.receiving) return error.OutOfOrder;
 
@@ -174,8 +170,7 @@ pub const Upload = struct {
         upload.verify();
     }
 
-    /// Checks that every section arrived whole, and hands the buffers over: the caller owns
-    /// them from then on. The upload is idle after this, whatever it returns.
+    /// Hands the buffers over once every section arrived whole. Idle after, whatever it returns.
     pub fn end(upload: *Upload, gpa: std.mem.Allocator) Error!Received {
         if (!upload.receiving) return error.OutOfOrder;
 
@@ -198,13 +193,12 @@ pub const Upload = struct {
             .starts = upload.starts,
             .sizes = upload.sizes,
         };
-        // Handed over, not freed.
-        upload.receiving = false;
+        upload.receiving = false; // Handed over: `abort` must not free them.
         upload.abort(gpa);
         return received;
     }
 
-    /// Drops the upload in progress, if any, and frees its buffers. The upload is idle after.
+    /// Drops the upload in progress, if any.
     pub fn abort(upload: *Upload, gpa: std.mem.Allocator) void {
         if (upload.receiving) {
             gpa.free(upload.id);

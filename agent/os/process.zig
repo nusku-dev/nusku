@@ -28,11 +28,8 @@ pub fn file_open(pid: u32, path: []const u8) error{Unreadable}!File {
     return File.open(full) catch error.Unreadable;
 }
 
-/// The file mapped at `start` .. `end` in process `pid`, whose path there is `path`. First the
-/// path as the process sees it, as `file_open`; when that fails, the mapping itself
-/// (/proc/<pid>/map_files), which reaches the file whatever the process's root: a sandbox
-/// that chroots into an empty directory (Chrome's renderers) hides every path, not its
-/// mappings. That second way needs CAP_SYS_ADMIN. The caller closes it.
+/// The file mapped at `start` .. `end` in process `pid`: by `path`, else by the mapping itself
+/// (/proc/<pid>/map_files, which needs CAP_SYS_ADMIN), which a sandbox's chroot does not hide.
 pub fn mapping_open(pid: u32, path: []const u8, start: u64, end: u64) error{Unreadable}!File {
     if (file_open(pid, path)) |file| return file else |_| {}
     if (start >= end) return error.Unreadable; // No mapping to go through.

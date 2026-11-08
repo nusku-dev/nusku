@@ -39,4 +39,5 @@ pub fn main(init: std.process.Init) u8 {
 test {
     _ = @import("report.zig");
     _ = @import("clients/local.zig");
+    _ = @import("ps_view.zig");
 }

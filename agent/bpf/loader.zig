@@ -1,8 +1,5 @@
-//! Turns a BPF object into a loaded program: creates its maps from their definitions, patches
-//! every map reference in the code with the map's file descriptor, and loads the code.
-//!
-//! A map can also be created outside the object and bound by name, so several programs share
-//! it: the unwind tables are written once and read by every program that walks stacks.
+//! Loads a BPF object: creates its maps, patches their descriptors into the code, loads it. A
+//! map made outside and bound by name is shared by several programs (the unwind tables).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -113,10 +110,8 @@ pub fn program_load(gpa: std.mem.Allocator, object: *const Object, options: Load
     return program;
 }
 
-/// Fills in the map descriptors in a copy of a program's code. For each relocation, the ld_imm64
-/// instruction gets src_reg = pseudo_map_fd and the map's descriptor as its immediate. Only map
-/// references are supported: anything else (such as .rodata) fails here, so a kernel program
-/// that starts using one is caught before the kernel sees it.
+/// Patches each relocation's ld_imm64 with pseudo_map_fd and its map's descriptor. Any other
+/// relocation (.rodata) fails here, before the kernel sees it.
 pub fn relocations_apply(
     object: *const Object,
     program: object_file.Section,

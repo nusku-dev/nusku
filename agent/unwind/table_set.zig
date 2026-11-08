@@ -1,7 +1,5 @@
-//! Many modules' unwind tables in one flat array, the way they will sit in BPF maps: all rows
-//! in one array, and one small descriptor per module saying where its rows are. `find` is
-//! written the way the BPF program must do it (fixed number of steps, no pointers), so a test
-//! can check it against `table.Table.find`.
+//! Every module's rows in one array, as in the BPF maps, with a descriptor per module. `find`
+//! works as the BPF program must, so tests check it against `table.Table.find`.
 
 const std = @import("std");
 const assert = std.debug.assert;

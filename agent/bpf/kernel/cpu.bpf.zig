@@ -1,15 +1,9 @@
-//! The on-CPU sampler, a BPF program for perf events.
+//! The on-CPU sampler, run by a CPU-clock perf event on every CPU. For the target's tasks it
+//! walks the user stack with the unwind tables (frame pointers where there are none), adds the
+//! kernel stack, and counts the stack by its hash.
 //!
-//! A CPU-clock perf event fires on every CPU at the sampling rate and runs `cpu_sample`. When the
-//! running task belongs to the target, the program walks its user stack with the unwind tables
-//! (DWARF call frame information compiled to rows, see unwind/table.zig), falls back to frame
-//! pointers where there is no table, adds the kernel stack when the sample was taken in kernel
-//! mode, and counts the stack by its hash.
-//!
-//! A walk takes several runs. Each run unwinds `frames_per_run` frames and tail-calls itself, so
-//! the verifier sees a small program, and the chain of 34 runs reaches `user_frames_max`. Between
-//! runs the walk lives in a per-CPU map: perf event programs never nest on one CPU, so one slot
-//! per CPU is enough.
+//! A walk is `frames_per_run` frames per run, tail-calling itself: a small program for the
+//! verifier. Between runs it lives in a per-CPU map; perf programs never nest on one CPU.
 //!
 //! The counting protocol, which cpu/collector.zig depends on:
 //! 1. The first sample of a stack in a generation sends the stack's record (header and frames)

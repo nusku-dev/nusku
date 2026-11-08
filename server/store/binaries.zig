@@ -1,7 +1,5 @@
-//! The symbol tables the server has, by build ID. Everything is bounded when it is created: a
-//! fixed number of entries and a budget of bytes. When a new table does not fit, the least
-//! recently used ones are dropped until it does. A table is used when a query names an address
-//! with it, and when a window arrives whose regions need it.
+//! The symbol tables, by build ID, within a fixed number of entries and of bytes. When a new
+//! table does not fit, the least recently used go: used by a query, or by a window that needs it.
 
 const std = @import("std");
 const SymbolTable = @import("../symbolize/symbol_table.zig").SymbolTable;
@@ -12,28 +10,28 @@ const assert = std.debug.assert;
 
 pub const Error = error{
     OutOfMemory,
-    /// The table alone is bigger than the whole budget.
+    /// Bigger than the whole budget.
     TooLarge,
 };
 
 const Entry = struct {
-    /// The build ID, owned by the entry.
+    /// The build ID.
     id: []u8,
     table: SymbolTable,
     bytes: u64,
-    /// The value of the store's clock the last time this entry was put or got.
+    /// `clock` when it was last put or got.
     used: u64,
 };
 
 pub const Binaries = struct {
-    /// All the allocation; only the first `count` are in use.
+    /// Only the first `count` are in use.
     entries: []Entry,
     count: usize,
     bytes_max: u64,
     bytes_used: u64,
     clock: u64,
-    /// Where `get` found its last table. Frames in a row are mostly in the same binary, so this
-    /// saves the scan; it is only a guess, checked against the build ID before it is used.
+    /// Where `get` found its last table: tried first, since frames in a row are mostly in one
+    /// binary.
     last: usize,
 
     pub fn init(gpa: std.mem.Allocator, entries_max: usize, bytes_max: u64) !Binaries {
@@ -54,13 +52,12 @@ pub const Binaries = struct {
         binaries.* = undefined;
     }
 
-    /// Whether the table of `build_id` is here. It does not count as a use.
+    /// Does not count as a use.
     pub fn has(binaries: *const Binaries, build_id: []const u8) bool {
         return binaries.find(build_id) != null;
     }
 
-    /// The table of `build_id`, and counts as a use. The pointer is good until the next `put`
-    /// (a `put` may drop it), so the caller must not hold it past the lock.
+    /// Counts as a use. Good until the next `put`, which may drop it.
     pub fn get(binaries: *Binaries, build_id: []const u8) ?*const SymbolTable {
         const index = binaries.find_from(binaries.last, build_id) orelse return null;
         binaries.last = index;
@@ -68,8 +65,7 @@ pub const Binaries = struct {
         return &binaries.entries[index].table;
     }
 
-    /// Takes the table: it is kept, or freed when it is not (a table that is here already, or
-    /// one that cannot fit).
+    /// Takes the table: kept, or freed (already here, or too big).
     pub fn put(
         binaries: *Binaries,
         gpa: std.mem.Allocator,
@@ -87,7 +83,7 @@ pub const Binaries = struct {
         const bytes = owned.bytes();
         if (bytes > binaries.bytes_max) return error.TooLarge;
 
-        // Copy the id first, so a failure here drops nothing from the store.
+        // Before anything is dropped to make room.
         const id = try gpa.dupe(u8, build_id);
         errdefer gpa.free(id);
 
@@ -110,7 +106,7 @@ pub const Binaries = struct {
         binaries.verify();
     }
 
-    /// The budget adds up. Debug builds only: it walks every entry.
+    /// Debug builds only: it walks every entry.
     fn verify(binaries: *const Binaries) void {
         if (!std.debug.runtime_safety) return;
         var bytes: u64 = 0;
@@ -148,7 +144,6 @@ pub const Binaries = struct {
             if (entry.used < binaries.entries[oldest].used) oldest = index;
         }
         var hex: [log_file.hex_bytes_max]u8 = undefined;
-        // Its frames are named again if an agent sends it again.
         log.debug("symbol table evicted to make room", .{
             .build_id = log_file.hex(&hex, binaries.entries[oldest].id),
             .kib = log_file.kib(binaries.entries[oldest].bytes),

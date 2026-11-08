@@ -1,6 +1,5 @@
-//! The owned form of one report: plain data that does not point into the agent's buffers,
-//! so it can be kept, queued, sent to another thread, or serialized (into a protobuf message,
-//! later). A `Report` is only valid during the callback; a `Message` outlives it.
+//! A report copied out of the agent's buffers: a `Report` is valid only during its callback, a
+//! `Message` as long as its memory.
 
 const std = @import("std");
 const session_file = @import("session.zig");

@@ -1,11 +1,9 @@
-//! End to end: watching the processes of the machine sees children whose behavior is known.
-//!
-//! Four children, each named with prctl so the frames can tell them apart:
+//! End to end: the watch sees what four children, named with prctl, are known to do:
 //!   nusku-burn    keeps one core busy: about 100% CPU
 //!   nusku-sleep   sleeps: about 0% CPU
 //!   nusku-memory  writes 64 MiB, then sleeps: at least 64 MiB resident
 //!   nusku-short   killed and reaped after the second frame: in no frame after it
-//! No root needed: a user may read every file the watch reads for their own processes.
+//! No root needed.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -71,29 +69,25 @@ const Seen = struct {
     expected_user: []const u8,
     frames: u32 = 0,
     /// Each child as the last frame it was in showed it. `name`, `user` and `command` are
-    /// cleared: they point into the frame, which is gone after the callback. // CHANGED
+    /// cleared: they point into the frame, which is gone after the callback.
     last: std.EnumArray(Role, ?ProcessInfo) = .initFill(null),
     named: std.EnumArray(Role, bool) = .initFill(false),
     /// Every child, in every frame, had `expected_user`.
     users_ok: bool = true,
-    /// Every child, in every frame, had one thread: fork copies only the calling one. // NEW
-    threads_ok: bool = true, // NEW
+    /// Every child, in every frame, had one thread: fork copies only the calling one.
+    threads_ok: bool = true,
     /// Every child, in every frame, had the test binary's command line: prctl changes the
-    /// name, not the command. // NEW
-    commands_ok: bool = true, // NEW
+    /// name, not the command.
+    commands_ok: bool = true,
     short_reaped: bool = false,
     short_seen_after_reap: bool = false,
-
-    /// The burn child's command line, copied while its frame was valid, for the summary.
-    command_buffer: [256]u8 = undefined,
-    command_len: usize = 0,
 
     fn on_frame(seen: *Seen, frame: *const Frame) void {
         seen.frames += 1;
 
-        // The test's own command line, from the same frame: what every child inherited. // NEW
-        const own_pid: u32 = @intCast(linux.getpid()); // NEW
-        const own_command = for (frame.processes) |info| { // NEW
+        // The test's own command line, from the same frame: what every child inherited.
+        const own_pid: u32 = @intCast(linux.getpid());
+        const own_command = for (frame.processes) |info| {
             if (info.pid == own_pid) break info.command;
         } else "";
 
@@ -103,21 +97,14 @@ const Seen = struct {
                 if (role == .short and seen.short_reaped) seen.short_seen_after_reap = true;
                 if (std.mem.eql(u8, info.name, role_name(role))) seen.named.set(role, true);
                 if (!std.mem.eql(u8, info.user, seen.expected_user)) seen.users_ok = false;
-                if (info.threads != 1) seen.threads_ok = false; // NEW
-                if (info.command.len == 0 or !std.mem.eql(u8, info.command, own_command)) { // NEW
+                if (info.threads != 1) seen.threads_ok = false;
+                if (info.command.len == 0 or !std.mem.eql(u8, info.command, own_command)) {
                     seen.commands_ok = false;
-                }
-                if (role == .burn) {
-                    seen.command_len = @min(info.command.len, seen.command_buffer.len);
-                    @memcpy(
-                        seen.command_buffer[0..seen.command_len],
-                        info.command[0..seen.command_len],
-                    );
                 }
                 var copy = info;
                 copy.name = "";
                 copy.user = "";
-                copy.command = ""; // NEW
+                copy.command = "";
                 seen.last.set(role, copy);
             }
         }
@@ -128,7 +115,7 @@ const Seen = struct {
     }
 };
 
-test "watching sees what known children do: CPU, memory, names, users, threads, commands, starts, and one that ends" { // CHANGED
+test "the watch sees what known children do, and one that ends" {
     var seen = Seen{ .pids = .initUndefined(), .expected_user = user_expected() };
     var spawned: std.EnumSet(Role) = .initEmpty();
     // Reaped once only: after the wait, the pid may already be another process's.
@@ -154,42 +141,23 @@ test "watching sees what known children do: CPU, memory, names, users, threads, 
     const burn = seen.last.get(.burn).?;
     const sleep = seen.last.get(.sleep).?;
     const memory = seen.last.get(.memory).?;
-    // std.debug.print(
-    //     "watch e2e: {d} frames, user {s}; burn {d:.1}%, sleep {d:.1}%, memory {d} MiB, " ++
-    //         "threads {d}\n  command: {s}\n",
-    //     .{
-    //         seen.frames,
-    //         seen.expected_user,
-    //         burn.cpu_percent.?,
-    //         sleep.cpu_percent.?,
-    //         memory.memory_bytes >> 20,
-    //         burn.threads,
-    //         seen.command_buffer[0..seen.command_len],
-    //     },
-    // );
-
-    // Names: each child is found under the name it gave itself.
     for (std.enums.values(Role)) |role| try testing.expect(seen.named.get(role));
-
-    // Users: the children run as whoever runs the test, and libc agrees on that name.
+    // The children run as whoever runs the test, as libc names them.
     try testing.expect(!std.mem.eql(u8, seen.expected_user, "unknown"));
     try testing.expect(seen.users_ok);
+    // Forked children have one thread, and the test binary's command line.
+    try testing.expect(seen.threads_ok);
+    try testing.expect(seen.commands_ok);
 
-    // Threads: a forked child has one, the one that called fork. // NEW
-    try testing.expect(seen.threads_ok); // NEW
-
-    // Commands: a forked child keeps the command line of the test binary. // NEW
-    try testing.expect(seen.commands_ok); // NEW
-
-    // CPU: one busy core is about 100%. Loose bounds: a loaded machine gives it less.
+    // One busy core is about 100%; loose bounds, for a loaded machine.
     try testing.expect(burn.cpu_percent.? > 50 and burn.cpu_percent.? < 130);
     try testing.expect(sleep.cpu_percent.? < 5);
 
-    // Memory: the 64 MiB written are resident, and the sleeper has far less.
+    // The 64 MiB written are resident.
     try testing.expect(memory.memory_bytes >= memory_bytes);
     try testing.expect(sleep.memory_bytes < memory_bytes);
 
-    // Starts: each child started when it was forked. Ticks are 10 ms, so allow a little.
+    // Each started when it was forked, give or take the 10 ms ticks.
     for (std.enums.values(Role)) |role| {
         const started = seen.last.get(role).?.started_unix_ns;
         const off_ns = if (started > forked_unix_ns)
@@ -199,7 +167,7 @@ test "watching sees what known children do: CPU, memory, names, users, threads, 
         try testing.expect(off_ns < std.time.ns_per_s);
     }
 
-    // An ended process: seen while it ran, never after it was reaped.
+    // Seen while it ran, never after it was reaped.
     try testing.expect(seen.last.get(.short) != null);
     try testing.expect(!seen.short_seen_after_reap);
 }

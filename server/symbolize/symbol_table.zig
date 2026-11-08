@@ -1,7 +1,5 @@
-//! The symbols of one binary, as the server keeps them: a sorted array of functions keyed by
-//! file offset (not by address, so it does not depend on where the program was loaded), and one
-//! blob with their names. Built once from the bytes the agent sent; the bytes are untrusted, so
-//! a symbol that does not make sense is skipped, never trusted.
+//! The functions of one binary, sorted by file offset (the same wherever it was loaded), with
+//! their names in one blob. Built from untrusted bytes: a symbol that makes no sense is skipped.
 
 const std = @import("std");
 const elf = @import("shared").elf;
@@ -12,13 +10,13 @@ const assert = std.debug.assert;
 const sym_bytes = 24;
 const stt_func = 2;
 const stt_gnu_ifunc = 10;
-/// A name longer than this is cut. Not a limit on programs, only on one name.
+/// Longer names are cut.
 const name_bytes_max = 4096;
 
 pub const Error = error{ OutOfMemory, TooLarge };
 
 pub const Input = struct {
-    /// The executable segments of the file (from the binary's header).
+    /// The executable segments, from the binary's header.
     segments: []const elf.Segment,
     symtab: []const u8 = &.{},
     strtab: []const u8 = &.{},
@@ -40,20 +38,20 @@ const Entry = struct {
 };
 
 pub const SymbolTable = struct {
-    /// All the allocation; only the first `count` entries are in use.
+    /// Only the first `count` are in use.
     entries: []Entry,
     count: usize,
     names: []u8,
 
     pub fn init(gpa: std.mem.Allocator, input: Input) Error!SymbolTable {
-        // The full table when there is one; the dynamic one is a subset of it.
+        // The dynamic table is a subset of the full one.
         const syms, const strs = if (input.symtab.len > 0)
             .{ input.symtab, input.strtab }
         else
             .{ input.dynsym, input.dynstr };
         const symbols_count = syms.len / sym_bytes;
 
-        // First pass: count, so everything is allocated once.
+        // Counted first, so everything is allocated once.
         var count: usize = 0;
         var names_total: usize = 0;
         for (0..symbols_count) |index| {
@@ -68,7 +66,6 @@ pub const SymbolTable = struct {
         const names = try gpa.alloc(u8, names_total);
         errdefer gpa.free(names);
 
-        // Second pass: fill them.
         var filled: usize = 0;
         var names_at: usize = 0;
         for (0..symbols_count) |index| {
@@ -84,7 +81,6 @@ pub const SymbolTable = struct {
             names_at += raw.name.len + 1;
         }
         assert(filled == count and names_at == names_total);
-        // Not stable, and need not be: `entry_less` orders every pair, ties by the name.
         std.mem.sortUnstable(Entry, entries, {}, entry_less);
         const kept = aliases_drop(entries);
         sizes_fill(entries[0..kept]);
@@ -97,15 +93,15 @@ pub const SymbolTable = struct {
         table.* = undefined;
     }
 
-    /// What this table takes in memory, for the store's budget.
+    /// Memory taken, for the store's budget.
     pub fn bytes(table: *const SymbolTable) u64 {
         return table.entries.len * @sizeOf(Entry) + table.names.len;
     }
 
-    /// The function that contains the file offset `offset`, if there is one.
+    /// The function holding file offset `offset`.
     pub fn lookup(table: *const SymbolTable, offset: u64) ?Hit {
         const entries = table.entries[0..table.count];
-        // The first entry that starts after the offset; the one before it is the candidate.
+        // The first entry after `offset`: the one before it may hold it.
         var low: usize = 0;
         var high: usize = entries.len;
         while (low < high) {
@@ -131,8 +127,7 @@ const Raw = struct {
     size: u64,
 };
 
-/// Symbol number `index`, if it is a defined function inside an executable segment with a
-/// readable name. Everything else (data, undefined, sections, bad offsets) is null.
+/// Symbol `index`, if it is a function defined in an executable segment, with a name.
 fn sym_read(segments: []const elf.Segment, syms: []const u8, strs: []const u8, index: usize) ?Raw {
     const at = index * sym_bytes;
     assert(at + sym_bytes <= syms.len);
@@ -155,7 +150,7 @@ fn sym_read(segments: []const elf.Segment, syms: []const u8, strs: []const u8, i
     return .{ .name = rest[0..@min(length, name_bytes_max)], .start = start, .size = size };
 }
 
-/// The offset in the file of the virtual address `address`, if a segment holds it.
+/// The file offset of virtual address `address`.
 fn file_offset(segments: []const elf.Segment, address: u64) ?u64 {
     for (segments) |segment| {
         if (address < segment.vaddr) continue;
@@ -171,8 +166,7 @@ fn entry_less(_: void, a: Entry, b: Entry) bool {
     return a.name < b.name;
 }
 
-/// Of several names for the same start (aliases), keeps the first one. Entries are sorted.
-/// Returns how many are kept, at the front.
+/// Keeps one name of aliases (sorted entries at the same start). Returns how many are kept.
 fn aliases_drop(entries: []Entry) usize {
     var kept: usize = 0;
     for (entries) |entry| {
@@ -183,12 +177,11 @@ fn aliases_drop(entries: []Entry) usize {
     return kept;
 }
 
-/// A function that says it has no size (assembly code often does) lasts until the next one;
-/// the last one, one byte. Entries are sorted, with no two at the same start.
+/// A function without a size (assembly often has none) lasts until the next; the last, a byte.
 fn sizes_fill(entries: []Entry) void {
     for (entries, 0..) |*entry, index| {
         if (entry.size != 0) continue;
-        // Not `start + 1 - start`: an untrusted start may be the last address there is.
+        // Not `start + 1 - start`: an untrusted start may be the last address.
         const size = if (index + 1 < entries.len) entries[index + 1].start - entry.start else 1;
         entry.size = @intCast(@min(size, std.math.maxInt(u32)));
     }

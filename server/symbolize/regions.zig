@@ -1,6 +1,5 @@
-//! Finding which region of the target an address is in. Regions come from the agent in the
-//! order of /proc/<pid>/maps: sorted by address and never overlapping, so this is a binary
-//! search. `valid` checks that, once per message, so a lookup does not have to.
+//! Which region an address is in: a binary search, as /proc/<pid>/maps is sorted and has no
+//! overlaps. `valid` checks that once per message.
 
 const std = @import("std");
 const agent = @import("agent");
@@ -8,8 +7,7 @@ const agent = @import("agent");
 const assert = std.debug.assert;
 const Region = agent.Region;
 
-/// True when the regions can be searched: each one is non-empty, and each starts at or after
-/// the end of the one before.
+/// Each region is non-empty and starts at or after the end of the one before.
 pub fn valid(regions: []const Region) bool {
     for (regions, 0..) |region, index| {
         if (region.start >= region.end) return false;
@@ -18,8 +16,7 @@ pub fn valid(regions: []const Region) bool {
     return true;
 }
 
-/// The index of the region that holds `address`, or null when it is in none of them. The
-/// regions must be `valid`.
+/// The index of the region holding `address`. The regions must be `valid`.
 pub fn find(regions: []const Region, address: u64) ?usize {
     var low: usize = 0;
     var high: usize = regions.len;

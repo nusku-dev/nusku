@@ -87,6 +87,92 @@ pub fn profile(
     };
 }
 
+/// The server and the controller of a command that has nothing to profile, only processes to
+/// watch. On the heap, as in `profile`: they are large, and the watch's thread points into them.
+const Backend = struct {
+    server: *Server,
+    controller: *Controller,
+
+    fn create(gpa: std.mem.Allocator) !Backend {
+        const server = try gpa.create(Server);
+        errdefer gpa.destroy(server);
+        try server.init(gpa, .{ .targets_max = 1 });
+        errdefer server.deinit(gpa);
+        const controller = try gpa.create(Controller);
+        errdefer gpa.destroy(controller);
+        try controller.init(gpa, server, .{ .runs_max = 1 });
+        return .{ .server = server, .controller = controller };
+    }
+
+    fn destroy(backend: Backend, gpa: std.mem.Allocator) void {
+        backend.controller.deinit(gpa);
+        gpa.destroy(backend.controller);
+        backend.server.deinit(gpa);
+        gpa.destroy(backend.server);
+    }
+};
+
+/// The processes of this machine, once, with CPU in them: the watch runs until its second
+/// look, then stops. The frame lives in `arena`. Ctrl-C stops the wait; the error says so.
+pub fn processes(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    interval_ms: u32,
+) !server_lib.processes.Frame {
+    assert(interval_ms > 0);
+    const backend = try Backend.create(gpa);
+    defer backend.destroy(gpa);
+    const controller = backend.controller;
+
+    try controller.watch_procs_start(gpa, .{ .interval_ms = interval_ms });
+    interrupt_arm(controller.watch_procs_cancel_of().?);
+    defer interrupt_release();
+
+    // The first frame has no CPU: it is measured against the look before.
+    while (backend.server.processes_frames() < 2) {
+        if (!controller.watch_procs_running()) break; // Ctrl-C, or the watch failed.
+        sleep_ms(poll_ms);
+    }
+    const frame = try backend.server.processes(arena);
+    _ = try controller.watch_procs_stop();
+    return frame orelse error.Interrupted;
+}
+
+/// Shown each new frame of the processes, on the thread that called `processes_watch`. The
+/// frame lives until the next one.
+pub const ProcessesLive = struct {
+    context: *anyopaque,
+    show: *const fn (context: *anyopaque, frame: *const server_lib.processes.Frame) void,
+};
+
+/// Watches the processes of this machine, a look every `interval_ms`, and shows each frame to
+/// `live`, until Ctrl-C. The first look is not shown: it has no CPU yet.
+pub fn processes_watch(gpa: std.mem.Allocator, interval_ms: u32, live: ProcessesLive) !void {
+    assert(interval_ms > 0);
+    const backend = try Backend.create(gpa);
+    defer backend.destroy(gpa);
+    const controller = backend.controller;
+
+    try controller.watch_procs_start(gpa, .{ .interval_ms = interval_ms });
+    interrupt_arm(controller.watch_procs_cancel_of().?);
+    defer interrupt_release();
+
+    // Each frame's memory lives until the next one.
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var shown: u64 = 1; // The first frame: no CPU in it.
+    while (controller.watch_procs_running()) {
+        sleep_ms(poll_ms);
+        const frames = backend.server.processes_frames();
+        if (frames <= shown) continue;
+        shown = frames;
+        _ = arena.reset(.retain_capacity);
+        const frame = (try backend.server.processes(arena.allocator())) orelse continue;
+        live.show(live.context, &frame);
+    }
+    _ = try controller.watch_procs_stop();
+}
+
 /// The name of process `pid` (its comm, what `ps` shows), in `buffer`, or null when it cannot
 /// be read.
 pub fn process_name(pid: u32, buffer: *[64]u8) ?[]const u8 {

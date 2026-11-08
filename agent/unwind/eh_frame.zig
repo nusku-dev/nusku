@@ -1,14 +1,7 @@
-//! Reader for the `.eh_frame` section: the unwind information that C, C++, Rust, Zig and every
-//! other gcc or LLVM based compiler writes (DWARF call frame information). It stays in stripped
-//! binaries, because exceptions need it at run time.
-//!
-//! This file only splits the section into entries and finds the address range of each; what
-//! the instructions inside them mean is cfi_machine.zig's job.
-//!
-//! It also reads `.debug_frame`, the same information in the layout of the DWARF standard. Code
-//! built without unwind tables (musl's C is, to stay small) has no `.eh_frame` entries, but an
-//! unstripped binary still has `.debug_frame` ones for it. The two differ in three places: how
-//! a CIE is marked, how an FDE points at its CIE, and that addresses are never pc-relative.
+//! Splits `.eh_frame` into entries and their address ranges (their instructions are
+//! cfi_machine.zig's). Also `.debug_frame`, which unstripped binaries have for code built
+//! without unwind tables (musl's C): it marks CIEs and points at them differently, and its
+//! addresses are never pc-relative.
 
 const std = @import("std");
 

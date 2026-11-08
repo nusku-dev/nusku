@@ -1,7 +1,5 @@
-//! Builds Go programs for the tests, and finds their functions. Test-only, like all of testing/.
-//!
-//! Needs a Go toolchain. Under sudo, PATH is reset, so the usual install places are tried too;
-//! without one the tests that need it are skipped.
+//! Builds Go programs for the tests, and finds their functions. Without a Go toolchain (sudo
+//! resets PATH, so the usual places are tried too) those tests are skipped.
 
 const std = @import("std");
 const assert = std.debug.assert;

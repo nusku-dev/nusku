@@ -103,11 +103,13 @@ test "stat_parse refuses lines that are not a stat line" {
     try testing.expectError(error.Malformed, Stat.stat_parse(42, "42 (short) S 1 2"));
     try testing.expectError(error.Malformed, Stat.stat_parse(42, "42 ) x ( S 1 2"));
     // Letters in utime.
-    try testing.expectError(error.Malformed, Stat.stat_parse(42, "42 (x) S 1 2 3 4 5 6 7 8 9 10 abc 222 13 14 15 16 17 18 999 20\n"));
+    const letters = "42 (x) S 1 2 3 4 5 6 7 8 9 10 abc 222 13 14 15 16 17 18 999 20\n";
+    try testing.expectError(error.Malformed, Stat.stat_parse(42, letters));
 }
 
 test "a long name is cut to the room there is" {
     const long = "x" ** 100;
-    const stat = try Stat.stat_parse(1, "1 (" ++ long ++ ") S 1 2 3 4 5 6 7 8 9 10 1 1 13 14 15 16 17 18 5 20\n");
+    const line = "1 (" ++ long ++ ") S 1 2 3 4 5 6 7 8 9 10 1 1 13 14 15 16 17 18 5 20\n";
+    const stat = try Stat.stat_parse(1, line);
     try testing.expectEqual(@as(usize, Stat.name_bytes_max), stat.name().len);
 }

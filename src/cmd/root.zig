@@ -2,6 +2,7 @@ const std = @import("std");
 const cli = @import("cli");
 const log = @import("log");
 const prof = @import("prof.zig");
+const ps = @import("ps.zig");
 
 /// Persistent flags to add to the root command.
 const flags: []const cli.Flag = &.{
@@ -15,5 +16,5 @@ pub const root: cli.Command = .{
     .short = "A continuous profiling system for Linux, built in Zig, with eBPF doing the actual watching",
     .long = "Nusku is a continuous profiling system for Linux. It watches a running process and shows you what it's actually doing, live, instead of leaving you to guess from a graph of CPU percentage that goes up and down with no explanation",
     .persistent_flags = flags,
-    .subcommands = &.{&prof.cmd},
+    .subcommands = &.{ &prof.cmd, &ps.cmd },
 };

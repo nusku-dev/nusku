@@ -1,10 +1,5 @@
-//! Reads Go's pclntab: the table the Go runtime itself uses for tracebacks. Go binaries carry no
-//! .eh_frame, and `-ldflags="-s -w"` (common in production images) removes .debug_frame too, but
-//! .gopclntab is always there, because the runtime needs it.
-//!
-//! For unwinding only one of its tables matters: pcsp, which gives, for every instruction of a
-//! function, how far the stack pointer is below its value at the function's entry. On x86-64 the
-//! caller's frame then follows exactly: CFA = rsp + sp_delta + 8, the return address at CFA - 8.
+//! Go's pclntab, which the Go runtime needs, so even stripped binaries have it. Its pcsp table
+//! gives each instruction's stack depth below the function's entry: CFA = rsp + sp_delta + 8.
 //!
 //! Layout, for Go 1.18 and later (magic 0xfffffff0, and 0xfffffff1 since Go 1.20), from
 //! runtime/symtab.go and internal/abi/symtab.go:
@@ -14,8 +9,7 @@
 //!     functab    at pclnOffset: nfunc+1 pairs {entryOff u32, funcOff u32}, the last one the end
 //!     _func      at pclnOffset + funcOff: entryOff, nameOff, args, deferreturn, pcsp, ... flag
 //!
-//! Older Go versions use other layouts and are refused (Unsupported): their binaries then have
-//! no table, and frame pointers unwind them as before.
+//! Older layouts are refused: frame pointers unwind those binaries.
 
 const std = @import("std");
 const assert = std.debug.assert;

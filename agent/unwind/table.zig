@@ -1,10 +1,6 @@
-//! One binary's unwind table in the compact form the kernel program reads: rows sorted by
-//! address, each saying how to find the caller's frame from anywhere in its range.
-//!
-//! The rows come from running each FDE's DWARF CFI program (cfi_machine.zig) and keeping only
-//! what an x86-64 walk needs: the CFA rule, and where rbp is saved. Rules the kernel program
-//! cannot apply become `unsupported` rows, so the walk stops there with a reason instead of
-//! guessing.
+//! One binary's rows, sorted by address: the CFA rule and where rbp is saved, from each FDE's
+//! instructions. A rule the kernel cannot apply is an `unsupported` row: the walk stops there
+//! rather than guess.
 
 const std = @import("std");
 const assert = std.debug.assert;

@@ -1,9 +1,5 @@
-//! Looks at the processes of the machine: the agent's second main loop, next to `profile`.
-//!
-//! `watch` looks at the machine at once, then at its own pace, one look every interval. The CPU
-//! of each process is measured against the look before, so the first look has none. A cancel
-//! or the end of the duration stops it. Everything happens on the calling thread, so there are
-//! no locks.
+//! The agent's second loop, next to `profile`: a look at every process of the machine at once,
+//! then one every interval, until a cancel or the duration. All on the calling thread.
 
 const std = @import("std");
 const Cancel = @import("os/cancel.zig").Cancel;
@@ -13,7 +9,7 @@ const timer = @import("os/timer.zig");
 const poll_file = @import("os/poll.zig");
 const Looks = @import("processes/process.zig").Looks;
 
-const Frame = procs.Frame;
+pub const Frame = procs.Frame;
 
 pub const StopReason = enum { duration, cancelled };
 
@@ -30,15 +26,12 @@ pub const Options = struct {
 const Source = enum { look_timer, cancel };
 const Poll = poll_file.Poll(Source);
 
-/// Watches the processes of the machine, and returns why it stopped.
-///
-/// `context` is a pointer to the caller's state, and `on_frame` a function that takes it first:
+/// Watches the processes of the machine, and says why it stopped.
 ///
 ///     fn on_frame(state: *State, frame: *const Frame) !void
 ///
-/// - The frame is valid only during the call: `name` and `user` point into the watch's
-///   own memory. Copy whatever must outlive it.
-/// - The first frame has no `cpu_percent` (null): CPU is measured against the look before.
+/// runs once per look. The frame is valid only during the call. The first has no
+/// `cpu_percent`: CPU is measured against the look before.
 pub fn watch_processes(
     gpa: std.mem.Allocator,
     options: Options,
@@ -87,7 +80,12 @@ pub fn watch_processes(
 }
 
 /// For now an empty look: the steps after this fill it from /proc.
-fn look_deliver(looks: *Looks, gpa: std.mem.Allocator, context: anytype, comptime on_frame: anytype) !void {
+fn look_deliver(
+    looks: *Looks,
+    gpa: std.mem.Allocator,
+    context: anytype,
+    comptime on_frame: anytype,
+) !void {
     const frame = try looks.take(gpa);
 
     // The callback may return void or an error union; an error stops the watch.
