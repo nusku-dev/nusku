@@ -9,6 +9,8 @@ pub const binary = @import("protocol/binary.zig");
 pub const kernel = @import("protocol/kernel.zig");
 pub const ProcessInfo = processes.ProcessInfo;
 pub const ProcessFrame = processes.Frame;
+pub const Machine = processes.Machine;
+pub const MachineCpu = processes.MachineCpu;
 
 pub const Metric = enum { cpu, offcpu, mem, io, net, locks, sched };
 

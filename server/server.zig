@@ -146,6 +146,7 @@ pub const Feed = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
+const table_one = @import("testing/symbols.zig").table_one;
 const Message = protocol.Message;
 
 /// /bin/app, at 0x7000 from file offset 0x1000: the function's file offset 0x1100 is 0x7100.
@@ -198,7 +199,7 @@ test "a feed's reports become a profile that names the functions and keeps to th
     var feed = try server.feed(1);
     defer feed.close();
     const gpa = testing.allocator;
-    try server.symbols.binaries.put(gpa, "aa", try symbols_layer.table_one_testing(gpa, "work"));
+    try server.symbols.binaries.put(gpa, "aa", try table_one(gpa, "work"));
 
     // The leaf is in `work`, at two instructions; the caller has no name.
     const first = [_]Message.Stack{stack_test(3, &.{ 0x7110, 0x7220 })};

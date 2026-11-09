@@ -26,9 +26,6 @@ pub const pending_max = 16;
 pub const path_bytes_max = 4096;
 /// Bytes in one chunk.
 pub const chunk_bytes = 256 * 1024;
-/// Bytes of /proc/kallsyms read per loop round: about 12 ms of the kernel's time, and some 5 s
-/// for all of it. Read in one go, it would hold up the loop for more than half a second.
-pub const kallsyms_bytes_per_round = 256 * 1024;
 
 /// A build ID, held by value.
 const Id = struct {
@@ -101,9 +98,9 @@ pub const Symbols = struct {
     /// Who the running kernel is: its symbols are offered once, before the first binary.
     kernel: KernelIdentity,
     kernel_offered: bool,
-    /// Reading the kernel's symbols, a piece per round when no binary is being sent; the
-    /// kernel's transfer starts when it is done.
-    kernel_reader: ?kernel_symbols.Reader,
+    /// Reading the kernel's symbols, on a thread of its own: their transfer starts once it is
+    /// done and no binary waits. In `kernel_arena`.
+    kernel_reading: ?*kernel_symbols.Background,
     /// Holds the kernel's symbols while they are read and sent, apart from `arena`, which each
     /// binary's transfer resets. Freed once they are sent: a few MiB, not kept for the run.
     kernel_arena: std.heap.ArenaAllocator,
@@ -113,6 +110,8 @@ pub const Symbols = struct {
     kernel_id: [kernel_symbols.id_bytes_max]u8,
     kernel_id_len: usize,
 
+    /// `stop` was called: only the transfer in flight goes on.
+    stopping: bool,
     /// What was offered and waits for `want`.
     asked: ?enum { region, kernel },
     /// The region offered, by value: it left the queue.
@@ -149,11 +148,12 @@ pub const Symbols = struct {
             .vdso_image = vdso_image,
             .kernel = kernel,
             .kernel_offered = false,
-            .kernel_reader = null,
+            .kernel_reading = null,
             .kernel_arena = .init(gpa),
             .current_is_kernel = false,
             .kernel_id = undefined,
             .kernel_id_len = 0,
+            .stopping = false,
             .asked = null,
             .asked_region = undefined,
             .answer = false,
@@ -175,7 +175,7 @@ pub const Symbols = struct {
 
     pub fn deinit(symbols: *Symbols, gpa: std.mem.Allocator) void {
         if (symbols.current) |*transfer| transfer.deinit();
-        if (symbols.kernel_reader) |*reader| reader.deinit();
+        if (symbols.kernel_reading) |reading| reading.deinit();
         symbols.kernel_arena.deinit();
         symbols.arena.deinit();
         gpa.free(symbols.prefix);
@@ -214,18 +214,26 @@ pub const Symbols = struct {
     }
 
     /// One event, or null when there is nothing to do now: the caller tries again later. The
-    /// binaries come first; with none, the kernel's symbols, read a piece per call.
+    /// kernel is offered first, so its symbols are read on their thread while the binaries are
+    /// offered and sent; they are sent once read, when no binary waits.
     pub fn step(symbols: *Symbols) ?Event {
         if (!symbols.enabled) return null;
+        if (symbols.stopping) {
+            const transfer = &(symbols.current orelse return null);
+            return symbols.transfer_step(transfer);
+        }
         if (symbols.asked != null) symbols.asked_take();
         if (symbols.current) |*transfer| return symbols.transfer_step(transfer);
-        if (symbols.pending_count > 0) return symbols.region_ask();
         if (!symbols.kernel_offered) {
             symbols.kernel_offered = true;
             if (symbols.kernel_ask()) |event| return event;
         }
-        if (symbols.kernel_reader != null) symbols.kernel_read();
-        return null;
+        if (symbols.pending_count > 0) return symbols.region_ask();
+        const reading = symbols.kernel_reading orelse return null;
+        if (!reading.finished()) return null;
+        symbols.kernel_finish();
+        const transfer = &(symbols.current orelse return null);
+        return symbols.transfer_step(transfer);
     }
 
     /// Answers the last `.offer`. During a transfer, false drops it: the caller had to.
@@ -237,13 +245,18 @@ pub const Symbols = struct {
         if (!wanted and symbols.current != null) symbols.current_end();
     }
 
-    /// The run ends. True when a binary had begun: the caller is owed its abort.
-    pub fn stop(symbols: *Symbols) bool {
-        if (symbols.kernel_reader != null) symbols.kernel_reader_drop();
-        const transfer = &(symbols.current orelse return false);
-        const begun = transfer.begun();
-        symbols.current_end();
-        return begun;
+    /// The run ends: nothing more is offered or read. A binary already begun goes on to its end
+    /// through `step`, so a short run keeps the names it was being sent; one bounded transfer.
+    pub fn stop(symbols: *Symbols) void {
+        symbols.stopping = true;
+        if (symbols.kernel_reading) |reading| {
+            reading.deinit();
+            symbols.kernel_reading = null;
+        }
+        symbols.pending_count = 0;
+        symbols.asked = null;
+        const transfer = &(symbols.current orelse return);
+        if (!transfer.begun()) symbols.current_end();
     }
 
     fn transfer_step(symbols: *Symbols, transfer: *Transfer) ?Event {
@@ -331,25 +344,26 @@ pub const Symbols = struct {
     fn kernel_start(symbols: *Symbols) void {
         _ = symbols.kernel_arena.reset(.free_all);
         const arena = symbols.kernel_arena.allocator();
-        const opened = kernel_symbols.Reader.init(arena, symbols.kernel.text_address.?);
-        symbols.kernel_reader = (opened catch null) orelse {
+        const started = kernel_symbols.Background.start(arena, symbols.kernel.text_address.?);
+        symbols.kernel_reading = (started catch null) orelse {
             log.debug("kernel symbols not sent: kallsyms cannot be read", .{});
             return;
         };
     }
 
-    /// One piece of kallsyms; at its end, the kernel's symbols become the transfer.
-    fn kernel_read(symbols: *Symbols) void {
-        const reader = &symbols.kernel_reader.?;
-        const done = reader.step(kallsyms_bytes_per_round) catch |err| {
-            log.debug("kernel symbols not sent: kallsyms could not be read", .{ .cause = err });
-            return symbols.kernel_reader_drop();
-        };
-        if (!done) return;
-        defer symbols.kernel_reader_drop();
-
+    /// The kernel's symbols, read: they become the transfer.
+    fn kernel_finish(symbols: *Symbols) void {
+        const reading = symbols.kernel_reading.?;
+        defer {
+            reading.deinit();
+            symbols.kernel_reading = null;
+        }
         // Only root reads the addresses: anyone else, zeros.
-        const names = reader.symbols() orelse {
+        const found = reading.symbols() catch |err| {
+            log.debug("kernel symbols not sent: kallsyms could not be read", .{ .cause = err });
+            return;
+        };
+        const names = found orelse {
             log.debug("kernel symbols not sent: their addresses are hidden", .{});
             return;
         };
@@ -365,15 +379,10 @@ pub const Symbols = struct {
         symbols.current_is_kernel = true;
     }
 
-    fn kernel_reader_drop(symbols: *Symbols) void {
-        symbols.kernel_reader.?.deinit();
-        symbols.kernel_reader = null;
-    }
-
     /// Nothing waits, nothing is in flight.
     fn idle(symbols: *const Symbols) bool {
         return symbols.pending_count == 0 and symbols.asked == null and symbols.current == null and
-            symbols.kernel_reader == null and symbols.kernel_offered;
+            symbols.kernel_reading == null and symbols.kernel_offered;
     }
 
     /// Frees the last binary's memory, keeping it for the next.
@@ -629,7 +638,7 @@ test "an offer not answered is not sent, and a transfer dropped midway stops" {
     try testing.expectEqual(@as(u32, 0), consumer.aborts); // The consumer dropped it itself.
 }
 
-test "a run that stops during a transfer is owed an abort, once" {
+test "a run that stops during a transfer finishes it, and starts nothing new" {
     var prefix: [target.build_id_prefix_size]u8 = undefined;
     const shell = (try sh_id(&prefix)) orelse return error.SkipZigTest;
 
@@ -640,9 +649,15 @@ test "a run that stops during a transfer is owed an abort, once" {
     symbols.want(true);
     try testing.expect(symbols.step().? == .begin);
 
-    try testing.expect(symbols.stop());
+    symbols.regions_see(&.{region_test("/bin/ls", "\x01\x02")}); // Waiting: never offered.
+    symbols.stop();
+    var consumer = Consumer{ .begins = 1 };
+    while (symbols.step()) |event| consumer.take(&symbols, event);
+    try testing.expectEqual(@as(u32, 1), consumer.ends);
+    try testing.expectEqual(@as(u32, 0), consumer.offers);
     try testing.expect(symbols.current == null);
-    try testing.expect(!symbols.stop()); // Nothing in flight.
+    symbols.stop(); // Again: nothing more.
+    try testing.expectEqual(@as(?Event, null), symbols.step());
 }
 
 test "a binary that cannot be opened is dropped, not retried" {
@@ -659,7 +674,7 @@ test "a binary that cannot be opened is dropped, not retried" {
     try testing.expectEqual(@as(u32, 0), symbols.pending_count);
 }
 
-test "the binaries go first; the kernel's symbols are read after, a piece per step" {
+test "the kernel is offered first and read on its thread, while a binary is sent" {
     var prefix: [target.build_id_prefix_size]u8 = undefined;
     const id = (try sh_id(&prefix)) orelse return error.SkipZigTest;
 
@@ -669,22 +684,47 @@ test "the binaries go first; the kernel's symbols are read after, a piece per st
     defer symbols.deinit(testing.allocator);
     symbols.regions_see(&.{region_test("/bin/sh", id)});
 
-    const first = symbols.step().?;
-    try testing.expectEqualStrings("/bin/sh", first.offer.path);
-    symbols.want(true);
-    var consumer = Consumer{};
-    while (symbols.current != null or symbols.asked != null) {
-        consumer.take(&symbols, symbols.step() orelse continue);
-    }
-    try testing.expectEqual(@as(u32, 1), consumer.ends);
-
-    // Then the kernel is offered, and kallsyms read over many steps.
     const kernel_offer = symbols.step().?;
     try testing.expectEqualStrings(kernel_symbols.path, kernel_offer.offer.path);
     symbols.want(true);
+    // Its reading starts with the next step, which offers the binary meanwhile.
+    const binary_offer = symbols.step().?;
+    try testing.expectEqualStrings("/bin/sh", binary_offer.offer.path);
+    try testing.expect(symbols.kernel_reading != null);
+    symbols.want(true);
+
+    // The binary is sent whole first; the kernel's symbols, once read, after it.
+    var consumer = Consumer{};
     var steps: u32 = 0;
-    while (symbols.current == null and !symbols.idle()) : (steps += 1) _ = symbols.step();
-    try testing.expect(steps > 3);
-    // As root the kernel's symbols are then sent; without, they were hidden.
-    try testing.expectEqual(std.os.linux.geteuid() == 0, symbols.current_is_kernel);
+    while (!symbols.idle()) : (steps += 1) {
+        if (steps > 100_000) return error.NeverIdle;
+        const event = symbols.step() orelse {
+            os.timer.sleep_ms(1); // The thread is reading.
+            continue;
+        };
+        if (event == .begin and consumer.ends == 0) {
+            try testing.expectEqualStrings("/bin/sh", event.begin.path);
+        }
+        consumer.take(&symbols, event);
+    }
+    // As root the kernel's symbols are then sent; without, they were hidden, and are not.
+    const root = std.os.linux.geteuid() == 0;
+    try testing.expectEqual(@as(u32, if (root) 2 else 1), consumer.ends);
+}
+
+test "a run that stops while the kernel is read stops the reading" {
+    var symbols: Symbols = undefined;
+    const kernel = KernelIdentity{ .build_id = "kk", .text_address = 0xffffffff81000000 };
+    try symbols.init(testing.allocator, true, process.current_pid(), null, kernel);
+    defer symbols.deinit(testing.allocator);
+
+    try testing.expect(symbols.step().? == .offer);
+    symbols.want(true);
+    try testing.expectEqual(@as(?Event, null), symbols.step());
+    try testing.expect(symbols.kernel_reading != null);
+    const started_ns = os.timer.monotonic_ns();
+    symbols.stop();
+    try testing.expect(symbols.kernel_reading == null);
+    // At most one step of the thread: well under the 0.8 s of the whole read.
+    try testing.expect(os.timer.monotonic_ns() - started_ns < 300 * std.time.ns_per_ms);
 }

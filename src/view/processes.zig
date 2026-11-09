@@ -1,19 +1,20 @@
-//! The processes of the machine as a table, the busiest first. CPU is a share of one CPU, so
-//! busy threads can pass 100%.
+//! The processes of the machine as a table, the busiest first. A process's CPU is a share of
+//! one CPU, so busy threads can pass 100%; the header's is the whole machine's, as in `top`.
 //!
-//!      nusku ps  312 processes · 8 CPUs · CPU 143.2% · memory 5.3G · every 1.0 s
+//!      nusku ps  312 processes · 8 CPUs · CPU 18.4% (user 12.0 system 5.1 iowait 0.3)
+//!                · memory 5.3G · every 1.0 s
 //!
 //!          PID USER         CPU%          MEM  THR  STARTED  COMMAND
 //!        41722 ali          98.0% ████▉   812.4M  24     3h12m  /opt/google/chrome/chrome …
 
 const std = @import("std");
-const server = @import("server");
+const protocol = @import("shared").protocol;
 const term = @import("../term.zig");
 
 const Style = term.Style;
 const Writer = std.Io.Writer;
-const Frame = server.ProcessFrame;
-const ProcessInfo = server.ProcessInfo;
+const Frame = protocol.ProcessFrame;
+const ProcessInfo = protocol.ProcessInfo;
 
 pub const Sort = enum { cpu, mem, pid };
 
@@ -26,7 +27,6 @@ pub const Options = struct {
     color: bool = false,
     /// The header says how to stop.
     live: bool = false,
-    cpus: usize = 1,
 };
 
 /// Returns the lines it wrote, for a live view to draw over.
@@ -60,28 +60,24 @@ pub fn write(w: *Writer, arena: std.mem.Allocator, frame: *const Frame, options:
 }
 
 fn header_write(w: *Writer, style: Style, frame: *const Frame, options: Options) !void {
-    var cpu_total: f64 = 0;
     var memory_total: u64 = 0;
-    for (frame.processes) |info| {
-        cpu_total += info.cpu_percent orelse 0;
-        memory_total += info.memory_bytes;
-    }
+    for (frame.processes) |info| memory_total += info.memory_bytes;
     const separator = " \u{00b7} ";
     var memory_buffer: [16]u8 = undefined;
-    try w.print("  {s}nusku ps{s}  {d} processes{s}{s}{s}{d} CPUs", .{
+    try w.print("  {s}nusku ps{s}  {d} processes{s}{s}{s}{d} CPUs{s}{s}{s}", .{
         style.on(term.bold_cyan),
         style.off(),
         frame.processes.len,
         style.on(term.dim),
         separator,
         style.off(),
-        options.cpus,
-    });
-    try w.print("{s}{s}{s}CPU {d:.1}%{s}{s}{s}memory {s}", .{
+        frame.machine.cpus,
         style.on(term.dim),
         separator,
         style.off(),
-        cpu_total,
+    });
+    try machine_write(w, style, frame.machine.cpu);
+    try w.print("{s}{s}{s}memory {s}", .{
         style.on(term.dim),
         separator,
         style.off(),
@@ -94,6 +90,22 @@ fn header_write(w: *Writer, style: Style, frame: *const Frame, options: Options)
         every_ms / 1000,
         every_ms % 1000 / 100,
         if (options.live) separator ++ "Ctrl-C to stop" else "",
+        style.off(),
+    });
+}
+
+/// The machine's CPU, and where it went. A dash on the first frame: nothing to measure against.
+fn machine_write(w: *Writer, style: Style, cpu: ?protocol.MachineCpu) !void {
+    const known = cpu orelse return w.writeAll("CPU -");
+    const per_mille: u64 = @intFromFloat(@max(known.busy_percent, 0) * 10);
+    try w.print("CPU {s}{d:.1}%{s} {s}(user {d:.1} system {d:.1} iowait {d:.1}){s}", .{
+        style.heat(per_mille, 500),
+        known.busy_percent,
+        style.off(),
+        style.on(term.dim),
+        known.user_percent,
+        known.system_percent,
+        known.iowait_percent,
         style.off(),
     });
 }
@@ -230,6 +242,14 @@ const frame_test = Frame{
     .unix_ns = 5040 * second,
     .interval_ns = second,
     .processes = &processes_test,
+    .machine = .{ .cpus = 8, .cpu = .{
+        .busy_percent = 18.4,
+        .user_percent = 12,
+        .system_percent = 5.1,
+        .iowait_percent = 0.3,
+        .irq_percent = 1,
+        .steal_percent = 0.3,
+    } },
 };
 
 fn table_test(arena: std.mem.Allocator, options: Options) ![]const u8 {
@@ -246,9 +266,10 @@ fn has(text: []const u8, part: []const u8) bool {
 test "the header sums the machine; rows go busiest first, a new process last" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const text = try table_test(arena.allocator(), .{ .cpus = 8 });
+    const text = try table_test(arena.allocator(), .{});
 
-    try testing.expect(has(text, "nusku ps  3 processes \u{00b7} 8 CPUs \u{00b7} CPU 98.5%"));
+    try testing.expect(has(text, "nusku ps  3 processes \u{00b7} 8 CPUs \u{00b7} CPU 18.4% " ++
+        "(user 12.0 system 5.1 iowait 0.3) \u{00b7} memory"));
     try testing.expect(has(text, "every 1.0 s\n"));
     try testing.expect(!has(text, "Ctrl-C")); // Not live.
     const chrome = std.mem.indexOf(u8, text, "41722").?;

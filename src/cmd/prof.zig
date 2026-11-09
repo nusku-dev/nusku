@@ -10,7 +10,7 @@ const term = @import("../term.zig");
 const view = @import("../view.zig").profile;
 
 const slog = log.scope("prof");
-const Metric = server.Metric;
+const Metric = @import("shared").protocol.Metric;
 
 pub const cmd: cli.Command = .{
     .name = "prof",
@@ -92,9 +92,14 @@ fn run(ctx: *cli.Context) anyerror!void {
     try flags.log_apply(ctx);
     const settings = try settings_read(ctx);
 
-    // A launched process still running when profiling ends is stopped with it.
+    // A launched process still running when profiling ends is stopped with it. Continued first:
+    // if the run never started, it is still stopped, and `kill` sends SIGTERM and waits, which a
+    // stopped process never acts on.
     var child: ?std.process.Child = null;
-    defer if (child) |*launched| launched.kill(ctx.io);
+    defer if (child) |*launched| {
+        _ = std.os.linux.kill(launched.id.?, std.os.linux.SIG.CONT);
+        launched.kill(ctx.io);
+    };
     const target: u32 = settings.pid orelse target: {
         child = try launch(ctx, ctx.getString("exec"), ctx.args);
         break :target @intCast(child.?.id.?);
@@ -120,6 +125,7 @@ fn run(ctx: *cli.Context) anyerror!void {
         .metrics = settings.metrics,
         .interval_ms = settings.interval_ms,
         .duration_s = settings.duration_s,
+        .continue_target = child != null,
     }, watcher) catch |err| {
         try term.lines_erase(ctx.stdout, live.lines);
         const advice = hint(err);
@@ -264,7 +270,8 @@ fn metrics_read(ctx: *cli.Context) error{InvalidUsage}!std.EnumSet(Metric) {
     return set;
 }
 
-/// Starts `exec` with `args`, to profile it from its start.
+/// Starts `exec` with `args`, stopped just after its exec: it goes on once sampling has started
+/// (`continue_target`), so nothing it does runs unsampled, not even its start.
 fn launch(ctx: *cli.Context, exec: []const u8, args: []const []const u8) !std.process.Child {
     const argv = try ctx.allocator.alloc([]const u8, args.len + 1);
     argv[0] = exec;
@@ -273,6 +280,9 @@ fn launch(ctx: *cli.Context, exec: []const u8, args: []const []const u8) !std.pr
     const child = std.process.spawn(ctx.io, .{ .argv = argv }) catch |err| {
         return ctx.fail("cannot launch {s}: {t}", .{ exec, err });
     };
+    // `spawn` returns once the exec has happened: what is stopped is the new program.
+    const linux = std.os.linux;
+    _ = linux.kill(child.id.?, linux.SIG.STOP);
     slog.info("process launched", .{ .exec = exec, .args = args.len, .pid = child.id.? });
     return child;
 }

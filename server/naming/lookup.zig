@@ -43,7 +43,7 @@ pub const Lookup = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const table_one = @import("../symbols.zig").table_one_testing;
+const table_one = @import("../testing/symbols.zig").table_one;
 
 test "the cache keeps binaries apart, and outlives the table" {
     var symbols: Symbols = undefined;

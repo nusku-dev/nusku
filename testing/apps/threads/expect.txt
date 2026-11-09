@@ -1,0 +1,13 @@
+# What the threads app does, by design (see app.c), and so what its profile must show.
+# Every thread is sampled; the sleeping one is not; time in the kernel has kernel frames.
+rate  247.5 6                    # 2.5 busy cores at 99 Hz
+complete >95
+total spin_main  40
+total half_main  20
+total read_main  40
+total sleep_main 0 1             # asleep: never on a CPU
+path  spin_main;spin;busy_until  40
+path  half_main;half_work;busy_until  20
+total read_work  40
+kernel 40 6                      # read_main's time is nearly all in the kernel
+kernel_named >95                 # and named: the kernel's symbols arrive in time

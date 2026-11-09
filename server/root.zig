@@ -17,7 +17,6 @@
 //!   server     Server and Feed: the layers together, taking events and answering queries
 //!   control    Controller: the agent on threads, feeding the server
 
-const protocol = @import("shared").protocol;
 const server_file = @import("server.zig");
 const control_file = @import("control.zig");
 const naming = @import("naming.zig");
@@ -38,12 +37,6 @@ pub const Spec = control_file.Spec;
 pub const Started = control_file.Started;
 pub const Done = control_file.Done;
 pub const JobId = control_file.JobId;
-
-pub const Metric = protocol.Metric;
-pub const RunStop = protocol.RunStop;
-pub const WatchStop = protocol.WatchStop;
-pub const ProcessFrame = protocol.ProcessFrame;
-pub const ProcessInfo = protocol.ProcessInfo;
 
 test {
     _ = @import("log.zig");

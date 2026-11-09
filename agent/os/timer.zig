@@ -84,6 +84,16 @@ pub const Timer = struct {
         return timer;
     }
 
+    /// Fires every `period_ms` from now on, the first time `period_ms` from now.
+    pub fn period_set(timer: *const Timer, period_ms: u32) error{Unexpected}!void {
+        assert(period_ms > 0);
+        const period = timespec_from_ms(period_ms);
+        const schedule = linux.itimerspec{ .it_interval = period, .it_value = period };
+        if (linux.errno(linux.timerfd_settime(timer.fd, .{}, &schedule, null)) != .SUCCESS) {
+            return error.Unexpected;
+        }
+    }
+
     pub fn deinit(timer: *Timer) void {
         assert(timer.fd >= 0);
         _ = linux.close(timer.fd);
@@ -126,6 +136,14 @@ test "a timer fires once per period, and reads 0 before it has fired" {
     try std.testing.expect(expirations >= 1);
     try std.testing.expect(expirations <= 3);
     try std.testing.expectEqual(@as(u64, 0), try timer.expirations_read());
+}
+
+test "a new period takes effect at once" {
+    var timer = try Timer.init(1000);
+    defer timer.deinit();
+    try timer.period_set(10);
+    sleep_ms(35);
+    try std.testing.expect(try timer.expirations_read() >= 2);
 }
 
 test "the timeout reaches the deadline, and none means wait for ever" {

@@ -6,7 +6,7 @@ const flags = @import("flags.zig");
 const client = @import("../client.zig");
 const term = @import("../term.zig");
 const view = @import("../view.zig").processes;
-const Frame = @import("server").ProcessFrame;
+const Frame = @import("shared").protocol.ProcessFrame;
 
 pub const cmd: cli.Command = .{
     .name = "ps",
@@ -64,7 +64,6 @@ fn run(ctx: *cli.Context) anyerror!void {
         .color = try flags.color_read(ctx),
         .live = terminal and !ctx.getBool("once"),
         .width = if (size) |known| known.cols else 0,
-        .cpus = std.Thread.getCpuCount() catch 1,
     };
     options.top = try top_read(ctx, options.live, size);
 

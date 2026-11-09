@@ -61,8 +61,10 @@ test "a profile of this process names its functions and their callers (root)" {
 
     try testing.expect(binaries_count >= 1);
     try testing.expect(profile.stacks.len > 0);
-    // The process does little but burn, so most samples are in it...
-    try testing.expect(burn_samples * 2 >= profile.samples);
+    // `burn` ran the whole 2 s on one thread: about 198 samples at 99 Hz. Not a share of the
+    // profile: the agent works in this same process (reading the kernel's symbols, too), and
+    // is profiled with it...
+    try testing.expect(burn_samples >= 160);
     // ...and nearly all of those name the caller, from a return address.
     try testing.expect(burn_samples_caller_named * 10 >= burn_samples * 9);
 }

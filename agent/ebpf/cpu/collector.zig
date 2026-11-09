@@ -221,6 +221,15 @@ pub const Collector = struct {
         _ = try collector.records.consume();
     }
 
+    /// Walks over the run that stopped at an address in no mapping the kernel knows: the
+    /// target mapped code since its tables were written (or runs JIT code, which has none).
+    pub fn unknown_code(collector: *const Collector) !u64 {
+        const counters = try collector.sampler.counters_read();
+        const stops = counters.stop_counts;
+        return stops[@intFromEnum(StopReason.no_mapping)] +
+            stops[@intFromEnum(StopReason.invalid_stack)];
+    }
+
     /// The first half of a report: from now on the kernel counts under a new generation, and
     /// the frame cache forgets the epoch no window can need any more.
     pub fn generation_advance(collector: *Collector) !void {

@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const server = @import("server");
+const protocol = @import("shared").protocol;
 const term = @import("../term.zig");
 
 const assert = std.debug.assert;
@@ -31,7 +32,7 @@ pub const Summary = struct {
     /// How long the run took, from start to stop.
     elapsed_ms: u64 = 0,
     /// Null while the run goes: the live view.
-    reason: ?server.RunStop,
+    reason: ?protocol.RunStop,
 };
 
 pub const Options = struct {
@@ -93,7 +94,8 @@ pub fn live_write(
 }
 
 /// One stack per line, outermost frame first: "outer;...;inner count". A stack whose walk
-/// stopped early starts with "[incomplete]".
+/// stopped early starts with "[incomplete]". A named kernel frame ends in "_[k]", as flame
+/// graph tools mark them; an unnamed one is "[kernel]".
 pub fn folded_write(w: *Writer, arena: std.mem.Allocator, profile: *const Profile) !void {
     var names = Names{ .arena = arena };
     for (profile.stacks) |stack| {
@@ -102,7 +104,9 @@ pub fn folded_write(w: *Writer, arena: std.mem.Allocator, profile: *const Profil
         var position = stack.frames.len;
         while (position > 0) {
             position -= 1;
-            try w.writeAll(try names.of(stack.frames[position]));
+            const frame = stack.frames[position];
+            try w.writeAll(try names.of(frame));
+            if (frame.kernel and frame.function != null) try w.writeAll("_[k]");
             if (position > 0) try w.writeByte(';');
         }
         try w.print(" {d}\n", .{stack.samples});
@@ -597,6 +601,27 @@ test "colors when asked, and the folded form for tools" {
         \\[incomplete];lost 1
         \\
     , out.written());
+}
+
+test "the folded form marks kernel frames, named or not" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const frames = [_]Frame{
+        .{ .address = 0xffffffff81000100, .kernel = true, .function = "clear_user" },
+        .{ .address = 0xffffffff81000200, .kernel = true },
+        .{ .address = 0x7100, .kernel = false, .function = "read_loop" },
+    };
+    const stacks = [_]server.SymbolStack{.{ .samples = 3, .frames = &frames, .complete = true }};
+    const profile = Profile{
+        .sample_hz = 99,
+        .samples = 3,
+        .samples_lost = 0,
+        .windows_rejected = 0,
+        .stacks = &stacks,
+    };
+    var out: std.Io.Writer.Allocating = .init(arena.allocator());
+    try folded_write(&out.writer, arena.allocator(), &profile);
+    try testing.expectEqualStrings("read_loop;[kernel];clear_user_[k] 3\n", out.written());
 }
 
 test "a profile with no samples says so" {

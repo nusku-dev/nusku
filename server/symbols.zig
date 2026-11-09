@@ -16,9 +16,7 @@ const builder = @import("symbols/builder.zig");
 const upload_file = @import("symbols/upload.zig");
 const id_set = @import("symbols/id_set.zig");
 const Binaries = @import("symbols/binaries.zig").Binaries;
-const symbol_table = @import("symbols/symbol_table.zig");
-const SymbolTable = symbol_table.SymbolTable;
-const Input = symbol_table.Input;
+const SymbolTable = @import("symbols/symbol_table.zig").SymbolTable;
 const log_file = @import("log.zig");
 
 const log = log_file.server;
@@ -408,7 +406,6 @@ pub const Receiver = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const elf = @import("shared").elf;
 
 test {
     _ = builder;
@@ -418,44 +415,9 @@ test {
     _ = @import("symbols/symbol_table.zig");
 }
 
-/// The symtab and strtab of one function, `function`, at address 0x401100 .. 0x401140.
-fn symbols_one(function: *const [4]u8) struct { [24]u8, [6]u8 } {
-    var sym: [24]u8 = @splat(0);
-    std.mem.writeInt(u32, sym[0..4], 1, .little);
-    sym[4] = 0x12; // Global function.
-    std.mem.writeInt(u16, sym[6..8], 1, .little);
-    std.mem.writeInt(u64, sym[8..16], 0x401100, .little);
-    std.mem.writeInt(u64, sym[16..24], 0x40, .little);
-    return .{ sym, ("\x00" ++ function ++ "\x00").* };
-}
-
-/// File offset 0x1000 is address 0x401000: the function is at file offset 0x1100.
-const segments_test = [_]elf.Segment{.{ .offset = 0x1000, .vaddr = 0x401000, .filesz = 0x1000 }};
-
-/// A table of one function, for the tests of the layers above.
-pub fn table_one_testing(gpa: std.mem.Allocator, function: *const [4]u8) !SymbolTable {
-    const sym, const strtab = symbols_one(function);
-    const input = Input{ .segments = &segments_test, .symtab = &sym, .strtab = &strtab };
-    return SymbolTable.init(gpa, input);
-}
-
-/// The same function as a binary handed over whole.
-fn received_one(gpa: std.mem.Allocator, id: []const u8, function: *const [4]u8) !Received {
-    const sym, const strtab = symbols_one(function);
-    var starts = std.EnumArray(protocol.binary.Section, usize).initFill(0);
-    var sizes = std.EnumArray(protocol.binary.Section, usize).initFill(0);
-    starts.set(.strtab, sym.len);
-    sizes.set(.symtab, sym.len);
-    sizes.set(.strtab, strtab.len);
-    return .{
-        .id = try gpa.dupe(u8, id),
-        .path = try gpa.dupe(u8, "/bin/app"),
-        .segments = try gpa.dupe(elf.Segment, &segments_test),
-        .data = try std.mem.concat(gpa, u8, &.{ &sym, &strtab }),
-        .starts = starts,
-        .sizes = sizes,
-    };
-}
+const fixtures = @import("testing/symbols.zig");
+const table_one = fixtures.table_one;
+const received_one = fixtures.received_one;
 
 fn header_test(build_id: []const u8, strtab_bytes: u64) protocol.binary.Header {
     var sizes = std.EnumArray(protocol.binary.Section, u64).initFill(0);
@@ -532,8 +494,8 @@ test "a table the windows use outlives one that nothing uses" {
     try symbols.init(testing.allocator, .{ .binaries_max = 2 });
     defer symbols.deinit();
     const gpa = testing.allocator;
-    try symbols.binaries.put(gpa, "aa", try table_one_testing(gpa, "work"));
-    try symbols.binaries.put(gpa, "bb", try table_one_testing(gpa, "rest"));
+    try symbols.binaries.put(gpa, "aa", try table_one(gpa, "work"));
+    try symbols.binaries.put(gpa, "bb", try table_one(gpa, "rest"));
 
     // A window needs "aa": now "bb" is the least recently used.
     const regions = [_]protocol.Region{.{
@@ -545,7 +507,7 @@ test "a table the windows use outlives one that nothing uses" {
         .build_id = "aa",
     }};
     symbols.used(&regions);
-    try symbols.binaries.put(gpa, "cc", try table_one_testing(gpa, "more"));
+    try symbols.binaries.put(gpa, "cc", try table_one(gpa, "more"));
     try testing.expect(symbols.known("aa"));
     try testing.expect(!symbols.known("bb"));
 }

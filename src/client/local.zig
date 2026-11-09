@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const server_lib = @import("server");
+const protocol = @import("shared").protocol;
 const log = @import("log").scope("prof");
 
 const assert = std.debug.assert;
@@ -16,10 +17,13 @@ const windows_unbounded = 600;
 
 pub const Options = struct {
     pid: u32,
-    metrics: std.EnumSet(server_lib.Metric),
+    metrics: std.EnumSet(protocol.Metric),
     interval_ms: u32,
     /// 0: until the target exits, or Ctrl-C.
     duration_s: u32,
+    /// The target was stopped (SIGSTOP) so that none of it runs unsampled: it is continued
+    /// once sampling has started.
+    continue_target: bool = false,
 };
 
 /// Shown the profile so far every `every_ms`, on the thread that called `profile`.
@@ -30,7 +34,7 @@ pub const Live = struct {
 };
 
 pub const Result = struct {
-    reason: server_lib.RunStop,
+    reason: protocol.RunStop,
     profile: server_lib.Profile,
     /// From the run's start to its stop.
     elapsed_ms: u64,
@@ -59,6 +63,9 @@ pub fn profile(
         .duration_s = options.duration_s,
     } });
     const target = started.target.?;
+    if (options.continue_target) {
+        _ = std.os.linux.kill(@intCast(options.pid), std.os.linux.SIG.CONT);
+    }
     interrupt_arm(controller);
     try wait(gpa, server, controller, started.job, target, started_ms, live);
     interrupt_release(); // Before the wait frees what the handler stops.
@@ -105,7 +112,7 @@ pub fn processes(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     interval_ms: u32,
-) !server_lib.ProcessFrame {
+) !protocol.ProcessFrame {
     assert(interval_ms > 0);
     const backend = try Backend.create(gpa, 1);
     defer backend.destroy(gpa);
@@ -132,7 +139,7 @@ pub fn processes(
 /// Shown each new frame, on the thread that called `processes_watch`. Valid until the next.
 pub const ProcessesLive = struct {
     context: *anyopaque,
-    show: *const fn (context: *anyopaque, frame: *const server_lib.ProcessFrame) void,
+    show: *const fn (context: *anyopaque, frame: *const protocol.ProcessFrame) void,
 };
 
 /// A look every `interval_ms`, shown to `live` until Ctrl-C; not the first, which has no CPU.
@@ -240,7 +247,7 @@ fn interrupt_handle(_: std.posix.SIG) callconv(.c) void {
 }
 
 test "the windows kept cover the whole run, up to a limit" {
-    const cpu = std.EnumSet(server_lib.Metric).initOne(.cpu);
+    const cpu = std.EnumSet(protocol.Metric).initOne(.cpu);
     const base = Options{ .pid = 1, .metrics = cpu, .interval_ms = 1000, .duration_s = 10 };
     try std.testing.expectEqual(@as(u32, 12), windows_for(base));
 

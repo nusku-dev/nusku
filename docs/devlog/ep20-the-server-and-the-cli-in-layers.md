@@ -288,7 +288,31 @@ The first look now happens inside `init`, and the timer is armed right after it;
 `next()` returns that frame. The interval is whole however late the caller is. `Run` has no such
 problem: its window's duration is counted from when sampling began, not from the timer.
 
-## 6. Summary
+## 6. The machine's CPU in `nusku ps`
+
+The header used to add up the processes' `cpu_percent`, and take the number of CPUs from the
+machine running the client. Both were wrong in the same way: the sum misses processes that ended
+between two frames (a build starting hundreds of compilers loses most of its load), interrupts,
+and steal; and the client's CPUs are not the agent's once the agent runs elsewhere.
+
+The watch now sends the machine with every frame (agent §4.7 in Ep19), and the view only shows
+it:
+
+```
+nusku ps  381 processes · 8 CPUs · CPU 52.5% (user 42.9 system 9.1 iowait 1.1) · memory 10.7G
+```
+
+The machine's CPU is a share of all CPUs, as `top` shows it; a process's is still a share of one
+CPU, so a busy process can pass 100%. On the first frame the header says `CPU -`: there is no
+look before to measure against. The server's `processes` layer stores the frame as it is, so it
+needed no change.
+
+The watch e2e test checks it against the machine: no CPU on the first frame, the CPU count the
+system reports, the states adding up to busy, and room for the one core the burner keeps busy.
+In one run the machine was 472% of one CPU while the processes added up to 452%: the 20% the sum
+never saw.
+
+## 7. Summary
 
 - **The server takes events.** `Feed.take(protocol.RunEvent) → protocol.Answer` is the whole
   conversation with an agent run; `watch_take` with a watch. A network transport calls the
@@ -299,5 +323,6 @@ problem: its window's duration is counted from when sampling began, not from the
   and `interrupt` stops everything from a signal handler.
 - **The CLI in the same shape.** term, client, view, cmd; one client door with three functions.
 - **One rule, checked on all three modules.**
+- **The machine's CPU comes from the agent.** `/proc/stat`, in every watch frame; `ps` shows it.
 
 The tests went from 231 to 241 without root, all passing.

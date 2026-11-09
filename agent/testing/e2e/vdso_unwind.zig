@@ -31,7 +31,7 @@ test "stacks inside the vDSO keep their callers (needs root, skipped otherwise)"
     var round: u32 = 0;
     while (round < 5) : (round += 1) {
         timer.sleep_ms(100);
-        try ebpf.tick();
+        try ebpf.tick(testing.allocator, &target);
     }
     const windows = try ebpf.collect(testing.allocator, &target);
     const window = windows.cpu orelse return error.TestUnexpectedResult;

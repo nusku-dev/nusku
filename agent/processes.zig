@@ -1,6 +1,7 @@
 //! The processes layer: what /proc says about every process of the machine, a frame at a time.
 //! No eBPF: files only, readable by anyone. Stands on os.
-//!   proc.zig  one look at /proc: every process's stat, status, cmdline and user
+//!   proc.zig     one look at /proc: every process's stat, status, cmdline and user
+//!   machine.zig  the whole machine's CPU, from /proc/stat
 
 const std = @import("std");
 const timer = @import("os.zig").timer;
@@ -9,10 +10,13 @@ const assert = std.debug.assert;
 const Proc = @import("processes/proc.zig").Proc;
 const Entry = @import("processes/proc.zig").Entry;
 const Stat = @import("processes/stat.zig").Stat;
+const MachineStat = @import("processes/machine.zig").Machine;
 
 const protocol = @import("shared").protocol;
 pub const ProcessInfo = protocol.ProcessInfo;
 pub const Frame = protocol.ProcessFrame;
+pub const Machine = protocol.Machine;
+pub const MachineCpu = protocol.MachineCpu;
 
 /// The look now and the look before, swapped each look, and the frame built from them.
 pub const Processes = struct {
@@ -49,6 +53,11 @@ pub const Processes = struct {
         const before = &processes.procs[1 - processes.now];
         try now.read(gpa);
         const interval_ns: u64 = if (processes.previous_ns) |previous| now_ns - previous else 0;
+        const first = processes.previous_ns == null;
+        const machine = Machine{
+            .cpus = now.machine.cpus,
+            .cpu = if (first) null else machine_cpu(&before.machine, &now.machine),
+        };
 
         processes.infos.clearRetainingCapacity();
         var entries = now.entries.valueIterator();
@@ -71,6 +80,7 @@ pub const Processes = struct {
             .unix_ns = timer.realtime_ns(),
             .interval_ns = interval_ns,
             .processes = processes.infos.items,
+            .machine = machine,
         };
     }
 
@@ -102,6 +112,31 @@ pub const Processes = struct {
         return @floatCast(used_s / interval_s * 100);
     }
 
+    /// The machine's CPU between two reads of /proc/stat. Null when no tick passed.
+    fn machine_cpu(before: *const MachineStat, now: *const MachineStat) ?MachineCpu {
+        const delta = now.since(before);
+        const total = delta.total();
+        if (total == 0) return null;
+        const idle = delta.idle + delta.iowait;
+        assert(idle <= total);
+        return .{
+            .busy_percent = share(total - idle, total),
+            .user_percent = share(delta.user + delta.nice, total),
+            .system_percent = share(delta.system, total),
+            .iowait_percent = share(delta.iowait, total),
+            .irq_percent = share(delta.irq + delta.softirq, total),
+            .steal_percent = share(delta.steal, total),
+        };
+    }
+
+    /// `ticks` of `total`, in percent.
+    fn share(ticks: u64, total: u64) f32 {
+        assert(total > 0);
+        assert(ticks <= total);
+        const ratio = @as(f64, @floatFromInt(ticks)) / @as(f64, @floatFromInt(total));
+        return @floatCast(ratio * 100);
+    }
+
     /// Start ticks since boot to Unix ns. Pure, so it is tested without a process.
     fn started_unix_ns(boot_unix_ns: u64, start_ticks: u64, ticks_per_s: u64) u64 {
         assert(ticks_per_s > 0);
@@ -112,6 +147,7 @@ const testing = std.testing;
 
 test {
     _ = @import("processes/proc.zig");
+    _ = @import("processes/machine.zig");
     _ = @import("processes/stat.zig");
     _ = @import("processes/statm.zig");
     _ = @import("processes/status.zig");
@@ -124,6 +160,30 @@ test "cpu_percent is per core" {
     try testing.expectApproxEqAbs(@as(f32, 50), Processes.cpu_percent(100, 150, second, 100), 0.01);
     try testing.expectApproxEqAbs(@as(f32, 200), Processes.cpu_percent(0, 200, second, 100), 0.01);
     try testing.expectEqual(@as(f32, 0), Processes.cpu_percent(7, 7, second, 100));
+}
+
+test "machine_cpu: each state a share of every CPU, idle and iowait not busy" {
+    // 2 CPUs, 1 s at 100 ticks: 200 ticks in all.
+    const before = MachineStat{ .cpus = 2 };
+    const now = MachineStat{
+        .cpus = 2,
+        .user = 60,
+        .nice = 20,
+        .system = 30,
+        .idle = 60,
+        .iowait = 10,
+        .irq = 5,
+        .softirq = 5,
+        .steal = 10,
+    };
+    const cpu = Processes.machine_cpu(&before, &now).?;
+    try testing.expectApproxEqAbs(@as(f32, 65), cpu.busy_percent, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 40), cpu.user_percent, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 15), cpu.system_percent, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 5), cpu.iowait_percent, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 5), cpu.irq_percent, 0.01);
+    try testing.expectApproxEqAbs(@as(f32, 5), cpu.steal_percent, 0.01);
+    try testing.expectEqual(@as(?MachineCpu, null), Processes.machine_cpu(&now, &now));
 }
 
 test "started_unix_ns counts ticks from the boot" {

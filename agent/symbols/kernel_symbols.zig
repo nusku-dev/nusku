@@ -96,6 +96,68 @@ pub const Reader = struct {
     }
 };
 
+/// kallsyms read on a thread of its own: some 0.8 s of the kernel's time for its 15 MB, which no
+/// loop should wait on. In the arena it is started with, and at its address until `deinit`.
+pub const Background = struct {
+    reader: Reader,
+    thread: std.Thread,
+    done: std.atomic.Value(bool),
+    /// Checked between two steps: a stop waits for one step at most.
+    cancelled: std.atomic.Value(bool),
+    /// Written by the thread before `done`.
+    failed: ?anyerror,
+
+    /// A step of the thread: about 13 ms of the kernel's time.
+    const step_bytes = 256 * 1024;
+
+    /// Null when kallsyms cannot be opened.
+    pub fn start(arena: std.mem.Allocator, text_address: u64) !?*Background {
+        const reader = (try Reader.init(arena, text_address)) orelse return null;
+        const background = try arena.create(Background);
+        background.* = .{
+            .reader = reader,
+            .thread = undefined,
+            .done = .init(false),
+            .cancelled = .init(false),
+            .failed = null,
+        };
+        errdefer background.reader.deinit();
+        background.thread = try std.Thread.spawn(.{}, thread_main, .{background});
+        return background;
+    }
+
+    /// Stops the reading if it still goes on, and waits for the thread.
+    pub fn deinit(background: *Background) void {
+        background.cancelled.store(true, .release);
+        background.thread.join();
+        background.reader.deinit();
+        background.* = undefined;
+    }
+
+    pub fn finished(background: *const Background) bool {
+        return background.done.load(.acquire);
+    }
+
+    /// Once `finished`: the symbols; null when the addresses were hidden (not root).
+    pub fn symbols(background: *const Background) !?Symbols {
+        assert(background.finished());
+        if (background.failed) |err| return err;
+        return background.reader.symbols();
+    }
+
+    fn thread_main(background: *Background) void {
+        defer background.done.store(true, .release);
+        while (!background.cancelled.load(.acquire)) {
+            const all = background.reader.step(step_bytes) catch |err| {
+                background.failed = err;
+                return;
+            };
+            if (all) return;
+        }
+        background.failed = error.Cancelled;
+    }
+};
+
 /// The code symbols of /proc/kallsyms, as distances from `text_address`, in `arena`, read in
 /// one go: for tests and tools, not the agent's loop. Null when the addresses are hidden.
 pub fn read(arena: std.mem.Allocator, text_address: u64) !?Symbols {

@@ -45,6 +45,10 @@ pub const Event = protocol.RunEvent;
 const tick_ms_max = 100;
 /// Binary events per tick: with chunks of 256 KiB, at most 1.5 MiB per 100 ms.
 const binary_steps_per_tick = 6;
+/// Ticks are this close in the first second of a run, when a program just started maps its
+/// libraries: a walk through code with no table yet is noticed, and the tables written, soon.
+const tick_ms_start = 25;
+const start_ms = 1000;
 
 const Source = enum { report_timer, tick_timer, target_exit, cancel };
 const Poll = os.poll.Poll(Source);
@@ -66,6 +70,8 @@ const Layers = struct {
         errdefer layers.ebpf.deinit(gpa);
         const binaries = options.binaries;
         try layers.symbols.init(gpa, binaries, target.pid, target.vdso_image(), target.kernel);
+        // Offered from the first tick, not the first report: the names are there sooner.
+        layers.symbols.regions_see(target.regions);
         return layers;
     }
 
@@ -80,6 +86,7 @@ const Layers = struct {
 pub const Run = struct {
     gpa: std.mem.Allocator,
     pid: u32,
+    interval_ms: u32,
     layers: *Layers,
     pidfd: PidFd,
     cancel: Cancel,
@@ -94,6 +101,8 @@ pub const Run = struct {
     stop_reason: protocol.RunStop,
     /// Binary events left in this tick.
     binary_steps: u32,
+    /// The ticks are still the close ones of the start.
+    ticks_fast: bool,
     reports: u64,
     started_ns: u64,
 
@@ -113,7 +122,7 @@ pub const Run = struct {
         // Armed only now, after the setup: the first window is a whole one.
         var report_timer = try Timer.init(options.interval_ms);
         errdefer report_timer.deinit();
-        var tick_timer = try Timer.init(@min(tick_ms_max, options.interval_ms));
+        var tick_timer = try Timer.init(@min(tick_ms_start, options.interval_ms));
         errdefer tick_timer.deinit();
 
         log.info("profiling started", .{
@@ -124,6 +133,7 @@ pub const Run = struct {
         return .{
             .gpa = gpa,
             .pid = options.pid,
+            .interval_ms = options.interval_ms,
             .layers = layers,
             .pidfd = pidfd,
             .cancel = cancel,
@@ -141,6 +151,7 @@ pub const Run = struct {
             .phase = .running,
             .stop_reason = .cancelled,
             .binary_steps = 0,
+            .ticks_fast = true,
             .reports = 0,
             .started_ns = timer.monotonic_ns(),
         };
@@ -188,8 +199,9 @@ pub const Run = struct {
         const ready = try run.poll.wait(timer.timeout_ms(run.deadline_ns));
         if (ready.contains(.tick_timer)) {
             _ = try run.tick_timer.expirations_read();
-            try run.layers.ebpf.tick();
+            try run.layers.ebpf.tick(run.gpa, &run.layers.target);
             run.binary_steps = binary_steps_per_tick;
+            try run.ticks_settle();
         }
         // Missed periods are not made up: one late report covers them.
         const due = ready.contains(.report_timer);
@@ -201,6 +213,14 @@ pub const Run = struct {
             run.phase = .closing;
         }
         return try run.report();
+    }
+
+    /// Back to the usual ticks once the start is over.
+    fn ticks_settle(run: *Run) !void {
+        if (!run.ticks_fast) return;
+        if (timer.monotonic_ns() - run.started_ns < start_ms * std.time.ns_per_ms) return;
+        run.ticks_fast = false;
+        try run.tick_timer.period_set(@min(tick_ms_max, run.interval_ms));
     }
 
     fn report(run: *Run) !Event {
@@ -218,9 +238,11 @@ pub const Run = struct {
         return .{ .report = &run.message };
     }
 
-    /// After the last report: the abort of a binary in flight, then `.stopped`.
+    /// After the last report: the rest of a binary already begun, then `.stopped`.
     fn close(run: *Run) Event {
-        if (run.layers.symbols.stop()) return .binary_abort;
+        const symbols = &run.layers.symbols;
+        symbols.stop();
+        if (symbols.step()) |event| return event_of(event);
         run.phase = .ended;
         log.info("profiling stopped", .{
             .pid = run.pid,

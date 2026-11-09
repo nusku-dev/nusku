@@ -3,6 +3,7 @@
 //!   nusku-sleep   sleeps: about 0% CPU
 //!   nusku-memory  writes 64 MiB, then sleeps: at least 64 MiB resident
 //!   nusku-short   killed and reaped after the second frame: in no frame after it
+//! And the machine's CPU, from /proc/stat, has room for the burner's core.
 //! No root needed.
 
 const std = @import("std");
@@ -79,9 +80,18 @@ const Seen = struct {
     commands_ok: bool = true,
     short_reaped: bool = false,
     short_seen_after_reap: bool = false,
+    /// The machine as the first frame and the last frame showed it, and the processes' CPU
+    /// summed in the last.
+    machine_first: ?protocol.Machine = null,
+    machine_last: protocol.Machine = .{},
+    processes_cpu_percent: f32 = 0,
 
     fn on_frame(seen: *Seen, frame: *const Frame) void {
         seen.frames += 1;
+        if (seen.machine_first == null) seen.machine_first = frame.machine;
+        seen.machine_last = frame.machine;
+        seen.processes_cpu_percent = 0;
+        for (frame.processes) |info| seen.processes_cpu_percent += info.cpu_percent orelse 0;
 
         // The test's own command line, from the same frame: what every child inherited.
         const own_pid: u32 = @intCast(linux.getpid());
@@ -174,4 +184,26 @@ test "the watch sees what known children do, and one that ends" {
     // Seen while it ran, never after it was reaped.
     try testing.expect(seen.last.get(.short) != null);
     try testing.expect(!seen.short_seen_after_reap);
+
+    try machine_check(&seen, burn.cpu_percent.?);
+}
+
+/// The machine's CPU: none on the first frame, then one that holds the burner's core.
+fn machine_check(seen: *const Seen, burn_cpu_percent: f32) !void {
+    const first = seen.machine_first.?;
+    const machine = seen.machine_last;
+    try testing.expectEqual(@as(?protocol.MachineCpu, null), first.cpu);
+    try testing.expectEqual(try std.Thread.getCpuCount(), machine.cpus);
+    const cpu = machine.cpu.?;
+    const cpus: f32 = @floatFromInt(machine.cpus);
+    std.debug.print("watch e2e: machine {d:.1}% of {d} CPUs ({d:.0}% of one), " ++
+        "processes sum {d:.0}%\n", .{
+        cpu.busy_percent, machine.cpus, cpu.busy_percent * cpus, seen.processes_cpu_percent,
+    });
+
+    const states = cpu.user_percent + cpu.system_percent + cpu.irq_percent + cpu.steal_percent;
+    try testing.expectApproxEqAbs(cpu.busy_percent, states, 0.1);
+    try testing.expect(cpu.busy_percent <= 100 and cpu.iowait_percent >= 0);
+    // The burner alone is one core; a tick of slack between the two clocks.
+    try testing.expect(cpu.busy_percent * cpus >= burn_cpu_percent - 10);
 }

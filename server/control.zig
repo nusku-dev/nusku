@@ -285,11 +285,16 @@ test "the processes watch starts, refuses a second, and stops when asked" {
     const second = controller.start(.{ .processes = .{ .interval_ms = 100 } });
     try testing.expectError(error.AlreadyWatching, second);
 
-    burn(300); // The first frame at once, then one every 100 ms.
+    // The first frame at once, then one every 100 ms: polled, as a loaded machine is slower.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const latest = try server.processes(arena.allocator());
-    try testing.expect(latest.frames >= 2);
+    var latest = try server.processes(arena.allocator());
+    var waited: u32 = 0;
+    while (latest.frames < 2) : (waited += 1) {
+        if (waited > 100) return error.NoFrames;
+        burn(50);
+        latest = try server.processes(arena.allocator());
+    }
     const own: u32 = @intCast(std.os.linux.getpid());
     const found = for (latest.frame.?.processes) |info| {
         if (info.pid == own) break true;

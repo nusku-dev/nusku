@@ -62,7 +62,7 @@ a test. Adding off-CPU sampling would have meant touching all of them.
              │                            │
    rank 0   os ◄──────────────────────────┘
 
-   shared/protocol: Message, Region, binary, kernel, ProcessFrame, Metric, RunStop, WatchStop
+   shared/protocol: Message, Region, binary, kernel, ProcessFrame, Machine, Metric, RunStop, WatchStop
 ```
 
 Every layer is a file and a folder of the same name: `target.zig` and `target/`. The file is
@@ -112,7 +112,7 @@ shared/protocol.zig            the facade
 shared/protocol/message.zig    Message (Stack, Kernel, clone), Region
 shared/protocol/binary.zig     Section, Header, Chunk: a binary sent for its symbols
 shared/protocol/kernel.zig     the kernel symbols' identity (build ID + _text) and path
-shared/protocol/processes.zig  ProcessInfo, Frame
+shared/protocol/processes.zig  ProcessInfo, Frame, Machine, MachineCpu
 ```
 
 | Name | What it is |
@@ -122,6 +122,7 @@ shared/protocol/processes.zig  ProcessInfo, Frame
 | `binary.Header` / `Chunk` / `Section` | A binary on its way to the server: its build ID, path, segments, section sizes, then chunks of its symbol sections. |
 | `kernel` | How the kernel's symbols are named: `[kernel]`, under an ID of build ID plus `_text`. |
 | `ProcessInfo`, `ProcessFrame` | One process as `ps` shows it, and every process at one moment. |
+| `Machine`, `MachineCpu` | The whole machine in a frame: its CPUs, and its CPU time split into busy, user, system, iowait, irq and steal. |
 | `Metric`, `RunStop`, `WatchStop` | What can be measured, and why a run or a watch ended. |
 
 Why here: these are a contract between two programs. The agent fills them and the server reads
@@ -339,7 +340,7 @@ and the end of a run has to close a transfer cut short. Each function is one ste
 ### 4.7 processes: every process of the machine
 
 **Responsible for:** what `/proc` says about every process: name, user, command, threads, CPU
-and memory.
+and memory; and what `/proc/stat` says about the whole machine's CPU.
 **Why:** `nusku ps` needs it, and it needs no root and no BPF: only files. It follows the same
 shape as the other layers, so it reads the same way.
 **Imports:** os.
@@ -354,6 +355,20 @@ pub const Processes = struct {
 
 `take` reads `/proc` into one of two tables and measures each process's CPU against the other,
 so the first frame has no `cpu_percent`. The frame is valid until the next `take`.
+
+Each look also reads the first line of `/proc/stat`: the time every CPU together spent in each
+state since boot. The frame's `machine` is how much of it each state got since the look before,
+in `machine.zig`:
+
+```
+busy%   = (Δtotal − Δidle − Δiowait) / Δtotal × 100     // 100: every CPU busy
+user%   = (Δuser + Δnice) / Δtotal × 100                  // and system, iowait, irq, steal
+```
+
+Adding up the processes' `cpu_percent` is not the same number. It misses the processes that
+ended between two looks, the first look of a new one, and the time no process owns: interrupts,
+and what a hypervisor takes. `/proc/stat` counts all of it. It also says how many CPUs there are,
+so the client never has to guess the agent's machine from its own.
 
 ## 5. The parent: putting the layers together
 

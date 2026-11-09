@@ -40,12 +40,19 @@ pub const Windows = struct {
     cpu: ?CpuWindow = null,
 };
 
+/// The least time between two refreshes a tick makes: JIT code is always in no mapping, and
+/// must not make the agent read the target's maps every tick.
+const refresh_gap_ns_min = 500 * std.time.ns_per_ms;
+
 pub const Ebpf = struct {
     unwind: Unwind,
     unwind_maps: UnwindMaps,
     cpu: ?CpuCollector,
     window_start_monotonic_ns: u64,
     window_start_unix_ns: u64,
+    /// `unknown_code` at the last refresh, and when it was.
+    unknown_seen: u64,
+    refreshed_ns: u64,
 
     /// Loads the programs and starts measuring `target`. Needs root, or CAP_BPF and
     /// CAP_PERFMON. Must stay at its address until `deinit`: the collectors point into it.
@@ -64,6 +71,8 @@ pub const Ebpf = struct {
         };
 
         ebpf.cpu = null;
+        ebpf.unknown_seen = 0;
+        ebpf.refreshed_ns = 0; // The first refresh a tick asks for comes at once.
         try ebpf.unwind.init(gpa, target.vdso_image());
         errdefer ebpf.unwind.deinit(gpa);
         try ebpf.unwind_maps.init();
@@ -93,9 +102,27 @@ pub const Ebpf = struct {
     }
 
     /// Drains the kernel's buffers, so they do not fill up between two windows. Cheap when they
-    /// are empty: call it at a steady pace.
-    pub fn tick(ebpf: *Ebpf) !void {
-        if (ebpf.cpu) |*cpu| try cpu.tick();
+    /// are empty: call it at a steady pace. When walks stopped at code the kernel has no
+    /// mapping for, the target mapped new code (libc just after exec, a dlopen): its regions
+    /// and tables are refreshed now, not at the next window, so its stacks stay whole.
+    pub fn tick(ebpf: *Ebpf, gpa: std.mem.Allocator, target: *Target) !void {
+        const cpu = &(ebpf.cpu orelse return);
+        try cpu.tick();
+
+        const unknown = try cpu.unknown_code();
+        if (unknown == ebpf.unknown_seen) return;
+        const now_ns = os.timer.monotonic_ns();
+        if (now_ns - ebpf.refreshed_ns < refresh_gap_ns_min) return;
+        ebpf.unknown_seen = unknown;
+        try ebpf.refresh(gpa, target);
+    }
+
+    /// The target's regions read again, and its tables written if they changed.
+    fn refresh(ebpf: *Ebpf, gpa: std.mem.Allocator, target: *Target) !void {
+        ebpf.refreshed_ns = os.timer.monotonic_ns();
+        if (!try target.refresh()) return;
+        try ebpf.unwind.sync(gpa, target.pid, target.regions);
+        try ebpf.unwind_maps.write(target.pid, ebpf.unwind.tables());
     }
 
     /// What was measured since the last window, or since `init`. Refreshes the target's regions
@@ -107,10 +134,7 @@ pub const Ebpf = struct {
 
         if (ebpf.cpu) |*cpu| try cpu.generation_advance();
         // Also the grace time between the generation's advance and its drain.
-        if (try target.refresh()) {
-            try ebpf.unwind.sync(gpa, target.pid, target.regions);
-            try ebpf.unwind_maps.write(target.pid, ebpf.unwind.tables());
-        }
+        try ebpf.refresh(gpa, target);
         var windows = Windows{
             .start_unix_ns = ebpf.window_start_unix_ns,
             .duration_ns = now_monotonic_ns - ebpf.window_start_monotonic_ns,
@@ -174,7 +198,7 @@ test "this process: one window per collect, with deep stacks (needs root, skippe
     defer ebpf.deinit(testing.allocator);
 
     child_process.cpu_burn(300);
-    try ebpf.tick();
+    try ebpf.tick(testing.allocator, &target);
     const first = try ebpf.collect(testing.allocator, &target);
     const first_cpu = first.cpu orelse return error.TestUnexpectedResult;
     const first_end = first.start_unix_ns + first.duration_ns;

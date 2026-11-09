@@ -12,6 +12,7 @@ const Statm = @import("statm.zig").Statm;
 const Status = @import("status.zig").Status;
 const Users = @import("users.zig").Users;
 const CmdLine = @import("cmdline.zig").CmdLine;
+const Machine = @import("machine.zig").Machine;
 
 pub const Entry = struct {
     stat: Stat,
@@ -28,11 +29,14 @@ pub const Proc = struct {
     entries: std.AutoHashMapUnmanaged(u32, Entry) = .empty,
     /// The names that `Entry.user` points into: kept as long as the entries are.
     users: Users = .{},
+    /// The whole machine's CPU, read just before the processes.
+    machine: Machine = .{},
 
     /// Every process now, keyed by pid. Allocates only when there are more processes than the
     /// map has room for.
     pub fn read(proc: *Proc, gpa: std.mem.Allocator) !void {
         proc.entries.clearRetainingCapacity();
+        try proc.machine.read();
 
         var dir = try Directory.open("/proc");
         defer dir.deinit();

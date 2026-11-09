@@ -38,7 +38,9 @@ noinline fn hot(until_ns: u64) void {
 }
 
 noinline fn recurse(depth: u32, until_ns: u64) u64 {
-    if (depth > 1) return recurse(depth - 1, until_ns) +% 1;
+    // A real call, not a tail call: in release mode LLVM otherwise turns the recursion into a
+    // loop, and the profile rightly shows one frame instead of eight.
+    if (depth > 1) return @call(.never_tail, recurse, .{ depth - 1, until_ns }) +% 1;
     var x: u64 = 3;
     while (now_ns() < until_ns) {
         for (0..4096) |_| {

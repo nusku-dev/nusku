@@ -1,5 +1,5 @@
 # What the C app does, by design (see app.c), and so what its profile must show.
-samples   >300
+samples   >250               # a sanity floor: `rate` below is the exact check
 complete  >95            # unwound with .eh_frame, libc's included
 self  hot_leaf 50
 self  recurse  30
@@ -7,3 +7,11 @@ total cold     20
 total compare  >1        # called from inside libc's qsort: the walk goes through libc
 total run      >95
 total main     >95
+
+# The numbers: one busy thread, sampled 99 times a second.
+rate  99
+# The paths, callers included: each share hangs under the right function, and the recursion is
+# exactly 8 deep.
+path  run;hot;hot_leaf  50
+path  run;warm;recurse;recurse;recurse;recurse;recurse;recurse;recurse;recurse  30
+kernel 0 2               # the clock is read in the vDSO: no system calls

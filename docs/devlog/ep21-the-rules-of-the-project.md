@@ -24,7 +24,7 @@ It is organised by question:
 ## 1. The shape
 
 ```
-shared/   what the agent and the server both use: the protocol, ELF, files, the layer checker
+shared/   what every module uses: the protocol, ELF, files, the layer checker
 agent/    profiles a process with eBPF, watches every process; sends raw addresses
 server/   keeps the reports, names them with the binaries' symbols, answers with profiles
 src/      the nusku program: commands, views, and the client that reaches the server
@@ -46,6 +46,11 @@ Each module has one way in:
 What crosses between the agent and the server is a `shared/protocol` type, never an agent or a
 server type. The agent never imports the server; the server imports the agent only in its
 `control` layer, the local client.
+
+**A shared type is imported from `shared`, by every module, the CLI too.** No module re-exports
+it: `server.ProcessFrame` would make the CLI depend on the server for a type the server does not
+own, and hide where the type lives. The CLI writes `@import("shared").protocol.ProcessFrame`;
+it takes from `server` only what the server defines (`Profile`, `Frame`, `Controller`, ...).
 
 ## 2. The rule of the layers
 
@@ -267,7 +272,10 @@ log.warn("binary refused: too big to receive", .{ .path = header.path, .kib = ki
   measured, so a failure says how far off it was.
 - **Examples are tests.** The usage example of the agent (`testing/examples/server_feed.zig`) is
   compiled and run with every build, so it cannot go stale.
-- Test helpers live in `testing/` and may import anything; nothing else imports them.
+- **The main code stays light: test-only code lives in `testing/`.** A file's own tests sit at
+  its bottom; a helper that tests of other files need (fixtures, fake binaries, waiting for a
+  zombie) goes in the module's `testing/` folder, never in a main file, not even as a `pub fn`
+  "for testing". Test helpers may import anything; nothing but tests imports them.
 - Bounds in tests are loose enough for a loaded machine, and a test never sleeps hoping: it polls
   for the condition, with a limit.
 
@@ -321,7 +329,8 @@ facade's test block. If another layer needs it, export what it needs from the fa
 ### A new type between the agent and the server
 
 It goes in `shared/protocol/`, exported from `shared/protocol.zig`. The agent fills it, the
-server reads it; neither defines its own copy. A new event is a new field of `RunEvent` or
+server reads it, the CLI shows it; each imports it from `shared`, and none defines or
+re-exports its own copy. A new event is a new field of `RunEvent` or
 `WatchEvent`: the compiler then points at every `switch` that must handle it.
 
 ### A new query on the server
