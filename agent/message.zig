@@ -1,9 +1,9 @@
 //! What the parent sends for a window: the protocol's Message, built from the target and what
-//! ebpf measured, deep-copied, as the layers reuse their buffers for the next window.
+//! metrics measured, deep-copied, as the layers reuse their buffers for the next window.
 
 const std = @import("std");
-const target = @import("target.zig");
-const ebpf = @import("ebpf.zig");
+const target = @import("target/target.zig");
+const metrics = @import("metrics/metrics.zig");
 
 const Message = @import("shared").protocol.Message;
 
@@ -12,7 +12,7 @@ pub const Source = struct {
     pid: u32,
     regions: []const target.Region,
     kernel: target.KernelIdentity,
-    windows: *const ebpf.Windows,
+    windows: *const metrics.Windows,
 };
 
 /// The window, deep-copied into `arena`.
@@ -66,7 +66,7 @@ const regions_test = [_]target.Region{.{
     .build_id = "\xaa\xbb",
 }};
 
-const stacks_test = [_]ebpf.CpuStack{
+const stacks_test = [_]metrics.CpuStack{
     .{
         .samples = 5,
         .user = &.{ 0x1500, 0x1600 },
@@ -85,7 +85,7 @@ const stacks_test = [_]ebpf.CpuStack{
     },
 };
 
-const windows_test = ebpf.Windows{
+const windows_test = metrics.Windows{
     .start_unix_ns = 11,
     .duration_ns = 22,
     .unwind = .{},
@@ -93,7 +93,7 @@ const windows_test = ebpf.Windows{
         .sample_hz = 99,
         .samples = 7,
         .stacks = &stacks_test,
-        .stops = std.mem.zeroes(@FieldType(ebpf.CpuWindow, "stops")),
+        .stops = std.mem.zeroes(@FieldType(metrics.CpuWindow, "stops")),
         .loss = .{ .ring_full = 1, .counts_full = 2, .frames_missing = 4 },
     },
 };
@@ -149,7 +149,7 @@ test "build copies what the server needs, and owns it" {
 }
 
 test "build without the cpu metric has no stacks" {
-    const windows = ebpf.Windows{ .start_unix_ns = 1, .duration_ns = 2, .unwind = .{} };
+    const windows = metrics.Windows{ .start_unix_ns = 1, .duration_ns = 2, .unwind = .{} };
     const source = Source{ .pid = 3, .regions = &.{}, .kernel = .{}, .windows = &windows };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -9,11 +9,11 @@
 const std = @import("std");
 const linux = std.os.linux;
 const testing = std.testing;
-const process_file = @import("../../processes.zig");
+const process_file = @import("../../processes/processes.zig");
 const child_process = @import("../process.zig");
-const anonymous_memory = @import("../../os.zig").anonymous_memory;
-const timer = @import("../../os.zig").timer;
-const ProcessInfo = @import("../../processes.zig").ProcessInfo;
+const anonymous_memory = @import("../../os/os.zig").anonymous_memory;
+const timer = @import("../../os/os.zig").timer;
+const ProcessInfo = @import("../../processes/processes.zig").ProcessInfo;
 const Watch = @import("../../watch.zig").Watch;
 const protocol = @import("shared").protocol;
 

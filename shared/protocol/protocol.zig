@@ -1,12 +1,12 @@
 //! What crosses between the agent and the server.
 
-const message = @import("protocol/message.zig");
-const processes = @import("protocol/processes.zig");
+const message = @import("message.zig");
+const processes = @import("processes.zig");
 
 pub const Message = message.Message;
 pub const Region = message.Region;
-pub const binary = @import("protocol/binary.zig");
-pub const kernel = @import("protocol/kernel.zig");
+pub const binary = @import("binary.zig");
+pub const kernel = @import("kernel.zig");
 pub const ProcessInfo = processes.ProcessInfo;
 pub const ProcessFrame = processes.Frame;
 pub const Machine = processes.Machine;

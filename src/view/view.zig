@@ -4,8 +4,8 @@
 //!   processes  the table of `nusku ps`
 //! Stands on term.
 
-pub const profile = @import("view/profile.zig");
-pub const processes = @import("view/processes.zig");
+pub const profile = @import("profile.zig");
+pub const processes = @import("processes.zig");
 
 test {
     _ = profile;

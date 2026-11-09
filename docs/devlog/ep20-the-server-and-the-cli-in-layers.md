@@ -4,6 +4,9 @@ date: 2026-11-08
 
 # Ep20: The Server and the CLI, in Layers
 
+*For the server as it is now (each layer in its folder, every query and option), see Ep23,
+the server's reference. This episode is how it got there.*
+
 [Ep19](ep19-layers-a-pull-api-and-one-protocol.md) rebuilt the agent as layers, each with one
 facade, and gave it a pull API. This episode does the same to the server and to the CLI, so the
 whole project reads one way:
@@ -225,7 +228,7 @@ The CLI was nearly layered already; its commands just reached into other folders
 
 ```
 src/
-  main.zig               the entry point
+  main.zig               the entry point       (each facade below moved into its folder since)
   term.zig               colors, bars, the cursor, the terminal's size        rank 0
   client.zig + client/   how a command reaches a server: local.zig today       rank 1
   view.zig + view/       a profile's report, live view and folded stacks;      rank 1
@@ -253,6 +256,10 @@ loop now copies into a scratch arena it resets, and only the frame it returns go
 caller's arena.
 
 ## 4. One rule, three modules
+
+*Since removed: the checker and the three tests below are gone, and every facade now lives in
+its folder (`src/view/view.zig`, `server/naming/naming.zig`). The rule is kept by review; see
+Ep21 §2.*
 
 The layer test of Ep19 became a shared checker, `shared/layers.zig`. A module lists its layers
 with a rank; the checker reads every source file and fails on an import past a facade, into a

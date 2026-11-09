@@ -8,8 +8,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const cpu_wire = @import("../kernel/shared/cpu_wire.zig");
 const RingBuffer = @import("../bpf/ring_buffer.zig").RingBuffer;
-const PerfEvent = @import("../../os.zig").perf_event.PerfEvent;
-const cpus = @import("../../os.zig").cpus;
+const PerfEvent = @import("../../os/os.zig").perf_event.PerfEvent;
+const cpus = @import("../../os/os.zig").cpus;
 const UnwindMaps = @import("../unwind_maps.zig").UnwindMaps;
 const frame_cache = @import("frame_cache.zig");
 const sampler_file = @import("sampler.zig");
@@ -329,7 +329,7 @@ fn window_log(result: *const Window) void {
 
 const testing = std.testing;
 const child_process = @import("../../testing/process.zig");
-const process = @import("../../os.zig").process;
+const process = @import("../../os/os.zig").process;
 
 const Fixture = struct {
     unwind_maps: UnwindMaps,

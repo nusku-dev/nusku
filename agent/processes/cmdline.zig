@@ -1,6 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const process = @import("../os.zig").process;
+const process = @import("../os/os.zig").process;
 const File = @import("shared").File;
 
 /// The command line of a process: its arguments, separated by spaces, as `ps` shows them.

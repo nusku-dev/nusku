@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const unwind = @import("../unwind.zig");
+const unwind = @import("../unwind/unwind.zig");
 const map_file = @import("bpf/map.zig");
 const loader = @import("bpf/loader.zig");
 const libbpf = @import("bpf/libbpf.zig");
@@ -137,8 +137,8 @@ fn maps_create(maps: *std.EnumArray(MapName, Map)) libbpf.Error!void {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const os = @import("../os.zig");
-const target = @import("../target.zig");
+const os = @import("../os/os.zig");
+const target = @import("../target/target.zig");
 
 test "write puts the tables in the kernel, and nothing when nothing changed (needs root)" {
     var unwind_maps: UnwindMaps = undefined;

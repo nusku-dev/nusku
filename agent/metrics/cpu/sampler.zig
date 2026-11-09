@@ -1,4 +1,4 @@
-//! The kernel half of the CPU profiler: the sampling program (ebpf/kernel/cpu.bpf.zig) loaded
+//! The kernel half of the CPU profiler: the sampling program (metrics/kernel/cpu.bpf.zig) loaded
 //! into the kernel with its own maps, bound to the shared unwind maps.
 
 const std = @import("std");

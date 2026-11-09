@@ -9,11 +9,11 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const windows_layer = @import("windows.zig");
-const symbols_layer = @import("symbols.zig");
-const resolve = @import("naming/resolve.zig");
-const merge = @import("naming/merge.zig");
-const Lookup = @import("naming/lookup.zig").Lookup;
+const windows_layer = @import("../windows/windows.zig");
+const symbols_layer = @import("../symbols/symbols.zig");
+const resolve = @import("resolve.zig");
+const merge = @import("merge.zig");
+const Lookup = @import("lookup.zig").Lookup;
 
 pub const Frame = struct {
     /// As the agent reported it.
@@ -79,9 +79,9 @@ pub fn profile(
 }
 
 test {
-    _ = @import("naming/regions.zig");
-    _ = @import("naming/normalize.zig");
+    _ = @import("regions.zig");
+    _ = @import("normalize.zig");
     _ = resolve;
     _ = merge;
-    _ = @import("naming/lookup.zig");
+    _ = @import("lookup.zig");
 }

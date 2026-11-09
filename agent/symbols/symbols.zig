@@ -9,13 +9,13 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const target = @import("target.zig");
+const target = @import("../target/target.zig");
 const Region = target.Region;
-const binary_file = @import("symbols/binary.zig");
-const kernel_symbols = @import("symbols/kernel_symbols.zig");
+const binary_file = @import("binary.zig");
+const kernel_symbols = @import("kernel_symbols.zig");
 const KernelIdentity = target.KernelIdentity;
-const Transfer = @import("symbols/transfer.zig").Transfer;
-const log = @import("log.zig").agent;
+const Transfer = @import("transfer.zig").Transfer;
+const log = @import("../log.zig").agent;
 
 /// Build IDs remembered. Four times the unwind modules, like the registry: many mapped files
 /// never matter.
@@ -433,11 +433,11 @@ const testing = std.testing;
 test {
     _ = binary_file;
     _ = kernel_symbols;
-    _ = @import("symbols/transfer.zig");
-    _ = @import("symbols/vdso_symbols.zig");
+    _ = @import("transfer.zig");
+    _ = @import("vdso_symbols.zig");
 }
-const os = @import("os.zig");
-const process = @import("os.zig").process;
+const os = @import("../os/os.zig");
+const process = @import("../os/os.zig").process;
 
 fn region_test(path: []const u8, id: ?[]const u8) Region {
     return .{

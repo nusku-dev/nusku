@@ -17,7 +17,7 @@
 const std = @import("std");
 const server = @import("server");
 const protocol = @import("shared").protocol;
-const term = @import("../term.zig");
+const term = @import("../term/term.zig");
 
 const assert = std.debug.assert;
 const Style = term.Style;

@@ -7,9 +7,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const protocol = @import("shared").protocol;
-const os = @import("os.zig");
-const store_file = @import("windows/store.zig");
-const log = @import("log.zig").server;
+const os = @import("../os/os.zig");
+const store_file = @import("store.zig");
+const log = @import("../log.zig").server;
 
 const Message = protocol.Message;
 
@@ -141,7 +141,7 @@ const testing = std.testing;
 
 test {
     _ = store_file;
-    _ = @import("windows/window_ring.zig");
+    _ = @import("window_ring.zig");
 }
 
 fn window_test(start_unix_ns: u64, samples: u64) Message {

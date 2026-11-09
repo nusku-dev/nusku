@@ -24,7 +24,7 @@ It is organised by question:
 ## 1. The shape
 
 ```
-shared/   what every module uses: the protocol, ELF, files, the layer checker
+shared/   what every module uses: the protocol, ELF, files
 agent/    profiles a process with eBPF, watches every process; sends raw addresses
 server/   keeps the reports, names them with the binaries' symbols, answers with profiles
 src/      the nusku program: commands, views, and the client that reaches the server
@@ -40,7 +40,7 @@ Each module has one way in:
 |---|---|
 | `agent` | `Run` (init · deinit · next · stop · binary_want) and `Watch` (init · deinit · next · stop) |
 | `server` | `Server` (feed · watch_take · profile · processes), `Feed` (take · close), `Controller` (start · stop · wait · running · interrupt) |
-| `shared` | `protocol`, `elf`, `File`, `directory`, `layers` |
+| `shared` | `protocol`, `elf`, `File`, `directory` |
 | `src` | the `nusku` program |
 
 What crosses between the agent and the server is a `shared/protocol` type, never an agent or a
@@ -54,13 +54,28 @@ it takes from `server` only what the server defines (`Profile`, `Frame`, `Contro
 
 ## 2. The rule of the layers
 
-Every module is made of layers. A layer is **a file and a folder of the same name**:
-`target.zig` and `target/`. A small layer is just the file.
+Every module is made of layers. A layer is **a folder, and its facade is the file of the same
+name in it**: `target/target.zig`. A module's root holds only its parent files (`root.zig`,
+`run.zig`, `main.zig`, ...) and `log.zig`; every layer, `os` too, is a folder.
 
-- **The file is the facade.** It is the only file of the layer another layer may import. It
-  holds the layer's **one struct**, with `init`, `deinit` and one to four functions that do the
-  job, plus the few types that struct takes and gives. A layer of small unrelated tools (`os`,
-  `elf`, `term`, `view`) is a **toolbox**: its facade lists the tools by name instead.
+```
+agent/
+  root.zig  run.zig  watch.zig  message.zig  log.zig     the parent
+  os/os.zig            os/process.zig  os/timer.zig ...   a toolbox
+  target/target.zig    target/regions.zig ...             a layer
+  metrics/metrics.zig  metrics/cpu/ metrics/bpf/ ...      a layer
+```
+
+**A layer is named for what it gives, not for how it works.** `metrics` gives the metrics; that
+it does so with BPF programs is its own business, and a name like `ebpf` would make a reader
+wonder why it imports `unwind`. Read the name next to its imports: if one looks out of place,
+the name is wrong, not the import.
+
+- **The file named like its folder is the facade.** It is the only file of the layer another
+  layer may import. It holds the layer's **one struct**, with `init`, `deinit` and one to four
+  functions that do the job, plus the few types that struct takes and gives. A layer of small
+  unrelated tools (`os`, `elf`, `term`, `view`) is a **toolbox**: its facade lists the tools by
+  name instead.
 - **The folder is the layer's own business.** Its files import each other freely.
 - **A layer imports only layers below it**, and only their facades.
 - **Layers of the same rank never import each other.** They do not know the others exist.
@@ -77,20 +92,20 @@ The ranks today, bottom up:
 | 1 `elf` | 1 `windows`, `symbols`, `processes` | 1 `client`, `view` |
 | 2 `target` | 2 `naming` | 2 `cmd` |
 | 3 `unwind` | 3 `server` | parent: `main.zig` |
-| 4 `ebpf`, `symbols`, `processes` | 4 `control` | |
+| 4 `metrics`, `symbols`, `processes` | 4 `control` | |
 | parent: `run`, `watch`, `message`, `root` | parent: `root.zig` | |
 
-**The rule is a test.** `shared/layers.zig` reads every source file of a module and fails on an
-import past a facade, into a layer beside, or into one above, naming the line. Each module has a
-test listing its ranks: `agent/testing/layers.zig`, `server/testing/layers.zig`,
-`src/testing/layers.zig`. A new layer is one line there.
+**The rule is kept by review, not by a test.** An import reads as a path, so it shows what it
+crosses: `@import("../target/target.zig")` is a facade; `@import("../target/regions.zig")` from
+another layer goes past one, and `@import("../symbols/symbols.zig")` from `metrics/` reaches
+beside. Look at the imports of every file you touch.
 
 When the rule seems to get in the way, it is usually saying something true:
 
 - *Two layers beside each other need the same thing:* that thing is a layer below both. (The ELF
   reader was in `unwind/` and `symbols/` borrowed it; it became `elf`.)
 - *A layer needs something from a layer beside it:* the parent should pass it. (`Symbols` gets
-  the vDSO image from the `Target` the parent hands it, not from `ebpf`.)
+  the vDSO image from the `Target` the parent hands it, not from `metrics`.)
 - *A test needs another layer's insides:* use the facade. (A test needing this process's regions
   calls `Target.init(gpa, current_pid)`.)
 
@@ -101,7 +116,7 @@ When the rule seems to get in the way, it is usually saying something true:
 - `init` checks everything it can **before** allocating or loading anything, and refuses a bad
   option with an error named after it: `InvalidPid`, `InvalidInterval`, `NoMetrics`.
 - `init` returns the value (`Run.init(gpa, options) !Run`) when the struct may move. It takes a
-  pointer (`ebpf.init(gpa, …) !void`) when something points into it (a thread, a collector,
+  pointer (`metrics.init(gpa, …) !void`) when something points into it (a thread, a collector,
   a ring reader); its doc says it must stay at its address until `deinit`.
 - `deinit` never fails, frees in the reverse order of `init`, and ends with `x.* = undefined`.
 - Every step of `init` that holds something is followed by its `errdefer`.
@@ -302,14 +317,14 @@ cd testing && make check  profile the C, Go and Zig apps and check their known p
 
 ### A new metric (off-CPU, memory, …)
 
-All in the `ebpf` layer; nothing below it changes.
+All in the `metrics` layer; nothing below it changes.
 
-1. A folder `agent/ebpf/offcpu/`: its program in `agent/ebpf/kernel/offcpu.bpf.zig` (added in
+1. A folder `agent/metrics/offcpu/`: its program in `agent/metrics/kernel/offcpu.bpf.zig` (added in
    `agent/build.zig` with `add_kernel_program`), its collector with `init`, `deinit`, `start`,
-   `tick`, `collect`, like `ebpf/cpu/collector.zig`. A walking program binds the unwind maps
+   `tick`, `collect`, like `metrics/cpu/collector.zig`. A walking program binds the unwind maps
    (`UnwindMaps.bindings()`).
-2. In `ebpf.zig`: a field `offcpu: ?OffcpuCollector`, a line in `init`, `deinit`, `tick` and
-   `collect`, and a field `offcpu: ?OffcpuWindow` in `Windows`. Remove it from the
+2. In `metrics/metrics.zig`: a field `offcpu: ?OffcpuCollector`, a line in `init`, `deinit`,
+   `tick` and `collect`, and a field `offcpu: ?OffcpuWindow` in `Windows`. Remove it from the
    `MetricNotImplemented` list.
 3. In `shared/protocol`: what a message carries for it.
 4. In `agent/message.zig`: the window into the message.
@@ -322,13 +337,13 @@ facade's test block. If another layer needs it, export what it needs from the fa
 
 ### A new layer
 
-1. `name.zig` with the struct and its header, and `name/` if it has more than one file.
+1. A folder `name/` with `name/name.zig`: the struct and its header. Its other files beside it.
 2. Pick its rank: the highest rank of what it imports, plus one. Check it imports nothing beside.
-3. A line in the module's `testing/layers.zig`, and in the root's layer list and test block.
+3. A line in the root's layer list and test block.
 
 ### A new type between the agent and the server
 
-It goes in `shared/protocol/`, exported from `shared/protocol.zig`. The agent fills it, the
+It goes in `shared/protocol/`, exported from `shared/protocol/protocol.zig`. The agent fills it, the
 server reads it, the CLI shows it; each imports it from `shared`, and none defines or
 re-exports its own copy. A new event is a new field of `RunEvent` or
 `WatchEvent`: the compiler then points at every `switch` that must handle it.
@@ -341,9 +356,9 @@ reads, like `naming`.
 
 ### A new command
 
-A file in `src/cmd/` with its `cli.Command`, listed in `cmd.zig`'s subcommands and test block. It
-reads its flags (`cmd/flags.zig` for the shared ones), asks `client.zig`, and prints through a
-view; a new view goes in `src/view/`, exported from `view.zig`.
+A file in `src/cmd/` with its `cli.Command`, listed in `cmd/cmd.zig`'s subcommands and test
+block. It reads its flags (`cmd/flags.zig` for the shared ones), asks `client/client.zig`, and
+prints through a view; a new view goes in `src/view/`, exported from `view/view.zig`.
 
 ### A remote transport (gRPC)
 
@@ -354,7 +369,7 @@ Nothing in the agent or the server's layers changes:
 - **Server side:** a receiver that opens a `Feed` per agent run and calls `feed.take(event)`,
   sending the answer back; `watch_take` for a watch. It is a layer beside `control`.
 - **CLI side:** `src/client/remote.zig` with the same three functions as `local.zig`, and
-  `client.zig` choosing one.
+  `client/client.zig` choosing one.
 
 ## 10. The checklist
 
@@ -362,7 +377,8 @@ Before calling something done:
 
 - [ ] `zig build test` passes; `sudo zig build test` too, if it touches the agent or a root test.
 - [ ] `zig fmt --check` is clean; no line over 100 columns, no function over 70 lines.
-- [ ] The layer tests pass: no import past a facade, beside, or above.
+- [ ] Every import you added reaches a facade (`name/name.zig`) below: never past one, beside,
+  or above.
 - [ ] Every new bound is a named constant with its reason; every loop is bounded or waits.
 - [ ] Every new public declaration has a doc comment, with its lifetimes.
 - [ ] Logs follow the message style, with facts in fields, a repeated problem said once.

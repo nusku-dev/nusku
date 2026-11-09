@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
-const term = @import("../term.zig");
+const term = @import("../term/term.zig");
 
 const Style = term.Style;
 const Writer = std.Io.Writer;

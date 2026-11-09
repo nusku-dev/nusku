@@ -20,7 +20,7 @@ fn run_thread(run: *agent.Run, received: *Received) void {
 
 const testing = std.testing;
 const child_process = @import("../process.zig");
-const timer = @import("../../os.zig").timer;
+const timer = @import("../../os/os.zig").timer;
 
 /// The test's "server": it only counts. `send` runs on the run's thread and the test reads the
 /// counts on its own, so they are atomic.

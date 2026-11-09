@@ -162,7 +162,7 @@ test "reads this process's own mappings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const pid = @import("../os.zig").process.current_pid();
+    const pid = @import("../os/os.zig").process.current_pid();
 
     const maps = try read(arena.allocator(), pid);
     try std.testing.expect(maps.len > 0);
@@ -186,7 +186,7 @@ test "a process that does not exist is NotFound" {
 }
 
 const testing = std.testing;
-const process = @import("../os.zig").process;
+const process = @import("../os/os.zig").process;
 
 test "mapping_open finds a mapping by its addresses when its path does not open" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

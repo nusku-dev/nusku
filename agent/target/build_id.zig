@@ -4,7 +4,7 @@
 const std = @import("std");
 const File = @import("shared").File;
 const process_maps = @import("process_maps.zig");
-const process = @import("../os.zig").process;
+const process = @import("../os/os.zig").process;
 
 /// Holds the ELF header, the program headers and the notes of practically every binary.
 pub const prefix_size = 64 * 1024;
@@ -198,7 +198,7 @@ test "malformed or unsupported input gives null, not a crash" {
 test "mappings that are not regular files have no build ID" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const me = @import("../os.zig").process.current_pid();
+    const me = @import("../os/os.zig").process.current_pid();
 
     const base = process_maps.Mapping{
         .start = 0,
@@ -228,7 +228,7 @@ test "mappings that are not regular files have no build ID" {
 test "real file: the build ID of /bin/ls" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const me = @import("../os.zig").process.current_pid();
+    const me = @import("../os/os.zig").process.current_pid();
 
     const ls = process_maps.Mapping{
         .start = 0,

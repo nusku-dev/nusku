@@ -5,9 +5,9 @@ const log = @import("log");
 const cli = @import("cli");
 const server = @import("server");
 const flags = @import("flags.zig");
-const client = @import("../client.zig");
-const term = @import("../term.zig");
-const view = @import("../view.zig").profile;
+const client = @import("../client/client.zig");
+const term = @import("../term/term.zig");
+const view = @import("../view/view.zig").profile;
 
 const slog = log.scope("prof");
 const Metric = @import("shared").protocol.Metric;

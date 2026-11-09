@@ -3,14 +3,14 @@
 //! files that they share: opening a region's file, checked to be the one mapped. Stands on os.
 
 const std = @import("std");
-const os = @import("os.zig");
-const process_maps = @import("target/process_maps.zig");
-const regions_file = @import("target/regions.zig");
-const kernel_file = @import("target/kernel.zig");
-const vdso = @import("target/vdso.zig");
-const build_id = @import("target/build_id.zig");
-const mapped_file = @import("target/mapped_file.zig");
-const log = @import("log.zig").agent;
+const os = @import("../os/os.zig");
+const process_maps = @import("process_maps.zig");
+const regions_file = @import("regions.zig");
+const kernel_file = @import("kernel.zig");
+const vdso = @import("vdso.zig");
+const build_id = @import("build_id.zig");
+const mapped_file = @import("mapped_file.zig");
+const log = @import("../log.zig").agent;
 
 pub const Region = regions_file.Region;
 pub const KernelIdentity = kernel_file.Identity;
@@ -121,7 +121,7 @@ pub const Target = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const child_process = @import("testing/process.zig");
+const child_process = @import("../testing/process.zig");
 
 fn marker() void {} // A function inside this very test binary.
 

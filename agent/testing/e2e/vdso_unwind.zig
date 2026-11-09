@@ -4,10 +4,10 @@
 
 const std = @import("std");
 const testing = std.testing;
-const Target = @import("../../target.zig").Target;
-const Ebpf = @import("../../ebpf.zig").Ebpf;
+const Target = @import("../../target/target.zig").Target;
+const Metrics = @import("../../metrics/metrics.zig").Metrics;
 const vdso = @import("../../target/vdso.zig");
-const timer = @import("../../os.zig").timer;
+const timer = @import("../../os/os.zig").timer;
 const child_process = @import("../process.zig");
 
 const Region = @import("../../target/regions.zig").Region;
@@ -23,17 +23,17 @@ test "stacks inside the vDSO keep their callers (needs root, skipped otherwise)"
 
     var target = try Target.init(testing.allocator, child);
     defer target.deinit(testing.allocator);
-    const ebpf = try testing.allocator.create(Ebpf);
-    defer testing.allocator.destroy(ebpf);
-    try ebpf.init(testing.allocator, &target, .{ .metrics = .initOne(.cpu) });
-    defer ebpf.deinit(testing.allocator);
+    const metrics = try testing.allocator.create(Metrics);
+    defer testing.allocator.destroy(metrics);
+    try metrics.init(testing.allocator, &target, .{ .metrics = .initOne(.cpu) });
+    defer metrics.deinit(testing.allocator);
 
     var round: u32 = 0;
     while (round < 5) : (round += 1) {
         timer.sleep_ms(100);
-        try ebpf.tick(testing.allocator, &target);
+        try metrics.tick(testing.allocator, &target);
     }
-    const windows = try ebpf.collect(testing.allocator, &target);
+    const windows = try metrics.collect(testing.allocator, &target);
     const window = windows.cpu orelse return error.TestUnexpectedResult;
     try testing.expect(window.samples >= 20);
     try testing.expectEqual(@as(u32, 0), windows.unwind.unavailable.get(.vdso_unknown));

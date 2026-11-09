@@ -6,8 +6,8 @@
 //! Stands on term, client and view.
 
 const cli = @import("cli");
-const prof = @import("cmd/prof.zig");
-const ps = @import("cmd/ps.zig");
+const prof = @import("prof.zig");
+const ps = @import("ps.zig");
 
 /// Read by every command: `flags.log_apply`.
 const flags: []const cli.Flag = &.{
@@ -35,5 +35,5 @@ pub const root: cli.Command = .{
 test {
     _ = prof;
     _ = ps;
-    _ = @import("cmd/flags.zig");
+    _ = @import("flags.zig");
 }

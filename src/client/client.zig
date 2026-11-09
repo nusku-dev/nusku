@@ -8,7 +8,7 @@
 //!
 //! Ctrl-C stops what runs, not the program: the result still comes back.
 
-const local = @import("client/local.zig");
+const local = @import("local.zig");
 
 pub const ProfileOptions = local.Options;
 /// Shown the profile so far, while it runs.

@@ -4,8 +4,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const linux = std.os.linux;
-const timer = @import("../os.zig").timer;
-const process = @import("../os.zig").process;
+const timer = @import("../os/os.zig").timer;
+const process = @import("../os/os.zig").process;
 const vdso = @import("../target/vdso.zig");
 const elf = @import("shared").elf;
 

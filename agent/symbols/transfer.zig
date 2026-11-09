@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const target = @import("../target.zig");
+const target = @import("../target/target.zig");
 const binary_file = @import("binary.zig");
 
 const Binary = binary_file.Binary;
@@ -72,9 +72,9 @@ pub const Transfer = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const os = @import("../os.zig");
+const os = @import("../os/os.zig");
 const Region = target.Region;
-const process = @import("../os.zig").process;
+const process = @import("../os/os.zig").process;
 
 test "a transfer gives the header, every byte in order, then the end" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

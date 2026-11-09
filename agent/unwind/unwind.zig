@@ -1,17 +1,17 @@
 //! The unwind layer: tables that say, for every instruction of the target's binaries, where its
 //! caller's frame is. Built from .eh_frame, .debug_frame and .gopclntab, once per binary; what
-//! uses them (the kernel programs, through ebpf) reads `tables`. Stands on os, elf and target.
+//! uses them (the kernel programs, through metrics) reads `tables`. Stands on os, elf and target.
 
 const std = @import("std");
 const assert = std.debug.assert;
-const elf = @import("elf.zig");
-const target = @import("target.zig");
-const registry_file = @import("unwind/registry.zig");
-const process_table = @import("unwind/process_table.zig");
-const log = @import("log.zig").agent;
+const elf = @import("../elf/elf.zig");
+const target = @import("../target/target.zig");
+const registry_file = @import("registry.zig");
+const process_table = @import("process_table.zig");
+const log = @import("../log.zig").agent;
 
 /// The tables' layout, as the kernel programs read them.
-pub const wire = @import("unwind/wire.zig");
+pub const wire = @import("wire.zig");
 /// Why a mapping has no table: the keys of `Coverage.unavailable`.
 pub const Cause = registry_file.Cause;
 
@@ -249,17 +249,17 @@ fn identity_of(region: *const Region) Identity {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const os = @import("os.zig");
+const os = @import("../os/os.zig");
 
 test {
-    _ = @import("unwind/cfi.zig");
-    _ = @import("unwind/cfi_machine.zig");
-    _ = @import("unwind/go_pclntab.zig");
-    _ = @import("unwind/module.zig");
+    _ = @import("cfi.zig");
+    _ = @import("cfi_machine.zig");
+    _ = @import("go_pclntab.zig");
+    _ = @import("module.zig");
     _ = process_table;
     _ = registry_file;
-    _ = @import("unwind/table.zig");
-    _ = @import("unwind/table_set.zig");
+    _ = @import("table.zig");
+    _ = @import("table_set.zig");
 }
 
 fn marker() void {} // A function inside this very test binary.

@@ -3,10 +3,10 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const target = @import("../target.zig");
+const target = @import("../target/target.zig");
 const shared = @import("shared");
 const Region = target.Region;
-const elf_file = @import("../elf.zig").file;
+const elf_file = @import("../elf/elf.zig").file;
 const vdso_symbols = @import("vdso_symbols.zig");
 const kernel_symbols = @import("kernel_symbols.zig");
 
@@ -190,8 +190,8 @@ fn layout_read(
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const os = @import("../os.zig");
-const process = @import("../os.zig").process;
+const os = @import("../os/os.zig");
+const process = @import("../os/os.zig").process;
 
 fn region_test(path: []const u8, id: ?[]const u8) Region {
     return .{

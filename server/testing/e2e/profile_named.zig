@@ -4,9 +4,9 @@
 const std = @import("std");
 const testing = std.testing;
 const protocol = @import("shared").protocol;
-const Server = @import("../../server.zig").Server;
-const Controller = @import("../../control.zig").Controller;
-const Frame = @import("../../naming.zig").Frame;
+const Server = @import("../../server/server.zig").Server;
+const Controller = @import("../../control/control.zig").Controller;
+const Frame = @import("../../naming/naming.zig").Frame;
 const burn = @import("../burn.zig").burn;
 
 test "a profile of this process names its functions and their callers (root)" {
@@ -37,7 +37,7 @@ test "a profile of this process names its functions and their callers (root)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     // The tables are built on the symbols' own thread: `all_built` waits for the last one.
-    const query = @import("../../windows.zig").Query{ .target = started.target.? };
+    const query = @import("../../windows/windows.zig").Query{ .target = started.target.? };
     const profile = try server.profile(arena.allocator(), query, .all_built);
 
     var burn_samples: u64 = 0;

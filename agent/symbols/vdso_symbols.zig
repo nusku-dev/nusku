@@ -3,9 +3,9 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const target = @import("../target.zig");
+const target = @import("../target/target.zig");
 const elf = @import("shared").elf;
-const eh_frame = @import("../elf.zig").eh_frame;
+const eh_frame = @import("../elf/elf.zig").eh_frame;
 
 /// The size of one Elf64_Sym.
 const sym_bytes = 24;
@@ -109,7 +109,7 @@ fn file_offset(segments: []const elf.Segment, address: u64) ?u64 {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const os = @import("../os.zig");
+const os = @import("../os/os.zig");
 
 fn name_at(strtab: []const u8, sym: []const u8) []const u8 {
     const at = std.mem.readInt(u32, sym[0..4], .little);

@@ -8,10 +8,10 @@
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
-const Cancel = @import("os.zig").cancel.Cancel;
-const timer = @import("os.zig").timer;
-const poll_file = @import("os.zig").poll;
-const Processes = @import("processes.zig").Processes;
+const Cancel = @import("os/os.zig").cancel.Cancel;
+const timer = @import("os/os.zig").timer;
+const poll_file = @import("os/os.zig").poll;
+const Processes = @import("processes/processes.zig").Processes;
 const log = @import("log.zig").agent;
 
 pub const Options = struct {

@@ -1,6 +1,6 @@
 //! A profiling run, pulled one event at a time: reports at every interval, and the target's
 //! binaries when the caller wants them. The parent of the layers: it takes what the target,
-//! ebpf and symbols give, and makes the protocol's events of it.
+//! metrics and symbols give, and makes the protocol's events of it.
 //!
 //!     var run = try Run.init(gpa, .{ .pid = pid });
 //!     defer run.deinit();
@@ -12,10 +12,10 @@
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
-const os = @import("os.zig");
-const target_layer = @import("target.zig");
-const ebpf_layer = @import("ebpf.zig");
-const symbols_layer = @import("symbols.zig");
+const os = @import("os/os.zig");
+const target_layer = @import("target/target.zig");
+const metrics_layer = @import("metrics/metrics.zig");
+const symbols_layer = @import("symbols/symbols.zig");
 const message_file = @import("message.zig");
 const log = @import("log.zig").agent;
 
@@ -24,7 +24,7 @@ const Timer = timer.Timer;
 const PidFd = os.pidfd.PidFd;
 const Cancel = os.cancel.Cancel;
 const Target = target_layer.Target;
-const Ebpf = ebpf_layer.Ebpf;
+const Metrics = metrics_layer.Metrics;
 const Symbols = symbols_layer.Symbols;
 
 pub const Options = struct {
@@ -53,11 +53,11 @@ const start_ms = 1000;
 const Source = enum { report_timer, tick_timer, target_exit, cancel };
 const Poll = os.poll.Poll(Source);
 
-/// The layers of one run, together on the heap: ebpf and symbols point into the target, and
-/// the collectors into ebpf.
+/// The layers of one run, together on the heap: metrics and symbols point into the target,
+/// and the collectors into metrics.
 const Layers = struct {
     target: Target,
-    ebpf: Ebpf,
+    metrics: Metrics,
     symbols: Symbols,
 
     fn create(gpa: std.mem.Allocator, options: Options) !*Layers {
@@ -66,8 +66,8 @@ const Layers = struct {
         layers.target = try Target.init(gpa, options.pid);
         errdefer layers.target.deinit(gpa);
         const target = &layers.target;
-        try layers.ebpf.init(gpa, target, .{ .metrics = options.metrics });
-        errdefer layers.ebpf.deinit(gpa);
+        try layers.metrics.init(gpa, target, .{ .metrics = options.metrics });
+        errdefer layers.metrics.deinit(gpa);
         const binaries = options.binaries;
         try layers.symbols.init(gpa, binaries, target.pid, target.vdso_image(), target.kernel);
         // Offered from the first tick, not the first report: the names are there sooner.
@@ -77,7 +77,7 @@ const Layers = struct {
 
     fn destroy(layers: *Layers, gpa: std.mem.Allocator) void {
         layers.symbols.deinit(gpa);
-        layers.ebpf.deinit(gpa);
+        layers.metrics.deinit(gpa);
         layers.target.deinit(gpa);
         gpa.destroy(layers);
     }
@@ -199,7 +199,7 @@ pub const Run = struct {
         const ready = try run.poll.wait(timer.timeout_ms(run.deadline_ns));
         if (ready.contains(.tick_timer)) {
             _ = try run.tick_timer.expirations_read();
-            try run.layers.ebpf.tick(run.gpa, &run.layers.target);
+            try run.layers.metrics.tick(run.gpa, &run.layers.target);
             run.binary_steps = binary_steps_per_tick;
             try run.ticks_settle();
         }
@@ -225,7 +225,7 @@ pub const Run = struct {
 
     fn report(run: *Run) !Event {
         const layers = run.layers;
-        const windows = try layers.ebpf.collect(run.gpa, &layers.target);
+        const windows = try layers.metrics.collect(run.gpa, &layers.target);
         layers.symbols.regions_see(layers.target.regions);
         _ = run.message_arena.reset(.retain_capacity);
         run.message = try message_file.build(run.message_arena.allocator(), .{

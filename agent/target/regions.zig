@@ -80,7 +80,7 @@ fn region_find(regions: []const Region, mapping: Mapping) ?*const Region {
 // ------------------------------------------------------------------------------------- tests
 
 const read = process_maps.read;
-const process = @import("../os.zig").process;
+const process = @import("../os/os.zig").process;
 
 const Location = struct {
     region: *const Region,

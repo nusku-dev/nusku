@@ -4,13 +4,13 @@
 //!   machine.zig  the whole machine's CPU, from /proc/stat
 
 const std = @import("std");
-const timer = @import("os.zig").timer;
+const timer = @import("../os/os.zig").timer;
 const assert = std.debug.assert;
 
-const Proc = @import("processes/proc.zig").Proc;
-const Entry = @import("processes/proc.zig").Entry;
-const Stat = @import("processes/stat.zig").Stat;
-const MachineStat = @import("processes/machine.zig").Machine;
+const Proc = @import("proc.zig").Proc;
+const Entry = @import("proc.zig").Entry;
+const Stat = @import("stat.zig").Stat;
+const MachineStat = @import("machine.zig").Machine;
 
 const protocol = @import("shared").protocol;
 pub const ProcessInfo = protocol.ProcessInfo;
@@ -146,13 +146,13 @@ pub const Processes = struct {
 const testing = std.testing;
 
 test {
-    _ = @import("processes/proc.zig");
-    _ = @import("processes/machine.zig");
-    _ = @import("processes/stat.zig");
-    _ = @import("processes/statm.zig");
-    _ = @import("processes/status.zig");
-    _ = @import("processes/users.zig");
-    _ = @import("processes/cmdline.zig");
+    _ = @import("proc.zig");
+    _ = @import("machine.zig");
+    _ = @import("stat.zig");
+    _ = @import("statm.zig");
+    _ = @import("status.zig");
+    _ = @import("users.zig");
+    _ = @import("cmdline.zig");
 }
 
 test "cpu_percent is per core" {

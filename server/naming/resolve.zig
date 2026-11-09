@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
-const query = @import("../naming.zig");
+const query = @import("naming.zig");
 const regions_file = @import("regions.zig");
 const normalize = @import("normalize.zig");
 

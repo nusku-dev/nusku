@@ -13,9 +13,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 const agent = @import("agent");
 const protocol = @import("shared").protocol;
-const server_layer = @import("server.zig");
-const job_file = @import("control/job.zig");
-const log = @import("log.zig").server;
+const server_layer = @import("../server/server.zig");
+const job_file = @import("job.zig");
+const log = @import("../log.zig").server;
 
 const Server = server_layer.Server;
 const Job = job_file.Job;
@@ -204,7 +204,7 @@ pub const Controller = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const burn = @import("testing/burn.zig").burn;
+const burn = @import("../testing/burn.zig").burn;
 
 /// A small server and its controller, on the heap: threads point into both.
 const Fixture = struct {

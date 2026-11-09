@@ -13,11 +13,11 @@
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
-const windows_layer = @import("windows.zig");
-const symbols_layer = @import("symbols.zig");
-const processes_layer = @import("processes.zig");
-const naming = @import("naming.zig");
-const log = @import("log.zig").server;
+const windows_layer = @import("../windows/windows.zig");
+const symbols_layer = @import("../symbols/symbols.zig");
+const processes_layer = @import("../processes/processes.zig");
+const naming = @import("../naming/naming.zig");
+const log = @import("../log.zig").server;
 
 const Windows = windows_layer.Windows;
 const Symbols = symbols_layer.Symbols;
@@ -146,7 +146,7 @@ pub const Feed = struct {
 // ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
-const table_one = @import("testing/symbols.zig").table_one;
+const table_one = @import("../testing/symbols.zig").table_one;
 const Message = protocol.Message;
 
 /// /bin/app, at 0x7000 from file offset 0x1000: the function's file offset 0x1100 is 0x7100.

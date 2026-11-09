@@ -11,13 +11,13 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const protocol = @import("shared").protocol;
-const os = @import("os.zig");
-const builder = @import("symbols/builder.zig");
-const upload_file = @import("symbols/upload.zig");
-const id_set = @import("symbols/id_set.zig");
-const Binaries = @import("symbols/binaries.zig").Binaries;
-const SymbolTable = @import("symbols/symbol_table.zig").SymbolTable;
-const log_file = @import("log.zig");
+const os = @import("../os/os.zig");
+const builder = @import("builder.zig");
+const upload_file = @import("upload.zig");
+const id_set = @import("id_set.zig");
+const Binaries = @import("binaries.zig").Binaries;
+const SymbolTable = @import("symbol_table.zig").SymbolTable;
+const log_file = @import("../log.zig");
 
 const log = log_file.server;
 const Received = builder.Received;
@@ -411,11 +411,11 @@ test {
     _ = builder;
     _ = upload_file;
     _ = id_set;
-    _ = @import("symbols/binaries.zig");
-    _ = @import("symbols/symbol_table.zig");
+    _ = @import("binaries.zig");
+    _ = @import("symbol_table.zig");
 }
 
-const fixtures = @import("testing/symbols.zig");
+const fixtures = @import("../testing/symbols.zig");
 const table_one = fixtures.table_one;
 const received_one = fixtures.received_one;
 

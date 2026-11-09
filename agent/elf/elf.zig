@@ -3,8 +3,8 @@
 //!   eh_frame  parses .eh_frame and .debug_frame into their CIEs and FDEs
 //! Stands on os only.
 
-pub const file = @import("elf/elf_file.zig");
-pub const eh_frame = @import("elf/eh_frame.zig");
+pub const file = @import("elf_file.zig");
+pub const eh_frame = @import("eh_frame.zig");
 
 test {
     _ = file;

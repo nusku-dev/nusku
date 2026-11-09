@@ -6,9 +6,9 @@
 //!     Controller  the local client: runs the agent on threads of this process, feeding the
 //!                 server (`start`, `stop`, `wait`, `running`, `interrupt`)
 //!
-//! The layers, bottom up. Each is a file, and a folder of the same name when it has more; the
-//! file is the one struct the layers above may import. A layer imports only the layers below
-//! it, never one beside it:
+//! The layers, bottom up. Each is a folder, and its facade the file of the same name in it
+//! (naming/naming.zig): the one struct the layers above may import. A layer imports only the
+//! layers below it, never one beside it:
 //!   os         Lock, Condition
 //!   windows    Windows: each target's ring of windows
 //!   symbols    Symbols: the binaries' symbol tables, their uploads and their builder
@@ -17,9 +17,9 @@
 //!   server     Server and Feed: the layers together, taking events and answering queries
 //!   control    Controller: the agent on threads, feeding the server
 
-const server_file = @import("server.zig");
-const control_file = @import("control.zig");
-const naming = @import("naming.zig");
+const server_file = @import("server/server.zig");
+const control_file = @import("control/control.zig");
+const naming = @import("naming/naming.zig");
 
 pub const Server = server_file.Server;
 pub const Options = server_file.Options;
@@ -40,14 +40,13 @@ pub const JobId = control_file.JobId;
 
 test {
     _ = @import("log.zig");
-    _ = @import("os.zig");
-    _ = @import("windows.zig");
-    _ = @import("symbols.zig");
-    _ = @import("processes.zig");
+    _ = @import("os/os.zig");
+    _ = @import("windows/windows.zig");
+    _ = @import("symbols/symbols.zig");
+    _ = @import("processes/processes.zig");
     _ = naming;
     _ = server_file;
     _ = control_file;
 
-    _ = @import("testing/layers.zig");
     _ = @import("testing/e2e/profile_named.zig");
 }

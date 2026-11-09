@@ -4,6 +4,9 @@ date: 2026-11-08
 
 # Ep19: Layers, a Pull API, and One Protocol
 
+*For the agent as it is now (each layer in its folder, `metrics`, the machine's CPU), see
+Ep22, the agent's reference. This episode is how it got there.*
+
 The profiler worked end to end in Ep18, but the code had become hard to follow. This episode is
 a redesign of the agent, and of how the server and the CLI use it. Nothing in the profile
 changed; what changed is who knows what:
@@ -52,7 +55,7 @@ a test. Adding off-CPU sampling would have meant touching all of them.
                          │  │  │         │
              ┌───────────┘  │  └─────────┼──────────────┐
              ▼              ▼            ▼              ▼
-   rank 4   ebpf          symbols      processes      (beside each other: never import)
+   rank 4   metrics       symbols      processes      (beside each other: never import)
              │  ╲           │  ╲          │
    rank 3    │   unwind     │   │         │
              │  ╱  │        │   │         │
@@ -62,23 +65,28 @@ a test. Adding off-CPU sampling would have meant touching all of them.
              │                            │
    rank 0   os ◄──────────────────────────┘
 
-   shared/protocol: Message, Region, binary, kernel, ProcessFrame, Machine, Metric, RunStop, WatchStop
+   shared/protocol: Message, Region, binary, kernel, ProcessFrame, Machine, Metric,
+                    RunStop, WatchStop
 ```
 
 Every layer is a file and a folder of the same name: `target.zig` and `target/`. The file is
 the **facade**: the layer's one struct, or for a toolbox its few tools, and the only file of the
 layer another layer may import. The folder is the layer's own business.
 
+*Since then, each facade moved into its folder (`target/target.zig`, `os/os.zig`), so a
+module's root holds only the parent; and the layer test below was removed: the rule is kept by
+review. See Ep21 §2.*
+
 ### The rules
 
 1. A file imports its own layer, the facades of layers **below** it, `log.zig`, and test
    helpers. Nothing else.
-2. Layers of the same rank never import each other: `ebpf`, `symbols` and `processes` do not
+2. Layers of the same rank never import each other: `metrics`, `symbols` and `processes` do not
    know the others exist.
 3. Only the parent (`run.zig`, `watch.zig`, `message.zig`) puts layers together.
 4. What crosses to the server is a `shared/protocol` type, never an agent type.
 
-### The rules are a test
+### The rules are a test (removed since)
 
 `agent/testing/layers.zig` reads every source file of the agent, resolves each relative
 `@import`, and checks it against the ranks:
@@ -89,7 +97,7 @@ const layers = [_]Layer{
     .{ .name = "elf", .rank = 1 },
     .{ .name = "target", .rank = 2 },
     .{ .name = "unwind", .rank = 3 },
-    .{ .name = "ebpf", .rank = 4 },
+    .{ .name = "metrics", .rank = 4 },
     .{ .name = "symbols", .rank = 4 },
     .{ .name = "processes", .rank = 4 },
 };
@@ -218,8 +226,8 @@ for (target.regions) |region| std.debug.print("{s}\n", .{region.path});
 find its caller's frame. Built from `.eh_frame`, `.debug_frame` (musl's C) and `.gopclntab`
 (Go), once per binary.
 **Why its own layer:** the tables are plain computation; only *mirroring* them into the kernel
-is BPF. Inside `ebpf/`, every future stack-walking metric (off-CPU, memory, locks) would have
-leaned on `cpu/`'s neighbourhood. As a layer below `ebpf`, each metric uses it like it uses
+is BPF. Inside `metrics/`, every future stack-walking metric (off-CPU, memory, locks) would have
+leaned on `cpu/`'s neighbourhood. As a layer below `metrics`, each metric uses it like it uses
 `target`, and its tests run without root.
 **Imports:** os, elf, target.
 
@@ -249,16 +257,21 @@ pub const Tables = struct {
 the build as the named import `unwind_wire`: a BPF module cannot import outside its folder, and
 the layout belongs to the tables, not to the program that reads them.
 
-### 4.5 ebpf: the programs in the kernel
+### 4.5 metrics: what is measured, by programs in the kernel
 
-**Responsible for:** loading the BPF programs, feeding them the unwind tables, and turning what
-they count into windows.
+*Named `metrics` when this episode was written, and renamed after: the name said how it works,
+not what it gives. It gives metrics (the `protocol.Metric` values: cpu today, offcpu and mem
+next), and it is more than BPF: it keeps the target's unwind tables in the kernel, which is why
+it imports `unwind`.*
+
+**Responsible for:** measuring the target: loading the BPF programs, feeding them the unwind
+tables, and turning what they count into windows.
 **Why:** everything that needs root and talks to the kernel's BPF is here, behind one struct.
 The parent asks for "a window", not for perf events, ring buffers and maps.
 **Imports:** os, target, unwind.
 
 ```
-ebpf/
+metrics/
   bpf/             loading objects, maps, programs, ring buffers (libbpf's system calls)
   kernel/          the programs, written in Zig, compiled for BPF and embedded
   unwind_maps.zig  the three unwind maps, written from Unwind.tables()
@@ -267,11 +280,11 @@ ebpf/
 ```
 
 ```zig
-pub const Ebpf = struct {
-    pub fn init(ebpf: *Ebpf, gpa, target: *const Target, options: Options) !void
-    pub fn deinit(ebpf: *Ebpf, gpa) void
-    pub fn tick(ebpf: *Ebpf) !void
-    pub fn collect(ebpf: *Ebpf, gpa, target: *Target) !Windows
+pub const Metrics = struct {
+    pub fn init(metrics: *Metrics, gpa, target: *const Target, options: Options) !void
+    pub fn deinit(metrics: *Metrics, gpa) void
+    pub fn tick(metrics: *Metrics) !void
+    pub fn collect(metrics: *Metrics, gpa, target: *Target) !Windows
 };
 
 pub const Windows = struct {
@@ -289,12 +302,12 @@ pub const Windows = struct {
 | `collect` | Closes the window: advances the stack generation, refreshes the target's regions (the grace time between the two), rebuilds and rewrites the unwind tables if the regions changed, and collects each metric's window. |
 | `deinit` | Stops sampling and unloads everything, in reverse order. |
 
-`UnwindMaps` (inside `ebpf/`) mirrors the tables: `write(pid, tables)` writes the rows, then
+`UnwindMaps` (inside `metrics/`) mirrors the tables: `write(pid, tables)` writes the rows, then
 the new modules, then the process entry if it changed, so the kernel never follows a reference
 to something not there yet. When nothing changed, it writes nothing.
 
-**Adding a metric** is local to this layer: a folder `ebpf/offcpu/` with its program and
-collector, a field `offcpu: ?OffcpuCollector` in `Ebpf`, a line in `init`, `tick` and
+**Adding a metric** is local to this layer: a folder `metrics/offcpu/` with its program and
+collector, a field `offcpu: ?OffcpuCollector` in `Metrics`, a line in `init`, `tick` and
 `collect`, and a field `offcpu: ?OffcpuWindow` in `Windows`. It binds the same unwind maps.
 No other layer changes, except `message.zig`, which puts the new window in the message.
 
@@ -306,7 +319,7 @@ kernel's symbols (from `/proc/kallsyms`, read a piece per step) and names for th
 functions, which only its jump stubs carry.
 **Why:** the agent sends raw addresses; the server names them. It can do that only with the
 binaries' symbols, and it should be sent each binary once, only if it does not have it.
-**Imports:** os, elf, target. Never ebpf or unwind.
+**Imports:** os, elf, target. Never metrics or unwind.
 
 ```zig
 pub const Symbols = struct {
@@ -373,19 +386,19 @@ so the client never has to guess the agent's machine from its own.
 ## 5. The parent: putting the layers together
 
 ```
-run.zig      Target + Ebpf + Symbols  →  Run's events
+run.zig      Target + Metrics + Symbols  →  Run's events
 watch.zig    Processes                →  Watch's events
-message.zig  Target + ebpf.Windows    →  protocol.Message
+message.zig  Target + metrics.Windows    →  protocol.Message
 ```
 
 The parent owns the loop, the timers and the stop, and nothing about how anything is measured.
-`Run` keeps its three layers together on the heap, because `Ebpf` and `Symbols` hold pointers
-into the `Target` (its vDSO image) and the collectors point into `Ebpf`:
+`Run` keeps its three layers together on the heap, because `Metrics` and `Symbols` hold pointers
+into the `Target` (its vDSO image) and the collectors point into `Metrics`:
 
 ```zig
 const Layers = struct {
     target: Target,
-    ebpf: Ebpf,
+    metrics: Metrics,
     symbols: Symbols,
 };
 ```
@@ -395,7 +408,7 @@ One report, through the layers:
 ```
  report timer fires
    │
-   ├─ ebpf.collect(gpa, &target)
+   ├─ metrics.collect(gpa, &target)
    │     cpu.generation_advance()
    │     target.refresh()              ── regions changed?
    │        └─ unwind.sync(...)  →  unwind_maps.write(unwind.tables())
@@ -411,7 +424,7 @@ And between reports, every tick (≤100 ms):
 
 ```
  tick timer fires
-   ├─ ebpf.tick()                 drain the kernel's buffers
+   ├─ metrics.tick()                 drain the kernel's buffers
    └─ up to 6 × symbols.step()    an offer, a header, chunks (≤ 1.5 MiB per tick), an end
 ```
 
@@ -603,7 +616,7 @@ In three steps, each green before the next:
    transfer went from calling hooks to returning one event per `step`. The server's run and
    watch became loops over `next()`, and the root shrank to six exports.
 3. **The layers.** Files moved by a script that also rewrote every relative import; then each
-   facade was written, `session.zig` split into `Target` and `Ebpf`, `unwind/tables.zig` split
+   facade was written, `session.zig` split into `Target` and `Metrics`, `unwind/tables.zig` split
    into `Unwind` and `UnwindMaps`, and the layer test went in.
 
 The tests went from 220 to 231 without root, all passing. Some are new (`Run`, `Watch`,
@@ -617,10 +630,10 @@ a new file is tested as soon as its layer imports it.
   neither.
 - **Two things to use.** `Run` and `Watch`: `init`, `next` until null, `stop` from anywhere,
   `deinit`. Every event is valid until the next `next`.
-- **Seven layers, one facade each.** `os` and `elf` are toolboxes; `Target`, `Unwind`, `Ebpf`,
+- **Seven layers, one facade each.** `os` and `elf` are toolboxes; `Target`, `Unwind`, `Metrics`,
   `Symbols` and `Processes` are one struct of a few functions each. A layer imports only the
   ones below it, never one beside it, and a test enforces it.
-- **The parent puts them together.** `run.zig` turns target, ebpf and symbols into events;
+- **The parent puts them together.** `run.zig` turns target, metrics and symbols into events;
   `message.zig` turns a window into a message.
-- **Room to grow.** A metric is a folder under `ebpf/`; another kind of symbols is a file under
+- **Room to grow.** A metric is a folder under `metrics/`; another kind of symbols is a file under
   `symbols/`; a network transport is another consumer of `next()`.

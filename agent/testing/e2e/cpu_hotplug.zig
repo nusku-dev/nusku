@@ -4,12 +4,12 @@
 
 const std = @import("std");
 const testing = std.testing;
-const UnwindMaps = @import("../../ebpf/unwind_maps.zig").UnwindMaps;
-const Collector = @import("../../ebpf/cpu/collector.zig").Collector;
-const cpus = @import("../../os.zig").cpus;
-const libbpf = @import("../../ebpf/bpf/libbpf.zig");
+const UnwindMaps = @import("../../metrics/unwind_maps.zig").UnwindMaps;
+const Collector = @import("../../metrics/cpu/collector.zig").Collector;
+const cpus = @import("../../os/os.zig").cpus;
+const libbpf = @import("../../metrics/bpf/libbpf.zig");
 const child_process = @import("../process.zig");
-const timer = @import("../../os.zig").timer;
+const timer = @import("../../os/os.zig").timer;
 
 test "a CPU that comes online during a run is sampled (opt-in: NUSKU_E2E_HOTPLUG=1, root)" {
     if (std.os.linux.geteuid() != 0) return error.SkipZigTest;

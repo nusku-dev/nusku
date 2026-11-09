@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
-const os = @import("os.zig");
+const os = @import("../os/os.zig");
 const Frame = protocol.ProcessFrame;
 const ProcessInfo = protocol.ProcessInfo;
 

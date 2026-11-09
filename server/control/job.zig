@@ -4,7 +4,7 @@
 const std = @import("std");
 const agent = @import("agent");
 const protocol = @import("shared").protocol;
-const server_layer = @import("../server.zig");
+const server_layer = @import("../server/server.zig");
 
 const Server = server_layer.Server;
 const Feed = server_layer.Feed;

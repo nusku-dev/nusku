@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const eh_frame = @import("../elf.zig").eh_frame;
+const eh_frame = @import("../elf/elf.zig").eh_frame;
 const elf = @import("shared").elf;
 const go_pclntab = @import("go_pclntab.zig");
 const table = @import("table.zig");
@@ -158,9 +158,9 @@ test "a merge keeps .eh_frame, and adds .debug_frame only where nothing else is"
     try testing.expectEqual(@as(usize, 2), none.len);
 }
 
-const target_layer = @import("../target.zig");
-const process = @import("../os.zig").process;
-const elf_file = @import("../elf.zig").file;
+const target_layer = @import("../target/target.zig");
+const process = @import("../os/os.zig").process;
+const elf_file = @import("../elf/elf.zig").file;
 const File = @import("shared").File;
 
 test "C built without unwind tables (musl's, here) gets its rows from .debug_frame" {

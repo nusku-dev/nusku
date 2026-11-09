@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Symbols = @import("../symbols.zig").Symbols;
+const Symbols = @import("../symbols/symbols.zig").Symbols;
 
 pub const Lookup = struct {
     /// Asked once per pair: its lock is held for one lookup, never for the whole query.

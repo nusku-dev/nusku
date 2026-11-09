@@ -3,9 +3,9 @@
 const std = @import("std");
 const cli = @import("cli");
 const flags = @import("flags.zig");
-const client = @import("../client.zig");
-const term = @import("../term.zig");
-const view = @import("../view.zig").processes;
+const client = @import("../client/client.zig");
+const term = @import("../term/term.zig");
+const view = @import("../view/view.zig").processes;
 const Frame = @import("shared").protocol.ProcessFrame;
 
 pub const cmd: cli.Command = .{

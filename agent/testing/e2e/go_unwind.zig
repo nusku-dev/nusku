@@ -6,14 +6,14 @@ const std = @import("std");
 const testing = std.testing;
 const go_build = @import("../go_build.zig");
 const child_process = @import("../process.zig");
-const timer = @import("../../os.zig").timer;
-const elf_file = @import("../../elf.zig").file;
+const timer = @import("../../os/os.zig").timer;
+const elf_file = @import("../../elf/elf.zig").file;
 const module = @import("../../unwind/module.zig");
 const table = @import("../../unwind/table.zig");
 const File = @import("shared").File;
-const Target = @import("../../target.zig").Target;
-const Ebpf = @import("../../ebpf.zig").Ebpf;
-const collector_file = @import("../../ebpf/cpu/collector.zig");
+const Target = @import("../../target/target.zig").Target;
+const Metrics = @import("../../metrics/metrics.zig").Metrics;
+const collector_file = @import("../../metrics/cpu/collector.zig");
 const build_id = @import("../../target/build_id.zig");
 
 const source = @embedFile("go/frameless.go");
@@ -111,17 +111,17 @@ test "a running Go program: the caller of a frameless function is found (needs r
 
     var target = try Target.init(testing.allocator, child);
     defer target.deinit(testing.allocator);
-    const ebpf = try testing.allocator.create(Ebpf);
-    defer testing.allocator.destroy(ebpf);
-    try ebpf.init(testing.allocator, &target, .{ .metrics = .initOne(.cpu) });
-    defer ebpf.deinit(testing.allocator);
+    const metrics = try testing.allocator.create(Metrics);
+    defer testing.allocator.destroy(metrics);
+    try metrics.init(testing.allocator, &target, .{ .metrics = .initOne(.cpu) });
+    defer metrics.deinit(testing.allocator);
 
     var round: u32 = 0;
     while (round < 5) : (round += 1) {
         timer.sleep_ms(100);
-        try ebpf.tick(testing.allocator, &target);
+        try metrics.tick(testing.allocator, &target);
     }
-    const windows = try ebpf.collect(testing.allocator, &target);
+    const windows = try metrics.collect(testing.allocator, &target);
     const window = windows.cpu orelse return error.TestUnexpectedResult;
 
     var leaf_samples: u64 = 0;

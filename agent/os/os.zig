@@ -2,15 +2,15 @@
 //! struct: each tool is small, and each layer above takes the few it needs. Imports nothing
 //! of the agent.
 
-pub const process = @import("os/process.zig");
-pub const timer = @import("os/timer.zig");
-pub const poll = @import("os/poll.zig");
-pub const cancel = @import("os/cancel.zig");
-pub const pidfd = @import("os/pidfd.zig");
-pub const perf_event = @import("os/perf_event.zig");
-pub const cpus = @import("os/cpus.zig");
+pub const process = @import("process.zig");
+pub const timer = @import("timer.zig");
+pub const poll = @import("poll.zig");
+pub const cancel = @import("cancel.zig");
+pub const pidfd = @import("pidfd.zig");
+pub const perf_event = @import("perf_event.zig");
+pub const cpus = @import("cpus.zig");
 pub const directory = @import("shared").directory;
-pub const anonymous_memory = @import("os/anonymous_memory.zig");
+pub const anonymous_memory = @import("anonymous_memory.zig");
 
 test {
     _ = process;
