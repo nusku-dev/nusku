@@ -1,5 +1,4 @@
-//! A binary opened to send its symbols, and that stream's types: a `Header`, then `Chunk`s.
-//! Only its headers are parsed here; the server reads the symbols.
+//! A binary opened to send its symbols.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -13,7 +12,6 @@ const kernel_symbols = @import("kernel_symbols.zig");
 const elf = shared.elf;
 const File = shared.File;
 
-/// More executable segments than this in one file is not a file we describe.
 const segments_max = 16;
 
 const stream = shared.protocol.binary;
@@ -23,13 +21,9 @@ pub const Chunk = stream.Chunk;
 
 pub const Binary = struct {
     header: Header,
-    /// Where each section starts in the file.
     starts: std.EnumArray(Section, u64),
     origin: union(enum) {
-        /// The file stays open, and chunks are read from it when asked for.
         file: File,
-        /// The vDSO has no file: its sections are in memory, in the agent's own image (which
-        /// outlives the binary) or written for it (vdso_symbols.zig). `starts` is unused.
         memory: std.EnumArray(Section, []const u8),
     },
 
@@ -41,9 +35,6 @@ pub const Binary = struct {
         binary.* = undefined;
     }
 
-    /// Reads the bytes of `section` from `offset` into `buffer`, and returns the part that is
-    /// filled: shorter than `buffer` only at the end of the section, empty past it.
-    /// `error.FileChanged` when the file got shorter since it was opened.
     pub fn read(
         binary: *const Binary,
         section: Section,
@@ -72,9 +63,7 @@ pub const Binary = struct {
     }
 };
 
-/// The binary behind `region`, its header in `arena`. `prefix` is
-/// `target.build_id_prefix_size` bytes of scratch. `image`, the agent's vDSO, must outlive
-/// the binary.
+/// `image`, the agent's vDSO, must outlive the binary.
 pub fn open(
     arena: std.mem.Allocator,
     pid: u32,
@@ -89,15 +78,12 @@ pub fn open(
     var file = try target.file_open(pid, region, prefix);
     errdefer file.deinit();
 
-    // Only the headers and the section names: the symbol sections are streamed later.
     var loaded = try elf_file.load(&file, &.{}, 0);
     defer loaded.deinit();
     const layout = try layout_read(arena, id, region.path, loaded.bytes);
     return .{ .header = layout.header, .starts = layout.starts, .origin = .{ .file = file } };
 }
 
-/// The target's vDSO is the agent's own image, if their sizes agree (see target/vdso.zig). It
-/// is read from memory: no file, no copy.
 fn open_vdso(
     arena: std.mem.Allocator,
     region: *const Region,
@@ -106,20 +92,17 @@ fn open_vdso(
     const image = image_found orelse return error.NoVdso;
     if (!image.matches(region.end - region.start)) return error.NoVdso;
     const id = image.build_id orelse return error.NoBuildId;
-    // The region's ID was given from this image (regions.vdso_mark).
     if (region.build_id) |expected| {
         if (!std.mem.eql(u8, expected, id)) return error.WrongFile;
     }
 
     var layout = try layout_read(arena, id, target.vdso_path, image.bytes);
-    // `layout_read` checked that every section lies inside the image.
     var sections = std.EnumArray(Section, []const u8).initFill(&.{});
     for (std.enums.values(Section)) |section| {
         const start: usize = @intCast(layout.starts.get(section));
         const size: usize = @intCast(layout.header.sizes.get(section));
         sections.set(section, image.bytes[start..][0..size]);
     }
-    // Its stripped symbols, written from its stubs: the code that runs gets a name.
     if (try vdso_symbols.symbols(arena, image.bytes)) |written| {
         sections.set(.symtab, written.symtab);
         sections.set(.strtab, written.strtab);
@@ -129,7 +112,7 @@ fn open_vdso(
     return .{ .header = layout.header, .starts = layout.starts, .origin = .{ .memory = sections } };
 }
 
-/// The running kernel as a binary, under `id`. The symbols must outlive it.
+/// The symbols must outlive it.
 pub fn kernel_binary(
     arena: std.mem.Allocator,
     id: []const u8,
@@ -158,7 +141,6 @@ const Layout = struct {
     starts: std.EnumArray(Section, u64),
 };
 
-/// `bytes` is an ELF file with at least its headers, as long as the file.
 fn layout_read(
     arena: std.mem.Allocator,
     id: []const u8,
@@ -179,15 +161,12 @@ fn layout_read(
     };
     for (std.enums.values(Section)) |section| {
         const found = (elf.find(bytes, section.name()) catch return error.NotElf) orelse continue;
-        // Sections that hold nothing in the file, or point outside it, count as absent.
         const content = elf.bytes_of(bytes, found) orelse continue;
         layout.header.sizes.set(section, content.len);
         layout.starts.set(section, found.offset);
     }
     return layout;
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 const os = @import("../os/os.zig");
@@ -204,7 +183,6 @@ fn region_test(path: []const u8, id: ?[]const u8) Region {
     };
 }
 
-/// A whole section, read in chunks of `chunk_bytes`.
 fn section_read_all(
     arena: std.mem.Allocator,
     binary: *const Binary,
@@ -255,11 +233,9 @@ test "the vDSO is a binary: its header, and its dynamic symbols in small chunks"
     const dynstr = try section_read_all(arena.allocator(), &binary, .dynstr, 7);
     try testing.expect(std.mem.indexOf(u8, dynstr, "__vdso_clock_gettime") != null);
 
-    // A [vdso] of another size is not the agent's own.
     var other = region;
     other.end += 4096;
     try testing.expectError(error.NoVdso, open(arena.allocator(), pid, &other, &prefix, image));
-    // Without an image of its own, the agent has nothing to send for a [vdso].
     try testing.expectError(error.NoVdso, open(arena.allocator(), pid, &region, &prefix, null));
 }
 
@@ -283,7 +259,6 @@ test "a system binary: chunks of any size give the same bytes" {
     const small = try section_read_all(arena.allocator(), &binary, .dynsym, 100);
     const large = try section_read_all(arena.allocator(), &binary, .dynsym, 1 << 20);
     try testing.expectEqualSlices(u8, small, large);
-    // Past the end there is nothing.
     var buffer: [8]u8 = undefined;
     try testing.expectEqual(@as(usize, 0), (try binary.read(.dynsym, dynsym_size, &buffer)).len);
 }

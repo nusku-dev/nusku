@@ -1,14 +1,4 @@
 //! argv -> (resolved command, positional args, flag values).
-//!
-//! Single pass over the tokens. Subcommand names are consumed while no
-//! positional has been seen yet, and flags are looked up against the command
-//! that is current at that moment. That gives cobra's behaviour:
-//!
-//!     app --verbose list --limit 5     (--verbose must be persistent on a parent)
-//!     app list --verbose --limit=5
-//!
-//! The parser never prints anything. On failure it returns an error and fills
-//! in a `Diagnostic` so the caller decides how to report it.
 
 const std = @import("std");
 const command = @import("command.zig");
@@ -28,16 +18,11 @@ pub const Error = error{
 };
 
 pub const Diagnostic = struct {
-    /// Human readable, allocated from the arena passed to `parse`.
     message: []const u8 = "",
-    /// Command that was current when the error happened.
     command: ?*const Command = null,
-    /// root .. command, for building "app list --help" style hints.
     path: []const *const Command = &.{},
 };
 
-/// Minimal environment lookup so the parser does not depend on how the
-/// process environment is obtained.
 pub const EnvLookup = struct {
     context: ?*const anyopaque = null,
     getFn: *const fn (context: ?*const anyopaque, name: []const u8) ?[]const u8,
@@ -46,7 +31,6 @@ pub const EnvLookup = struct {
         return self.getFn(self.context, name);
     }
 
-    /// Adapter for `init.environ_map` in a 0.16 `main(init: std.process.Init)`.
     pub fn fromMap(map: *const std.process.Environ.Map) EnvLookup {
         const Adapter = struct {
             fn get(context: ?*const anyopaque, name: []const u8) ?[]const u8 {
@@ -59,22 +43,18 @@ pub const EnvLookup = struct {
 };
 
 pub const Options = struct {
-    /// Used for `Flag.env`. Null disables env fallback.
     env: ?EnvLookup = null,
 };
 
 pub const Parsed = struct {
     command: *const Command,
-    /// root .. command
     path: []const *const Command,
     args: []const []const u8,
     flags: FlagValues,
-    /// `-h` / `--help` was seen. Validation is skipped in that case.
     help_requested: bool = false,
 };
 
-/// `argv` must NOT include the program name. Slices inside the result point
-/// into `argv` and into `arena`, so both must outlive the result.
+/// Slices inside the result point into `argv` and into `arena`, so both must outlive the result.
 pub fn parse(
     arena: std.mem.Allocator,
     root: *const Command,
@@ -170,8 +150,6 @@ const State = struct {
         return err;
     }
 
-    /// Local flags of the current command, plus persistent flags of every
-    /// command on the path. Local flags of ancestors are not visible.
     fn lookupLong(self: *const State, name: []const u8) ?*const Flag {
         var i = self.path.items.len;
         while (i > 0) {
@@ -215,7 +193,6 @@ const State = struct {
         try self.flags.map.put(self.arena, flag.name, .{ .value = value, .source = source });
     }
 
-    /// `inline_value` is what came after `=`, if anything.
     fn apply(self: *State, flag: *const Flag, inline_value: ?[]const u8, argv: []const []const u8, i: *usize) Error!void {
         if (inline_value) |v| return self.set(flag, v, .cli);
         if (flag.kind == .bool) return self.set(flag, "true", .cli);
@@ -237,7 +214,6 @@ const State = struct {
 
         if (self.lookupLong(name)) |f| return self.apply(f, inline_value, argv, i);
 
-        // --no-foo negates a bool flag named foo.
         if (inline_value == null and std.mem.startsWith(u8, name, "no-")) {
             if (self.lookupLong(name[3..])) |f| {
                 if (f.kind == .bool) return self.set(f, "false", .cli);
@@ -270,7 +246,6 @@ const State = struct {
                 continue;
             }
 
-            // Value flag ends the cluster: -n5, -n=5, or -n 5.
             const rest = body[k + 1 ..];
             if (rest.len > 0 and rest[0] == '=') return self.set(flag, rest[1..], .cli);
             if (rest.len > 0) return self.set(flag, rest, .cli);

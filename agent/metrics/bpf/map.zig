@@ -1,5 +1,4 @@
-//! A BPF map seen from the agent: create, update, look up, and the batch operations that read or
-//! delete many entries in one system call.
+//! A BPF map seen from the agent.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -24,13 +23,11 @@ pub const Map = struct {
     fd: i32,
     spec: Spec,
 
-    /// Creates a map in the kernel. Needs root or CAP_BPF. The kernel keeps only the first 15
-    /// bytes of `name`.
+    /// Needs root or CAP_BPF.
     pub fn create(name: [:0]const u8, spec: Spec) Error!Map {
         assert(name.len > 0);
         assert(spec.max_entries > 0);
         if (spec.is_ring_buffer()) {
-            // A ring buffer has no keys or values: `max_entries` is its size in bytes.
             assert(spec.key_size == 0);
             assert(spec.value_size == 0);
         } else {
@@ -54,10 +51,9 @@ pub const Map = struct {
     pub fn deinit(map: *Map) void {
         assert(map.fd >= 0);
         _ = std.os.linux.close(map.fd);
-        map.* = undefined; // A use after this trips over garbage in Debug builds.
+        map.* = undefined;
     }
 
-    /// For a per-CPU map, `value` holds one value for each possible CPU.
     pub fn update(map: *const Map, key: []const u8, value: []const u8) Error!void {
         assert(key.len == map.spec.key_size);
         assert(value.len >= map.spec.value_size);
@@ -66,8 +62,6 @@ pub const Map = struct {
         if (result < 0) return error_from_errno(-result);
     }
 
-    /// Returns false when the key is not in the map. For a per-CPU map, `value` receives one
-    /// value for each possible CPU.
     pub fn lookup(map: *const Map, key: []const u8, value: []u8) Error!bool {
         assert(key.len == map.spec.key_size);
         assert(value.len >= map.spec.value_size);
@@ -78,11 +72,6 @@ pub const Map = struct {
         return true;
     }
 
-    /// Copies every entry into `keys` and `values`, and returns how many there are. The buffers
-    /// hold `max_entries` entries, so one call is usually enough. The map is not changed.
-    ///
-    /// The kernel walks a hash map bucket by bucket, so entries inserted during the call may or
-    /// may not be in the result. No entry is returned twice.
     pub fn lookup_batch(map: *const Map, keys: []u8, values: []u8) Error!u32 {
         assert(keys.len == @as(u64, map.spec.key_size) * map.spec.max_entries);
         assert(values.len == @as(u64, map.spec.value_size) * map.spec.max_entries);
@@ -91,7 +80,6 @@ pub const Map = struct {
         var token_in: u32 = 0;
         var token_out: u32 = 0;
         var first = true;
-        // Every call that does not end the walk returns at least one entry.
         var calls: u32 = 0;
         while (calls <= map.spec.max_entries) : (calls += 1) {
             const capacity = map.spec.max_entries - count_total;
@@ -109,17 +97,15 @@ pub const Map = struct {
             );
             assert(count <= capacity);
             count_total += count;
-            // ENOENT ends the walk, and still comes with the entries of its last batch.
             if (result == -c.ENOENT) return count_total;
             if (result < 0) return error_from_errno(-result);
 
             first = false;
             token_in = token_out;
         }
-        unreachable; // More calls than entries: the kernel kept returning empty batches.
+        unreachable;
     }
 
-    /// Deletes the entries whose keys are in `keys`, `count` keys of `key_size` bytes.
     pub fn delete_batch(map: *const Map, keys: []const u8, count: u32) Error!void {
         assert(count <= map.spec.max_entries);
         assert(keys.len >= @as(u64, count) * map.spec.key_size);
@@ -132,7 +118,6 @@ pub const Map = struct {
     }
 };
 
-/// A map seen through its key and value types.
 pub fn TypedMap(comptime Key: type, comptime Value: type) type {
     comptime {
         plain_data_assert(Key);
@@ -143,8 +128,6 @@ pub fn TypedMap(comptime Key: type, comptime Value: type) type {
 
         const Self = @This();
 
-        /// Checks that the map's key and value sizes are those of Key and Value, which catches
-        /// the kernel program and the agent drifting apart.
         pub fn init(map: *const Map) Error!Self {
             if (map.spec.key_size != @sizeOf(Key)) return error.InvalidArgument;
             if (map.spec.value_size != @sizeOf(Value)) return error.InvalidArgument;
@@ -155,7 +138,6 @@ pub fn TypedMap(comptime Key: type, comptime Value: type) type {
             try typed.map.update(std.mem.asBytes(&key), std.mem.asBytes(value));
         }
 
-        /// Returns false when the key is not in the map.
         pub fn lookup(typed: Self, key: Key, value: *Value) Error!bool {
             return typed.map.lookup(std.mem.asBytes(&key), std.mem.asBytes(value));
         }
@@ -171,8 +153,6 @@ pub fn TypedMap(comptime Key: type, comptime Value: type) type {
     };
 }
 
-/// Copied byte for byte: integers, arrays or extern structs, without padding, which would hold
-/// garbage the kernel compares.
 fn plain_data_assert(comptime T: type) void {
     switch (@typeInfo(T)) {
         .int => {},
@@ -192,11 +172,8 @@ fn plain_data_assert(comptime T: type) void {
     }
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 
-/// Creates a map, or skips the test without the rights to.
 fn map_create_testing(spec: Spec) !Map {
     return Map.create("nusku_test", spec) catch |err| switch (err) {
         error.PermissionDenied, error.NotSupported => return error.SkipZigTest,
@@ -275,7 +252,6 @@ test "lookup_batch reads every entry and delete_batch removes the chosen ones (n
     try testing.expectEqual(@as(u32, 40), count);
     for (keys[0..count], values[0..count]) |k, v| try testing.expectEqual(@as(u64, k) * 10, v);
 
-    // Delete the even keys only.
     var even: [entries_max]u32 = undefined;
     var even_count: u32 = 0;
     for (keys[0..count]) |k| {
@@ -288,7 +264,6 @@ test "lookup_batch reads every entry and delete_batch removes the chosen ones (n
     try testing.expectEqual(@as(u32, 20), try typed.lookup_batch(&keys, &values));
     for (keys[0..20]) |k| try testing.expect(k % 2 == 1);
 
-    // An empty map reads as zero entries.
     try typed.delete_batch(keys[0..20]);
     try testing.expectEqual(@as(u32, 0), try typed.lookup_batch(&keys, &values));
 }

@@ -1,5 +1,4 @@
-//! What the parent sends for a window: the protocol's Message, built from the target and what
-//! metrics measured, deep-copied, as the layers reuse their buffers for the next window.
+//! What the parent sends for a window.
 
 const std = @import("std");
 const target = @import("target/target.zig");
@@ -7,7 +6,6 @@ const metrics = @import("metrics/metrics.zig");
 
 const Message = @import("shared").protocol.Message;
 
-/// What a message is made of.
 pub const Source = struct {
     pid: u32,
     regions: []const target.Region,
@@ -15,7 +13,6 @@ pub const Source = struct {
     windows: *const metrics.Windows,
 };
 
-/// The window, deep-copied into `arena`.
 pub fn build(arena: std.mem.Allocator, source: Source) !Message {
     const windows = source.windows;
     var message = Message{
@@ -54,8 +51,6 @@ pub fn build(arena: std.mem.Allocator, source: Source) !Message {
     message.stacks = stacks;
     return message;
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const regions_test = [_]target.Region{.{
     .start = 0x1000,
@@ -122,16 +117,14 @@ test "build copies what the server needs, and owns it" {
     try std.testing.expectEqual(@as(u32, 33), message.pid);
     try std.testing.expectEqual(@as(u32, 99), message.sample_hz);
     try std.testing.expectEqual(@as(u64, 7), message.samples);
-    try std.testing.expectEqual(@as(u64, 7), message.samples_lost); // 1 + 2 + 4
+    try std.testing.expectEqual(@as(u64, 7), message.samples_lost);
 
-    // The regions, with their build IDs, in memory the message owns.
     try std.testing.expectEqual(@as(usize, 1), message.regions.len);
     try std.testing.expectEqualStrings("/bin/app", message.regions[0].path);
     try std.testing.expectEqualSlices(u8, "\xaa\xbb", message.regions[0].build_id.?);
     try std.testing.expect(message.regions[0].path.ptr != regions[0].path.ptr);
     try std.testing.expect(message.regions[0].build_id.?.ptr != regions[0].build_id.?.ptr);
 
-    // The stacks: what the walk ended on becomes "complete", and the syscall flag survives.
     try std.testing.expectEqual(@as(usize, 2), message.stacks.len);
     try std.testing.expect(message.stacks[0].complete);
     try std.testing.expect(message.stacks[0].leaf_is_return);
@@ -142,7 +135,6 @@ test "build copies what the server needs, and owns it" {
     try std.testing.expect(!message.stacks[1].leaf_is_return);
     try std.testing.expect(message.stacks[0].user.ptr != stacks[0].user.ptr);
 
-    // The kernel, so the server can find its symbols.
     try std.testing.expectEqualStrings("6.8.0-test", message.kernel.release);
     try std.testing.expectEqualSlices(u8, "\x01\x02", message.kernel.build_id.?);
     try std.testing.expectEqual(@as(?u64, 0xffffffff81000000), message.kernel.text_address);

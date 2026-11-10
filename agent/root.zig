@@ -1,29 +1,4 @@
-//! The agent: profiles a process with eBPF, and watches the processes of the machine. Two
-//! things to use, each pulled one event at a time:
-//!
-//!     var run = try agent.Run.init(gpa, .{ .pid = pid });
-//!     defer run.deinit();
-//!     while (try run.next()) |event| switch (event) { ... };
-//!
-//!     var watch = try agent.Watch.init(gpa, .{});
-//!     defer watch.deinit();
-//!     while (try watch.next()) |event| switch (event) { ... };
-//!
-//! `stop` ends either from another thread or a signal handler. What they give is in
-//! shared/protocol.
-//!
-//! The layers, bottom up. Each is a folder, and its facade the file of the same name in it
-//! (symbols/symbols.zig): the one struct, or for a toolbox (os, elf) the few tools, that the
-//! layers above may import. A layer imports only the layers below it, never one beside it:
-//!   os         system calls: files, timers, poll, perf events, process descriptors
-//!   elf        reading ELF files: their sections, .eh_frame
-//!   target     Target: the process profiled, its regions, its kernel, its vDSO
-//!   unwind     Unwind: tables of where each frame's caller is, built from the binaries
-//!   metrics    Metrics: what is measured of the target, by kernel programs (on-CPU today)
-//!   symbols    Symbols: the binaries offered to the server, so it can name the addresses
-//!   processes  Processes: what /proc says about every process
-//! Above them, the parent: run.zig (target, metrics and symbols together) and watch.zig
-//! (processes), with message.zig making the protocol's messages.
+//! The agent: profiles a process with eBPF.
 
 const run_file = @import("run.zig");
 const watch_file = @import("watch.zig");

@@ -7,7 +7,6 @@ pub fn main(init: std.process.Init) u8 {
     const root = cmd.root;
     const arena = init.arena.allocator();
 
-    // Drop argv[0]: the framework only wants what the user typed after it.
     const raw = init.minimal.args.toSlice(arena) catch return 1;
     const argv = arena.alloc([]const u8, raw.len - 1) catch return 1;
     for (raw[1..], argv) |src, *dst| dst.* = src;
@@ -37,15 +36,8 @@ pub fn main(init: std.process.Init) u8 {
     });
 }
 
-// The layers, bottom up. Each is a folder, and its facade the file of the same name in it
-// (view/view.zig): what the layers above may import:
-//   term    the terminal: colors, bars, the cursor, its size
-//   client  how a command reaches a server: local, in this process, today
-//   view    what the commands print: a profile, the processes table
-//   cmd     the commands, `prof` and `ps`: flags in, a client's answer through a view out
 test {
     _ = @import("term/term.zig");
-    _ = @import("client/client.zig");
     _ = @import("view/view.zig");
     _ = cmd;
 }

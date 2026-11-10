@@ -1,11 +1,4 @@
-//! The naming layer: a target's windows turned into a profile. Each address is placed in its
-//! region's file, named with the symbols layer, and equal call paths are merged. An address
-//! whose table is missing keeps its address and module: a frame loses its name, nothing worse.
-//! Stands on windows and symbols.
-//!   regions.zig, normalize.zig  where an address is in its file
-//!   resolve.zig                 one window's stacks, named
-//!   lookup.zig                  a cache of names in front of the symbols
-//!   merge.zig                   equal call paths, one stack
+//! The naming layer: a target's windows turned into a profile.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -16,20 +9,16 @@ const merge = @import("merge.zig");
 const Lookup = @import("lookup.zig").Lookup;
 
 pub const Frame = struct {
-    /// As the agent reported it.
     address: u64,
     kernel: bool,
-    /// Null when it could not be named.
     function: ?[]const u8 = null,
     file: ?[]const u8 = null,
     line: ?u32 = null,
-    /// The path of the binary it is in.
     module: ?[]const u8 = null,
 };
 
 pub const SymbolStack = struct {
     samples: u64,
-    /// Innermost frame first, kernel frames before user frames.
     frames: []const Frame,
     complete: bool,
 };
@@ -38,13 +27,10 @@ pub const Profile = struct {
     sample_hz: u32,
     samples: u64,
     samples_lost: u64,
-    /// Lost over the target's life, too big to keep: their samples are not in `samples_lost`.
     windows_rejected: u64,
-    /// Most samples first.
     stacks: []const SymbolStack,
 };
 
-/// The windows, named and merged, in `arena`.
 pub fn profile(
     arena: std.mem.Allocator,
     copied: windows_layer.Copied,
@@ -54,7 +40,6 @@ pub fn profile(
     for (copied.windows) |window| stacks_count += window.stacks.len;
     const stacks = try arena.alloc(SymbolStack, stacks_count);
 
-    // On the heap: its cache is large.
     const lookup = try arena.create(Lookup);
     lookup.* = .{ .symbols = symbols };
     var result = Profile{

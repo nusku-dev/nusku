@@ -1,5 +1,4 @@
-//! One job of the controller on a thread of its own: a profiling run that feeds the server, or
-//! the processes watch. The thread points into the job, so it must not move while it runs.
+//! One job of the controller on a thread of its own.
 
 const std = @import("std");
 const agent = @import("agent");
@@ -11,7 +10,6 @@ const Feed = server_layer.Feed;
 
 pub const JobId = u64;
 
-/// Why a job ended: a profile's run, or the watch.
 pub const Done = union(enum) {
     profile: protocol.RunStop,
     processes: protocol.WatchStop,
@@ -19,16 +17,13 @@ pub const Done = union(enum) {
 
 pub const Job = struct {
     id: JobId,
-    /// The thread runs: `stop` reaches it, and `finish` must join it.
     active: bool,
     thread: std.Thread,
     work: union(enum) {
         profile: struct { run: agent.Run, feed: Feed },
         processes: agent.Watch,
     },
-    /// Written by the thread before it ends.
     result: anyerror!Done,
-    /// Set by the thread as its last act.
     finished: std.atomic.Value(bool),
 
     pub fn thread_main(job: *Job, server: *Server) void {
@@ -39,7 +34,7 @@ pub const Job = struct {
         job.finished.store(true, .release);
     }
 
-    /// Ends the job at its next wait. Safe from any thread, and from a signal handler.
+    /// Safe from any thread, and from a signal handler.
     pub fn stop(job: *const Job) void {
         switch (job.work) {
             .profile => |*profile| profile.run.stop(),
@@ -47,7 +42,6 @@ pub const Job = struct {
         }
     }
 
-    /// After the thread is joined.
     pub fn deinit(job: *Job) void {
         switch (job.work) {
             .profile => |*profile| {
@@ -60,7 +54,6 @@ pub const Job = struct {
     }
 };
 
-/// The run's events into the feed, and the feed's answers back to the run.
 fn profile_take(run: *agent.Run, feed: *Feed) !Done {
     while (try run.next()) |event| {
         switch (try feed.take(event)) {
@@ -70,7 +63,7 @@ fn profile_take(run: *agent.Run, feed: *Feed) !Done {
         }
         if (event == .stopped) return .{ .profile = event.stopped };
     }
-    unreachable; // `next` gives null only after `.stopped`.
+    unreachable;
 }
 
 fn processes_take(watch: *agent.Watch, server: *Server) !Done {

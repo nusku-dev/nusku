@@ -1,14 +1,4 @@
-//! A small Zig program whose CPU profile is known in advance, to check nusku against.
-//!
-//! Every round of 100 ms is split by the clock, not by how much work gets done, so the shares
-//! are the same on any machine:
-//!
-//!   50%  run -> hot -> hot_leaf                          a plain loop in one function
-//!   30%  run -> warm -> recurse x8                       a recursion 8 deep, spinning at the bottom
-//!   20%  run -> cold -> std.mem.sort -> compare          the stack goes through std and back
-//!
-//! Built in release mode, without frame pointers: nusku unwinds it with .eh_frame. It runs for
-//! a minute; nusku stops it sooner when it profiles it with --duration.
+//! A small Zig program whose CPU profile is known in advance.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -16,7 +6,6 @@ const linux = std.os.linux;
 const ns_per_ms = std.time.ns_per_ms;
 const seconds = 60;
 
-/// Keeps the work from being optimized away.
 var sink: u64 = 0;
 
 fn now_ns() u64 {
@@ -38,8 +27,7 @@ noinline fn hot(until_ns: u64) void {
 }
 
 noinline fn recurse(depth: u32, until_ns: u64) u64 {
-    // A real call, not a tail call: in release mode LLVM otherwise turns the recursion into a
-    // loop, and the profile rightly shows one frame instead of eight.
+    // Not a tail call: LLVM would turn the recursion into a loop.
     if (depth > 1) return @call(.never_tail, recurse, .{ depth - 1, until_ns }) +% 1;
     var x: u64 = 3;
     while (now_ns() < until_ns) {
@@ -85,5 +73,5 @@ noinline fn run(until_ns: u64) void {
 
 pub fn main() u8 {
     run(now_ns() + seconds * std.time.ns_per_s);
-    return @intFromBool(sink == 42); // Almost surely 0; reading `sink` keeps the work.
+    return @intFromBool(sink == 42);
 }

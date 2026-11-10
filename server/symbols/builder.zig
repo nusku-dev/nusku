@@ -1,6 +1,4 @@
-//! A binary between its last chunk and its symbol table. Tables are built on the server's
-//! builder thread, not the run's: a big one takes long, and the run's thread is the agent's
-//! loop.
+//! A binary between its last chunk and its symbol table.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -10,17 +8,13 @@ const SymbolTable = @import("symbol_table.zig").SymbolTable;
 const assert = std.debug.assert;
 const Section = protocol.binary.Section;
 
-/// One binary's sections, arrived whole. Owns its buffers.
 pub const Received = struct {
     id: []u8,
-    /// For the logs only.
     path: []u8,
     segments: []elf.Segment,
-    /// The sections, one after the other.
     data: []u8,
     starts: std.EnumArray(Section, usize),
     sizes: std.EnumArray(Section, usize),
-    /// Of the upload budget, given back once it is freed.
     reserved: u64 = 0,
 
     pub fn deinit(received: *Received, gpa: std.mem.Allocator) void {
@@ -31,7 +25,6 @@ pub const Received = struct {
         received.* = undefined;
     }
 
-    /// Only reads the buffers: they are still to be freed.
     pub fn build(received: *const Received, gpa: std.mem.Allocator) !SymbolTable {
         return SymbolTable.init(gpa, .{
             .segments = received.segments,
@@ -48,7 +41,6 @@ pub const Received = struct {
     }
 };
 
-/// Binaries waiting for their table, oldest first. Full, it refuses rather than grows.
 pub const Queue = struct {
     items: [items_max]Received = undefined,
     head: usize = 0,
@@ -56,7 +48,6 @@ pub const Queue = struct {
 
     pub const items_max = 32;
 
-    /// On `QueueFull`, `received` is still the caller's.
     pub fn push(queue: *Queue, received: Received) error{QueueFull}!void {
         assert(queue.count <= items_max);
         if (queue.count == items_max) return error.QueueFull;
@@ -80,7 +71,6 @@ pub const Queue = struct {
         return false;
     }
 
-    /// Frees what is still waiting.
     pub fn deinit(queue: *Queue, gpa: std.mem.Allocator) void {
         while (queue.pop()) |received| {
             var dropped = received;
@@ -89,8 +79,6 @@ pub const Queue = struct {
         queue.* = undefined;
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -118,7 +106,6 @@ test "the queue keeps its order, knows what waits in it, and refuses past its si
     try testing.expectEqualStrings("a", first.id);
     try testing.expect(!queue.has("a"));
 
-    // Fill it past the end of the array, so it wraps around.
     for (1..Queue.items_max) |_| try queue.push(try received_test(testing.allocator, "x"));
     var refused = try received_test(testing.allocator, "y");
     defer refused.deinit(testing.allocator);

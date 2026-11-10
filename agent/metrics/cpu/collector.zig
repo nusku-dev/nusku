@@ -1,8 +1,4 @@
-//! The CPU metric. Samples are counted in the kernel; a tick reads the ring buffer, and a report
-//! drains one window of counts. Nothing is allocated after init.
-//!
-//! A report is `generation_advance`, then `collect`: the caller's work in between gives the
-//! samples still counting the old generation time to finish.
+//! The CPU metric.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -27,14 +23,12 @@ pub const Stack = window.Stack;
 pub const Loss = window.Loss;
 pub const StopReason = window.StopReason;
 
-/// Per epoch: 10k distinct stacks of 48 frames, where a busy service has a few hundred.
 const cache_frames_max = 512 * 1024;
 
 const Records = RingBuffer(FrameCache, FrameCache.record_add);
 
 pub const Options = struct {
-    /// Samples per second on each CPU. 99, not 100, so sampling does not run in lockstep with
-    /// work that runs on a 10 ms timer and always land in it, or always miss it.
+    /// 99, not 100: never in lockstep with work on a 10 ms timer.
     sample_hz: u32 = 99,
 };
 
@@ -42,24 +36,17 @@ pub const Collector = struct {
     sampler: Sampler,
     cache: FrameCache,
     records: Records,
-    /// One slot per possible CPU: the event sampling it, or null while the CPU is offline.
     events: []?PerfEvent,
-    /// Which CPUs were online at the last `cpus_sync`. One per possible CPU, like `events`.
     cpus_online: []bool,
 
     sample_hz: u32,
-    /// The target: 0 before `start`.
     tgid: u32,
-    /// What the kernel stamps on every count. Advanced at every report.
     generation: u32,
-    /// Set by `generation_advance`, cleared by `collect`: the two alternate.
     generation_advanced: bool,
 
-    /// Where the drained counts land, and the window's stacks: `counts_max` each.
     count_keys: []CountKey,
     count_values: []u64,
     stacks: []window.Stack,
-    /// The counters at the previous report, to turn the run's totals into a window's.
     counters_previous: Counters,
     records_malformed_previous: u64,
 
@@ -129,7 +116,6 @@ pub const Collector = struct {
         collector.* = undefined;
     }
 
-    /// Starts sampling `tgid` on every online CPU.
     pub fn start(collector: *Collector, tgid: u32) !void {
         assert(tgid > 0);
         assert(collector.tgid == 0);
@@ -149,8 +135,6 @@ pub const Collector = struct {
         });
     }
 
-    /// Closes every perf event, so no new sample starts. Safe to call more than once. The
-    /// program and its maps stay, so the counts of the run can still be collected.
     pub fn stop(collector: *Collector) void {
         for (collector.events) |*slot| {
             if (slot.*) |*event| event.deinit();
@@ -159,17 +143,9 @@ pub const Collector = struct {
         collector.tgid = 0;
     }
 
-    /// Opens an event on every CPU that came online since the last call, and closes the events
-    /// of CPUs that went offline. Runs at start and at every report: a CPU that comes online
-    /// during a run is sampled from the next report on.
-    ///
-    /// A CPU that goes offline and comes back between two reports keeps its old event, and
-    /// whether the kernel keeps a CPU's events across that is not something the agent relies
-    /// on knowing: such a CPU may go unsampled until it goes offline at a report again.
     fn cpus_sync(collector: *Collector, moment: enum { start, report }) !void {
         assert(collector.tgid > 0);
         cpus.online_read(collector.cpus_online) catch |err| {
-            // Without the list, try every possible CPU: an offline one refuses its event.
             log.warn("cannot read the online CPUs: trying all of them", .{ .cause = err });
             @memset(collector.cpus_online, true);
         };
@@ -178,7 +154,6 @@ pub const Collector = struct {
             if (online) {
                 if (slot.* == null) {
                     slot.* = try collector.event_open(@intCast(cpu));
-                    // At start every CPU is new: only a change during the run is news.
                     if (moment == .report and slot.* != null) {
                         log.info("cpu came online: sampling it", .{ .cpu = cpu });
                     }
@@ -193,8 +168,6 @@ pub const Collector = struct {
         }
     }
 
-    /// The event sampling `cpu`, or null when it is offline after all (it went offline since
-    /// the list was read).
     fn event_open(collector: *const Collector, cpu: u32) !?PerfEvent {
         var event = PerfEvent.cpu_clock_open(cpu, collector.sample_hz) catch |err| {
             switch (err) {
@@ -216,13 +189,10 @@ pub const Collector = struct {
         return count;
     }
 
-    /// Reads the ring buffer into the frame cache, so it never fills up between reports.
     pub fn tick(collector: *Collector) !void {
         _ = try collector.records.consume();
     }
 
-    /// Walks over the run that stopped at an address in no mapping the kernel knows: the
-    /// target mapped code since its tables were written (or runs JIT code, which has none).
     pub fn unknown_code(collector: *const Collector) !u64 {
         const counters = try collector.sampler.counters_read();
         const stops = counters.stop_counts;
@@ -230,8 +200,6 @@ pub const Collector = struct {
             stops[@intFromEnum(StopReason.invalid_stack)];
     }
 
-    /// The first half of a report: from now on the kernel counts under a new generation, and
-    /// the frame cache forgets the epoch no window can need any more.
     pub fn generation_advance(collector: *Collector) !void {
         assert(!collector.generation_advanced);
         if (collector.tgid > 0) try collector.cpus_sync(.report);
@@ -244,14 +212,11 @@ pub const Collector = struct {
         collector.generation_advanced = true;
     }
 
-    /// The second half of a report: the samples counted since the previous report. The window
-    /// refers to the collector's buffers: it is valid until the next `generation_advance`.
+    /// Valid until the next `generation_advance`.
     pub fn collect(collector: *Collector) !Window {
         assert(collector.generation_advanced);
         collector.generation_advanced = false;
 
-        // Counts first, then the ring: the kernel sends a stack's record before its count, so
-        // every count drained now has its record in the ring or the cache already.
         const count = try collector.sampler.counts_drain(
             collector.count_keys,
             collector.count_values,
@@ -280,7 +245,6 @@ pub const Collector = struct {
     fn loss_since_previous(collector: *Collector, frames_missing: u64) !window.Loss {
         const counters = try collector.sampler.counters_read();
         const previous = collector.counters_previous;
-        // The kernel's counters only grow.
         assert(counters.records_dropped >= previous.records_dropped);
         assert(counters.counts_insert_failed >= previous.counts_insert_failed);
         assert(counters.walks_abandoned >= previous.walks_abandoned);
@@ -299,7 +263,6 @@ pub const Collector = struct {
     }
 };
 
-/// One line per window at debug, and a warning or an error only when samples were lost.
 fn window_log(result: *const Window) void {
     const complete = result.stops[@intFromEnum(window.StopReason.end)];
     log.debug("cpu window", .{
@@ -316,7 +279,6 @@ fn window_log(result: *const Window) void {
             .frames_missing = loss.frames_missing,
         });
     }
-    // Both mean a bug in the agent or its kernel program, not a busy machine.
     if (loss.records_malformed + loss.walks_abandoned > 0) {
         log.err("cpu sampler inconsistency: please report it", .{
             .records_malformed = loss.records_malformed,
@@ -324,8 +286,6 @@ fn window_log(result: *const Window) void {
         });
     }
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 const child_process = @import("../../testing/process.zig");
@@ -335,7 +295,6 @@ const Fixture = struct {
     unwind_maps: UnwindMaps,
     collector: Collector,
 
-    /// Skips the test without the rights to load BPF programs.
     fn init(fixture: *Fixture) !void {
         fixture.unwind_maps.init() catch |err| switch (err) {
             error.PermissionDenied, error.NotSupported => return error.SkipZigTest,
@@ -357,7 +316,6 @@ const Fixture = struct {
     }
 };
 
-/// Every window must agree with itself.
 fn window_expect_consistent(w: *const Window) !void {
     var stacks_sum: u64 = 0;
     for (w.stacks) |stack| stacks_sum += stack.samples;
@@ -405,7 +363,6 @@ test "every walk lands in exactly one window, across several (needs root, skippe
         samples_total += w.samples;
     }
     fixture.collector.stop();
-    // Two more reports: the last generation, then any sample that read it late.
     for (0..2) |_| {
         const w = try fixture.report();
         try window_expect_consistent(&w);
@@ -418,12 +375,10 @@ test "every walk lands in exactly one window, across several (needs root, skippe
         counters.stacks_repeated, counters.records_dropped,   counters.counts_insert_failed,
     });
     try testing.expect(counters.walks_completed > 100);
-    // Every walk is a repeat, a sent record, or a drop.
     try testing.expectEqual(
         counters.walks_completed,
         counters.stacks_repeated + counters.records_sent + counters.records_dropped,
     );
-    // Every counted walk is in exactly one window.
     const walks_lost = counters.records_dropped + counters.counts_insert_failed;
     try testing.expectEqual(counters.walks_completed - walks_lost, samples_total);
 }
@@ -441,7 +396,6 @@ test "without unwind tables, stacks are one frame and stop at no_mapping (needs 
     try window_expect_consistent(&w);
     try testing.expect(w.samples > 0);
 
-    // The unwind maps were never written, so nearly every walk ends at its first frame.
     const no_mapping = w.stops[@intFromEnum(window.StopReason.no_mapping)];
     try testing.expect(no_mapping * 10 >= w.samples * 9);
     try testing.expectEqual(@as(usize, 1), w.stacks[0].user.len);
@@ -453,7 +407,6 @@ test "another process is not sampled (needs root, skipped otherwise)" {
     try fixture.init();
     defer fixture.deinit();
 
-    // A child that only sleeps: the busy loop here must not be counted for it.
     const sleeper = try child_process.sleeper_spawn();
     defer child_process.child_reap(sleeper);
     try fixture.collector.start(sleeper);

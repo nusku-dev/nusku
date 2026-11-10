@@ -1,14 +1,7 @@
-// A small Go program whose CPU profile is known in advance, to check nusku against.
-//
-// Every round of 100 ms is split by the clock, not by how much work gets done, so the shares
-// are the same on any machine:
-//
+// A Go app with a known CPU profile, per 100 ms round:
 //	50%  run -> hot -> hotLeaf                         a plain loop in one function
 //	30%  run -> warm -> recurse x8                     a recursion 8 deep, spinning at the bottom
 //	20%  run -> cold -> sort.Slice -> the less closure  the stack goes through the runtime and back
-//
-// Go code has no .eh_frame: nusku unwinds it with the binary's pclntab, and names it from its
-// .symtab.
 package main
 
 import (
@@ -18,7 +11,7 @@ import (
 	"time"
 )
 
-var sink uint64 // Keeps the work from being optimized away.
+var sink uint64
 
 //go:noinline
 func hotLeaf(until time.Time) uint64 {
@@ -79,13 +72,12 @@ func run(until time.Time) {
 }
 
 func main() {
-	// Seconds to run; nusku stops it sooner when it profiles it with --duration.
 	seconds := 60
 	if len(os.Args) > 1 {
 		seconds, _ = strconv.Atoi(os.Args[1])
 	}
 	run(time.Now().Add(time.Duration(seconds) * time.Second))
-	if sink == 42 { // Almost surely not; reading sink keeps the work.
+	if sink == 42 {
 		os.Exit(1)
 	}
 }

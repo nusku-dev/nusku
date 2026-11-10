@@ -1,6 +1,4 @@
-//! One binary arriving from an agent: `begin`, `chunk`s, `end`. The header fixes every size,
-//! so the buffers are allocated once. What arrives is untrusted: anything that does not fit the
-//! header ends the upload.
+//! One binary arriving from an agent: `begin`, `chunk`s, `end`.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -16,22 +14,16 @@ const Section = protocol.binary.Section;
 const sections = std.enums.values(Section);
 
 pub const Error = error{
-    /// A chunk with no begin, or a begin during an upload.
     OutOfOrder,
-    /// Not what the header announced.
     Malformed,
-    /// Bigger than `bytes_max`.
     TooLarge,
     OutOfMemory,
 };
 
 const id_bytes_max = @import("id_set.zig").id_bytes_max;
-/// The agent sends at most 16.
 const segments_max = 64;
-/// PATH_MAX.
 const path_bytes_max = 4096;
 
-/// What an upload of `header` allocates.
 pub fn bytes_of(header: *const Header) error{TooLarge}!u64 {
     var total: u64 = 0;
     for (sections) |section| {
@@ -44,10 +36,8 @@ pub const Upload = struct {
     bytes_max: u64,
     receiving: bool,
     id: []u8,
-    /// For the logs only: never opened.
     path: []u8,
     segments: []elf.Segment,
-    /// The four sections, one after the other.
     data: []u8,
     starts: std.EnumArray(Section, usize),
     sizes: std.EnumArray(Section, usize),
@@ -72,7 +62,6 @@ pub const Upload = struct {
         upload.* = undefined;
     }
 
-    /// A begin during another upload is refused, and drops that one too.
     pub fn begin(upload: *Upload, gpa: std.mem.Allocator, header: *const Header) Error!void {
         upload.begin_checked(gpa, header) catch |err| {
             const bytes = bytes_of(header) catch std.math.maxInt(u64);
@@ -141,8 +130,6 @@ pub const Upload = struct {
         };
     }
 
-    /// The next bytes of a section: in order, with no gap, within its size. Else the upload is
-    /// dropped.
     pub fn chunk(upload: *Upload, gpa: std.mem.Allocator, part: *const Chunk) Error!void {
         if (!upload.receiving) return error.OutOfOrder;
 
@@ -170,7 +157,6 @@ pub const Upload = struct {
         upload.verify();
     }
 
-    /// Hands the buffers over once every section arrived whole. Idle after, whatever it returns.
     pub fn end(upload: *Upload, gpa: std.mem.Allocator) Error!Received {
         if (!upload.receiving) return error.OutOfOrder;
 
@@ -193,12 +179,11 @@ pub const Upload = struct {
             .starts = upload.starts,
             .sizes = upload.sizes,
         };
-        upload.receiving = false; // Handed over: `abort` must not free them.
+        upload.receiving = false;
         upload.abort(gpa);
         return received;
     }
 
-    /// Drops the upload in progress, if any.
     pub fn abort(upload: *Upload, gpa: std.mem.Allocator) void {
         if (upload.receiving) {
             gpa.free(upload.id);
@@ -214,7 +199,6 @@ pub const Upload = struct {
         upload.verify();
     }
 
-    /// An idle upload holds no buffers; a receiving one never has more than it announced.
     fn verify(upload: *const Upload) void {
         if (!upload.receiving) {
             assert(upload.id.len == 0 and upload.path.len == 0);
@@ -224,8 +208,6 @@ pub const Upload = struct {
         for (sections) |section| assert(upload.filled.get(section) <= upload.sizes.get(section));
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -239,8 +221,8 @@ fn symtab_test() [2 * 24]u8 {
     for (0..2) |i| {
         const at = i * 24;
         std.mem.writeInt(u32, out[at..][0..4], names[i], .little);
-        out[at + 4] = 0x12; // Global function.
-        std.mem.writeInt(u16, out[at + 6 ..][0..2], 1, .little); // Defined.
+        out[at + 4] = 0x12;
+        std.mem.writeInt(u16, out[at + 6 ..][0..2], 1, .little);
         std.mem.writeInt(u64, out[at + 8 ..][0..8], values[i], .little);
         std.mem.writeInt(u64, out[at + 16 ..][0..8], 0x10, .little);
     }
@@ -254,7 +236,6 @@ fn header_test(strtab_size: u64) Header {
     return .{ .build_id = "id-1", .path = "/test", .segments = &segments_test, .sizes = sizes };
 }
 
-/// Sends `bytes` as chunks of `step` bytes.
 fn send(upload: *Upload, section: Section, bytes: []const u8, step: usize) !void {
     var offset: usize = 0;
     while (offset < bytes.len) {
@@ -280,7 +261,6 @@ test "a binary in small chunks becomes a table that names its functions" {
 
     var table = try received.build(testing.allocator);
     defer table.deinit(testing.allocator);
-    // 0x401100 is at file offset 0x1000 + 0x100.
     try testing.expectEqualStrings("main", table.lookup(0x1105).?.name);
     try testing.expectEqualStrings("helper", table.lookup(0x1200).?.name);
 }
@@ -296,7 +276,6 @@ test "chunks out of order, too long, or with no begin are refused and the upload
         .bytes = &symtab,
     }));
 
-    // A gap: the first chunk starts at 5.
     try upload.begin(testing.allocator, &header_test(strtab_test.len));
     try testing.expectError(error.Malformed, upload.chunk(testing.allocator, &.{
         .section = .symtab,
@@ -305,7 +284,6 @@ test "chunks out of order, too long, or with no begin are refused and the upload
     }));
     try testing.expect(!upload.receiving);
 
-    // More bytes than the header announced.
     try upload.begin(testing.allocator, &header_test(4));
     try testing.expectError(error.Malformed, upload.chunk(testing.allocator, &.{
         .section = .strtab,
@@ -314,7 +292,6 @@ test "chunks out of order, too long, or with no begin are refused and the upload
     }));
     try testing.expect(!upload.receiving);
 
-    // An empty chunk.
     try upload.begin(testing.allocator, &header_test(4));
     try testing.expectError(error.Malformed, upload.chunk(testing.allocator, &.{
         .section = .strtab,
@@ -343,7 +320,6 @@ test "sections bigger than the budget are refused before anything is allocated" 
     try testing.expectError(error.TooLarge, upload.begin(testing.allocator, &header_big));
     try testing.expect(!upload.receiving);
 
-    // Sizes that overflow when added are refused the same way.
     var header = header_test(0);
     header.sizes.set(.symtab, std.math.maxInt(u64));
     header.sizes.set(.strtab, 2);
@@ -366,8 +342,6 @@ test "a begin in the middle of an upload is an error, and the next begin works" 
     try testing.expectError(error.Malformed, upload.begin(testing.allocator, &header));
 }
 
-/// Any sequence of calls with any headers and chunks, as a broken or hostile agent could send:
-/// nothing crashes, nothing leaks, and the upload is always consistent.
 fn upload_fuzz(_: void, smith: *testing.Smith) !void {
     var upload = Upload.init(256);
     defer upload.deinit(testing.allocator);

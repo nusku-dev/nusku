@@ -1,6 +1,4 @@
-//! The unwind layer: tables that say, for every instruction of the target's binaries, where its
-//! caller's frame is. Built from .eh_frame, .debug_frame and .gopclntab, once per binary; what
-//! uses them (the kernel programs, through metrics) reads `tables`. Stands on os, elf and target.
+//! The unwind layer.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -10,9 +8,7 @@ const registry_file = @import("registry.zig");
 const process_table = @import("process_table.zig");
 const log = @import("../log.zig").agent;
 
-/// The tables' layout, as the kernel programs read them.
 pub const wire = @import("wire.zig");
-/// Why a mapping has no table: the keys of `Coverage.unavailable`.
 pub const Cause = registry_file.Cause;
 
 const Registry = registry_file.Registry;
@@ -22,36 +18,25 @@ const ProcessEntry = wire.ProcessEntry;
 const Region = target.Region;
 const VdsoImage = target.VdsoImage;
 
-/// Every binary remembered, with a table or without. Four times the modules, because many
-/// mapped files (the vDSO, data-only libraries) never get one.
 const binaries_max = 4 * wire.modules_max;
 
-/// How well the target's code can be unwound, as of the last sync.
 pub const Coverage = struct {
-    /// Executable mappings in the target's entry.
     mappings: u32 = 0,
-    /// Executable mappings that did not fit in the entry: frames in them cannot be unwound.
     mappings_dropped: u32 = 0,
-    /// Mappings without a table, by reason. Their frames fall back to frame pointers.
     unavailable: std.EnumArray(Cause, u32) = .initFill(0),
 };
 
-/// What has been built, in the layout the kernel reads. Valid until the next `sync`.
+/// Valid until the next `sync`.
 pub const Tables = struct {
-    /// Every row, `wire.rows_max` of them: one map value.
     rows: []const wire.Row,
-    /// Only grows: a module, once there, never changes.
     modules: []const wire.Module,
-    /// The target's mappings, each with its module.
     entry: *const ProcessEntry,
     coverage: Coverage,
 };
 
 pub const Unwind = struct {
     registry: Registry,
-    /// Built by `sync`. A field rather than a local: it is 16 KiB.
     entry: ProcessEntry,
-    /// Where `sync` reads the start of a file to check its build ID.
     prefix_buffer: []u8,
     vdso_image: ?*const VdsoImage,
     coverage: Coverage,
@@ -72,7 +57,6 @@ pub const Unwind = struct {
         });
         errdefer unwind.registry.deinit(gpa);
         unwind.prefix_buffer = try gpa.alloc(u8, target.build_id_prefix_size);
-        // The rows go to the kernel whole: they have exactly the map value's size.
         assert(unwind.registry.set.rows.len == wire.rows_max);
     }
 
@@ -82,7 +66,6 @@ pub const Unwind = struct {
         unwind.* = undefined;
     }
 
-    /// Builds the tables of the binaries in `regions` met for the first time, and the entry.
     pub fn sync(unwind: *Unwind, gpa: std.mem.Allocator, pid: u32, regions: []const Region) !void {
         assert(pid > 0);
         const coverage = try entry_build(.{
@@ -107,8 +90,6 @@ pub const Unwind = struct {
     }
 };
 
-/// How much of the target can be unwound, logged when it changes: at the start, and when the
-/// target maps or unmaps code.
 fn coverage_log(coverage: *const Coverage) void {
     var without_table: u32 = 0;
     for (coverage.unavailable.values) |count| without_table += count;
@@ -126,18 +107,14 @@ fn coverage_log(coverage: *const Coverage) void {
     }
 }
 
-/// What building an entry needs besides the regions.
 const BuildContext = struct {
     gpa: std.mem.Allocator,
     registry: *Registry,
-    /// Where the start of a file is read to check its build ID.
     prefix_buffer: []u8,
     vdso_image: ?*const VdsoImage,
     pid: u32,
 };
 
-/// Fills `entry` with the target's mappings and the outcome of each one's binary, building the
-/// tables of binaries not met before.
 fn entry_build(context: BuildContext, regions: []const Region, entry: *ProcessEntry) !Coverage {
     var coverage = Coverage{};
     var builder = process_table.Builder.init(entry);
@@ -160,17 +137,14 @@ fn entry_build(context: BuildContext, regions: []const Region, entry: *ProcessEn
     return coverage;
 }
 
-/// The table of the binary behind `region`: remembered, or built now.
 fn outcome_for(context: BuildContext, region: *const Region) !Outcome {
     if (std.mem.eql(u8, region.path, target.vdso_path)) return outcome_for_vdso(context, region);
-    // Anonymous code (JIT) and the other special mappings have no file to read.
     if (region.path.len == 0) return .{ .unavailable = .unreadable };
     if (region.path[0] != '/') return .{ .unavailable = .unreadable };
 
     const identity = identity_of(region);
     if (context.registry.lookup(identity)) |known| return known;
 
-    // Not remembered when it fails: the next report checks again.
     const opened = target.file_open(context.pid, region, context.prefix_buffer);
     var file = opened catch |err| switch (err) {
         error.Unreadable => return .{ .unavailable = .unreadable },
@@ -187,7 +161,6 @@ fn outcome_for(context: BuildContext, region: *const Region) !Outcome {
         },
     };
     defer loaded.deinit();
-    // Only the headers and the unwind sections are read: this says how much that saved.
     log.debug("binary read for unwinding", .{
         .path = region.path,
         .file_kib = loaded.bytes.len / 1024,
@@ -204,7 +177,6 @@ fn outcome_for(context: BuildContext, region: *const Region) !Outcome {
     return outcome;
 }
 
-/// Logged once per binary: the registry remembers the outcome, so it is not built again.
 fn outcome_log(region: *const Region, outcome: Outcome) void {
     switch (outcome) {
         .loaded => |loaded| log.debug("unwind table ready", .{
@@ -218,13 +190,11 @@ fn outcome_log(region: *const Region, outcome: Outcome) void {
     }
 }
 
-/// The target's vDSO is the agent's own image, if their sizes agree (see target/vdso.zig).
 fn outcome_for_vdso(context: BuildContext, region: *const Region) !Outcome {
     assert(std.mem.eql(u8, region.path, target.vdso_path));
     const image = context.vdso_image orelse return .{ .unavailable = .vdso_unknown };
     if (!image.matches(region.end - region.start)) return .{ .unavailable = .vdso_unknown };
 
-    // The vDSO has no inode: without a build ID, its path names it.
     const identity: Identity = if (image.build_id) |id|
         .{ .build_id = id }
     else
@@ -246,8 +216,6 @@ fn identity_of(region: *const Region) Identity {
     return .{ .file = .{ .inode = region.inode, .path = region.path } };
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 const os = @import("../os/os.zig");
 
@@ -262,7 +230,7 @@ test {
     _ = @import("table_set.zig");
 }
 
-fn marker() void {} // A function inside this very test binary.
+fn marker() void {}
 
 const options_small_testing = Registry.Options{
     .rows_max = 1000,
@@ -270,7 +238,6 @@ const options_small_testing = Registry.Options{
     .binaries_max = 4,
 };
 
-/// What `sync` computes, without the kernel maps.
 fn entry_build_testing(
     registry: *Registry,
     entry: *ProcessEntry,
@@ -309,10 +276,8 @@ test "this process: the registry finds the table row of one of our own functions
     const address = @intFromPtr(&marker);
     const mapping = process_table.find(&entry, address) orelse return error.TestUnexpectedResult;
     try testing.expect(mapping.module != wire.module_none);
-    // The runtime address minus the mapping's bias is an address in the file's table.
     try testing.expect(registry.set.find(mapping.module, address -% mapping.bias) != null);
 
-    // A second pass has nothing new to build, and gives the same entry.
     const modules_count = registry.set.modules_count;
     var again: ProcessEntry = undefined;
     _ = try entry_build_testing(&registry, &again, regions, null);
@@ -329,7 +294,6 @@ test "this process: the vDSO gets a table, with a row for nearly every byte of i
     try registry.init(testing.allocator, options_small_testing);
     defer registry.deinit(testing.allocator);
 
-    // Only the vDSO's region: the other binaries are not this test's business.
     const region = for (regions) |*region| {
         if (std.mem.eql(u8, region.path, target.vdso_path)) break region;
     } else return error.TestUnexpectedResult;
@@ -342,7 +306,6 @@ test "this process: the vDSO gets a table, with a row for nearly every byte of i
     const mapping = entry.mappings[0];
     try testing.expect(mapping.module != wire.module_none);
 
-    // Every address of .text, as the kernel will see it, against the table.
     const shared_elf = @import("shared").elf;
     const text = (try shared_elf.find(image.bytes, ".text")) orelse
         return error.TestUnexpectedResult;
@@ -415,7 +378,7 @@ test "a file whose build ID is not the one the process mapped is refused, and no
     }};
     var entry: ProcessEntry = undefined;
     const coverage = try entry_build_testing(&registry, &entry, &regions, null);
-    if (coverage.unavailable.get(.unreadable) == 1) return error.SkipZigTest; // No /usr/bin/ls.
+    if (coverage.unavailable.get(.unreadable) == 1) return error.SkipZigTest;
     try testing.expectEqual(@as(u32, 1), coverage.unavailable.get(.wrong_file));
     try testing.expectEqual(wire.module_none, entry.mappings[0].module);
     try testing.expect(registry.lookup(.{ .build_id = &build_id_wrong }) == null);

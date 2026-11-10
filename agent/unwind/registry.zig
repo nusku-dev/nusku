@@ -1,4 +1,4 @@
-//! Every binary met, by identity, and its module or why it has none: each is parsed once per run.
+//! Every binary seen, parsed once per run, with its module or why none.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -7,55 +7,38 @@ const module_file = @import("module.zig");
 const table_set = @import("table_set.zig");
 const log = @import("../log.zig").agent;
 
-/// What makes two mappings the same binary. A build ID when the file has one; otherwise its
-/// inode and path, which is weaker (a file rewritten in place keeps both).
 pub const Identity = union(enum) {
     build_id: []const u8,
     file: struct { inode: u64, path: []const u8 },
 };
 
-/// Why a binary has no table. A walk through such a binary falls back to frame pointers.
 pub const Cause = enum {
-    /// The file has neither a .eh_frame section nor Go's .gopclntab.
     no_unwind_info,
-    /// The unwind information could not be read or converted (an unsupported Go version too).
     bad_unwind_info,
-    /// One module has more rows than a bounded search can cover.
     table_too_large,
-    /// The row array has no room left.
     table_full,
-    /// The module array has no room left.
     too_many_modules,
-    /// The registry has no room left to remember another binary.
     too_many_binaries,
-    /// The file could not be opened or read, or it is not an ELF file.
     unreadable,
-    /// The file at the mapped path is not the one the process mapped.
     wrong_file,
-    /// The target's [vdso] is not the agent's own image (a 32-bit target, for one).
     vdso_unknown,
 };
 
 pub const Outcome = union(enum) {
-    /// `delta` is the same for every mapping of the file: bias = start - offset - delta.
     loaded: struct { id: u32, delta: u64 },
     unavailable: Cause,
 };
 
-/// A build ID is at most 64 bytes in practice (find_build_id refuses more); a path is at most
-/// PATH_MAX. The key is one kind byte, then the identity.
 const key_size_max = 1 + 8 + 4096;
 
 pub const Registry = struct {
     set: table_set.TableSet,
-    /// Keys are owned. Failures are remembered too, so a file is not parsed again every window.
     known: std.StringHashMapUnmanaged(Outcome),
     binaries_max: u32,
 
     pub const Options = struct {
         rows_max: u32,
         modules_max: u32,
-        /// Every binary remembered, with a table or without. Sized at init: the map never grows.
         binaries_max: u32,
     };
 
@@ -79,16 +62,12 @@ pub const Registry = struct {
         registry.* = undefined;
     }
 
-    /// The outcome remembered for `identity`, or null for a binary not met before. Allocates
-    /// nothing: this runs for every mapping at every report.
     pub fn lookup(registry: *const Registry, identity: Identity) ?Outcome {
         var key_buffer: [key_size_max]u8 = undefined;
         const key = key_write(&key_buffer, identity) orelse return null;
         return registry.known.get(key);
     }
 
-    /// Builds and stores the table of a binary not met before. On error nothing changes:
-    /// everything that can fail runs before the set and the map change.
     pub fn add(
         registry: *Registry,
         gpa: std.mem.Allocator,
@@ -99,7 +78,6 @@ pub const Registry = struct {
         assert(registry.lookup(identity) == null);
 
         if (registry.known.count() == registry.binaries_max) {
-            // Not remembered: there is no room. Every later report asks again and gets this.
             return .{ .unavailable = .too_many_binaries };
         }
         var key_buffer: [key_size_max]u8 = undefined;
@@ -110,7 +88,6 @@ pub const Registry = struct {
 
         const count_before = registry.known.count();
         const outcome = try registry.build(gpa, mapping);
-        // Capacity was reserved at init, so this cannot fail: the set and the map agree.
         registry.known.putAssumeCapacityNoClobber(key, outcome);
         assert(registry.known.count() == count_before + 1);
         return outcome;
@@ -152,13 +129,10 @@ pub const Registry = struct {
     }
 };
 
-/// The bias of a mapping of a file whose `delta` is known: runtime address = file address + bias.
 pub fn bias_of(delta: u64, start: u64, offset: u64) u64 {
     return start -% offset -% delta;
 }
 
-/// Writes the key of `identity` into `buffer`. Keys never collide across kinds: the first byte
-/// says which kind it is. Null for an identity too long to be a real one.
 fn key_write(buffer: *[key_size_max]u8, identity: Identity) ?[]const u8 {
     switch (identity) {
         .build_id => |build_id| {
@@ -178,8 +152,6 @@ fn key_write(buffer: *[key_size_max]u8, identity: Identity) ?[]const u8 {
         },
     }
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 

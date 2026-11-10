@@ -1,5 +1,4 @@
-//! Finds sections and loadable segments of a 64-bit little-endian ELF file, and the load bias
-//! of a mapping. Everything in the file is untrusted: each offset is checked before it is read.
+//! Finds sections and loadable segments of a 64-bit little-endian ELF file.
 
 const std = @import("std");
 
@@ -15,14 +14,11 @@ const page_mask: u64 = 0xfff;
 
 pub const Section = struct {
     kind: u32,
-    /// Where the section starts in memory once loaded (0 for sections that are not loaded).
     vaddr: u64,
-    /// Where it starts in the file.
     offset: u64,
     size: u64,
 };
 
-/// The section called `wanted`, or null if the file has none.
 pub fn find(file: []const u8, wanted: []const u8) Error!?Section {
     if (wanted.len == 0) return null;
     if (file.len < 4 or !std.mem.eql(u8, file[0..4], "\x7fELF")) return error.NotElf;
@@ -63,7 +59,6 @@ pub fn find(file: []const u8, wanted: []const u8) Error!?Section {
     return null;
 }
 
-/// What the section holds, or null if it has nothing in the file or points outside it.
 pub fn bytes_of(file: []const u8, section: Section) ?[]const u8 {
     if (section.kind == SHT_NOBITS) return null;
     const end = std.math.add(u64, section.offset, section.size) catch return null;
@@ -73,7 +68,6 @@ pub fn bytes_of(file: []const u8, section: Section) ?[]const u8 {
 
 const ProgramHeaders = struct { offset: u64, count: u16 };
 
-/// The program header table of a file, checked to lie inside it. Null if there are none.
 fn program_headers(file: []const u8) Error!?ProgramHeaders {
     if (file.len < 4 or !std.mem.eql(u8, file[0..4], "\x7fELF")) return error.NotElf;
     if (file.len < 64) return error.Truncated;
@@ -92,7 +86,6 @@ fn program_headers(file: []const u8) Error!?ProgramHeaders {
 
 pub const Segment = struct { offset: u64, vaddr: u64, filesz: u64 };
 
-/// The loadable, executable segment at `index`, or null if that header is something else.
 fn segment_executable(file: []const u8, h: ProgramHeaders, index: u64) ?Segment {
     const base: usize = @intCast(h.offset + index * phdr_size);
     if (u32_read(file, base) != PT_LOAD) return null;
@@ -104,9 +97,6 @@ fn segment_executable(file: []const u8, h: ProgramHeaders, index: u64) ?Segment 
     };
 }
 
-/// The executable segment that a mapping belongs to, given the file offset the mapping starts
-/// at. The kernel maps whole pages, so a mapping can start in the page where the segment begins.
-/// Null if no executable segment has that page.
 pub fn segment_mapped(file: []const u8, region_offset: u64) Error!?Segment {
     const h = (try program_headers(file)) orelse return null;
     var i: u64 = 0;
@@ -121,8 +111,6 @@ pub fn segment_mapped(file: []const u8, region_offset: u64) Error!?Segment {
     return null;
 }
 
-/// The loadable, executable segments of a file, into `out`. Returns how many. A file with more
-/// than `out.len` is refused rather than cut: a table built from half of them would be wrong.
 pub fn segments_executable(file: []const u8, out: []Segment) Error!usize {
     const h = (try program_headers(file)) orelse return 0;
     var count: usize = 0;
@@ -136,19 +124,13 @@ pub fn segments_executable(file: []const u8, out: []Segment) Error!usize {
     return count;
 }
 
-/// How far a loaded file is from the addresses written in it: the address in memory is the
-/// address in the file plus the bias. `region_start` and `region_offset` describe an
-/// EXECUTABLE mapping of the file: where it begins in memory and the file offset it maps from.
 pub fn load_bias(file: []const u8, region_start: u64, region_offset: u64) Error!?u64 {
     const s = (try segment_mapped(file, region_offset)) orelse return null;
-    // Memory address of any file offset X is region_start + (X - region_offset), and its
-    // address in the file is vaddr + (X - offset). The bias is the difference.
     return region_start -% region_offset -% s.vaddr +% s.offset;
 }
 
 const Header = struct { name: u32, kind: u32, vaddr: u64, offset: u64, size: u64 };
 
-/// The caller has checked that the whole table lies inside the file.
 fn header_at(file: []const u8, shoff: u64, index: u64) Header {
     const base: usize = @intCast(shoff + index * shdr_size);
     return .{
@@ -171,8 +153,6 @@ fn u32_read(b: []const u8, at: usize) u32 {
 fn u64_read(b: []const u8, at: usize) u64 {
     return std.mem.readInt(u64, b[at..][0..8], .little);
 }
-
-// ------------------------------------------------------------------ tests
 
 fn u16_put(b: []u8, at: usize, v: u16) void {
     std.mem.writeInt(u16, b[at..][0..2], v, .little);
@@ -205,17 +185,15 @@ fn section_put(
 
 const test_size = 104 + 3 * shdr_size;
 
-/// A file with three sections: 0 is empty; 1 is ".shstrtab", the names, at offset 80; 2 is
-/// ".eh_frame", 16 bytes of 0xaa at offset 64, loaded at 0x2000.
 fn file_for_test(b: *[test_size]u8) void {
     @memset(b, 0);
     @memcpy(b[0..4], "\x7fELF");
     b[4] = 2;
     b[5] = 1;
-    u64_put(b, 40, 104); // where the section headers start
+    u64_put(b, 40, 104);
     u16_put(b, 58, shdr_size);
-    u16_put(b, 60, 3); // how many sections
-    u16_put(b, 62, 1); // which one holds the names
+    u16_put(b, 60, 3);
+    u16_put(b, 62, 1);
 
     @memset(b[64..80], 0xaa);
     @memcpy(b[80..101], "\x00.shstrtab\x00.eh_frame\x00");
@@ -229,13 +207,13 @@ test "segments_executable lists the loadable executable segments only" {
     @memcpy(file[0..4], "\x7fELF");
     file[4] = 2;
     file[5] = 1;
-    std.mem.writeInt(u64, file[32..][0..8], 64, .little); // e_phoff
+    std.mem.writeInt(u64, file[32..][0..8], 64, .little);
     std.mem.writeInt(u16, file[54..][0..2], phdr_size, .little);
     std.mem.writeInt(u16, file[56..][0..2], 4, .little);
-    program_header_put(&file, 0, PT_LOAD, PF_X | 4, 0x1000, 0x401000, 0x200); // r-x: kept
-    program_header_put(&file, 1, PT_LOAD, 6, 0x2000, 0x402000, 0x100); // rw-: not executable
-    program_header_put(&file, 2, 4, PF_X, 0x3000, 0x403000, 0x10); // PT_NOTE: not loadable
-    program_header_put(&file, 3, PT_LOAD, PF_X, 0x4000, 0x7f0000, 0x300); // x: kept
+    program_header_put(&file, 0, PT_LOAD, PF_X | 4, 0x1000, 0x401000, 0x200);
+    program_header_put(&file, 1, PT_LOAD, 6, 0x2000, 0x402000, 0x100);
+    program_header_put(&file, 2, 4, PF_X, 0x3000, 0x403000, 0x10);
+    program_header_put(&file, 3, PT_LOAD, PF_X, 0x4000, 0x7f0000, 0x300);
 
     var out: [4]Segment = undefined;
     const count = try segments_executable(&file, &out);
@@ -263,7 +241,7 @@ test "find returns where a section is in the file and in memory" {
 
     try std.testing.expect((try find(&b, ".shstrtab")) != null);
     try std.testing.expect((try find(&b, ".text")) == null);
-    try std.testing.expect((try find(&b, ".eh_fram")) == null); // a prefix is not a match
+    try std.testing.expect((try find(&b, ".eh_fram")) == null);
     try std.testing.expect((try find(&b, "")) == null);
 }
 
@@ -272,7 +250,7 @@ test "bytes_of gives nothing for a section outside the file or without contents"
     file_for_test(&b);
     const eh = (try find(&b, ".eh_frame")).?;
 
-    try std.testing.expect(bytes_of(b[0..70], eh) == null); // the file is cut inside the section
+    try std.testing.expect(bytes_of(b[0..70], eh) == null);
     var bss = eh;
     bss.kind = SHT_NOBITS;
     try std.testing.expect(bytes_of(&b, bss) == null);
@@ -295,7 +273,7 @@ test "find rejects files that are not usable ELF files" {
     try std.testing.expectError(error.Unsupported, find(&thirty_two_bit, ".eh_frame"));
 
     var past_end = b;
-    u64_put(&past_end, 40, 1000); // the section headers would start past the end
+    u64_put(&past_end, 40, 1000);
     try std.testing.expectError(error.Truncated, find(&past_end, ".eh_frame"));
 
     var absurd = b;
@@ -303,11 +281,11 @@ test "find rejects files that are not usable ELF files" {
     try std.testing.expectError(error.Truncated, find(&absurd, ".eh_frame"));
 
     var bad_names = b;
-    u16_put(&bad_names, 62, 9); // there is no section 9
+    u16_put(&bad_names, 62, 9);
     try std.testing.expectError(error.Truncated, find(&bad_names, ".eh_frame"));
 
     var names_outside = b;
-    section_put(&names_outside, 1, 1, 3, 0, 80, 5000); // the names claim to be longer than the file
+    section_put(&names_outside, 1, 1, 3, 0, 80, 5000);
     try std.testing.expectError(error.Truncated, find(&names_outside, ".eh_frame"));
 }
 
@@ -344,13 +322,11 @@ fn elf_header_for_test(b: *[232]u8, count: u16) void {
     @memcpy(b[0..4], "\x7fELF");
     b[4] = 2;
     b[5] = 1;
-    u64_put(b, 32, 64); // where the program headers start
+    u64_put(b, 32, 64);
     u16_put(b, 54, phdr_size);
     u16_put(b, 56, count);
 }
 
-/// A read-only segment, then two executable ones, the last with an address that is not its
-/// offset plus a constant.
 fn layout_for_test(b: *[232]u8) void {
     elf_header_for_test(b, 3);
     program_header_put(b, 0, PT_LOAD, R, 0x0, 0x400000, 0x1000);
@@ -362,25 +338,17 @@ test "load_bias: how far the loaded file is from the addresses written in it" {
     var b: [232]u8 = undefined;
     layout_for_test(&b);
 
-    // Not moved: a normal executable. A mapping starts at a page.
     try std.testing.expectEqual(@as(?u64, 0), try load_bias(&b, 0x401000, 0x1000));
-    // The page the third segment starts in.
     try std.testing.expectEqual(@as(?u64, 0), try load_bias(&b, 0x404000, 0x3000));
-    // Moved to a random base, as for libraries and PIE executables.
     const moved: ?u64 = 0x7f0000000000;
     try std.testing.expectEqual(moved, try load_bias(&b, 0x7f0000401000, 0x1000));
     try std.testing.expectEqual(moved, try load_bias(&b, 0x7f0000404000, 0x3000));
-    // A mapping that starts in a later page of the segment.
     try std.testing.expectEqual(moved, try load_bias(&b, 0x7f0000402000, 0x2000));
-    // The first segment is read only, so it is not a candidate; and the end of a segment is
-    // exclusive.
     try std.testing.expectEqual(@as(?u64, null), try load_bias(&b, 0x7f0000400000, 0x0));
     try std.testing.expectEqual(@as(?u64, null), try load_bias(&b, 0x7f0000500000, 0x4000));
 }
 
 test "load_bias: a code segment in the same file page as the segment before it" {
-    // The layout LLD writes: a read-only segment from the start of the file, and the code in
-    // the same page, so the kernel maps that page twice and the code's mapping has offset 0.
     var b: [232]u8 = undefined;
     elf_header_for_test(&b, 3);
     program_header_put(&b, 0, PT_LOAD, R, 0x0, 0x1000000, 0x4a8);

@@ -1,11 +1,9 @@
-//! Waits on a set of descriptors at once: the timers, the target and the cancel of a loop.
-//! Each loop names its own sources with an enum, one descriptor per field.
+//! Waits on a set of descriptors at once.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const linux = std.os.linux;
 
-/// A poll over the descriptors named by `Source`, an enum with one field per descriptor.
 pub fn Poll(comptime Source: type) type {
     if (@typeInfo(Source) != .@"enum") @compileError("Poll: `Source` must be an enum");
 
@@ -15,11 +13,8 @@ pub fn Poll(comptime Source: type) type {
         const Self = @This();
         const source_count = @typeInfo(Source).@"enum".fields.len;
 
-        /// The sources that were ready after one wait.
         pub const Ready = std.EnumSet(Source);
 
-        /// A descriptor of -1 is never ready: poll(2) skips negative descriptors. Which sources
-        /// must be there is the caller's to assert: only it knows which are optional.
         pub fn init(fds: std.EnumArray(Source, i32)) Self {
             var poll: Self = undefined;
             for (&poll.fds, 0..) |*pollfd, index| {
@@ -31,8 +26,6 @@ pub fn Poll(comptime Source: type) type {
             return poll;
         }
 
-        /// Waits until a source is ready, or `timeout_ms` passed (-1 waits for ever). A signal
-        /// ends the wait early with nothing ready, which the caller treats like a timeout.
         pub fn wait(poll: *Self, timeout_ms: i32) error{Unexpected}!Ready {
             assert(timeout_ms >= -1);
             const result = linux.poll(&poll.fds, poll.fds.len, timeout_ms);
@@ -45,20 +38,13 @@ pub fn Poll(comptime Source: type) type {
 
             var ready: Ready = .initEmpty();
             for (poll.fds, 0..) |pollfd, index| {
-                // A descriptor closed while it is polled is a bug in the caller.
                 assert(pollfd.revents & linux.POLL.NVAL == 0);
-                // Anything reported counts as ready: an exited process's pidfd reports
-                // POLLIN, and POLLHUP on newer kernels; timers and eventfds report POLLIN. An
-                // error (POLLERR) also counts, so the caller's read fails loudly instead of
-                // the loop spinning on a descriptor that is never readable.
                 if (pollfd.revents != 0) ready.insert(@enumFromInt(index));
             }
             return ready;
         }
     };
 }
-
-// --- tests
 
 const testing = std.testing;
 

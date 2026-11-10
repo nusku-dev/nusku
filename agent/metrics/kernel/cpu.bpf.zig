@@ -1,17 +1,4 @@
-//! The on-CPU sampler, run by a CPU-clock perf event on every CPU. For the target's tasks it
-//! walks the user stack with the unwind tables (frame pointers where there are none), adds the
-//! kernel stack, and counts the stack by its hash.
-//!
-//! A walk is `frames_per_run` frames per run, tail-calling itself: a small program for the
-//! verifier. Between runs it lives in a per-CPU map; perf programs never nest on one CPU.
-//!
-//! The counting protocol, which cpu/collector.zig depends on:
-//! 1. The first sample of a stack in a generation sends the stack's record (header and frames)
-//!    into the ring buffer, and only then inserts its count key. So a count never exists without
-//!    its frames having been sent before it.
-//! 2. When the ring is full the key is not inserted, so a later sample of the stack tries again.
-//! 3. The agent advances `Config.generation` at every report, then drains the keys of older
-//!    generations. The counts map holds about one window of stacks, never the whole run.
+//! The on-CPU sampler, run by a CPU-clock perf event on every CPU.
 
 const helpers = @import("helpers.zig");
 const cpu_wire = @import("shared/cpu_wire.zig");
@@ -59,13 +46,8 @@ const cfa_end = @intFromEnum(unwind_wire.CfaType.end);
 const rbp_same = @intFromEnum(unwind_wire.RbpType.same);
 const rbp_saved = @intFromEnum(unwind_wire.RbpType.saved);
 
-/// The two bytes of the x86-64 `syscall` instruction (0f 05), read as the top of a little-endian
-/// u64 that ends where they end.
 const syscall_instruction_tail: u64 = 0x050f;
 
-// ---------------------------------------------------------------------------------------- maps
-
-/// Slot 0 holds the `Config`. The agent writes it; the program only reads it.
 export var cpu_config: MapDef linksection(".maps") = .{
     .map_type = MapType.array,
     .key_size = @sizeOf(u32),
@@ -73,7 +55,6 @@ export var cpu_config: MapDef linksection(".maps") = .{
     .max_entries = 1,
 };
 
-/// The walk in progress on each CPU, and the counters of the run.
 export var cpu_state: MapDef linksection(".maps") = .{
     .map_type = MapType.percpu_array,
     .key_size = @sizeOf(u32),
@@ -81,7 +62,6 @@ export var cpu_state: MapDef linksection(".maps") = .{
     .max_entries = 1,
 };
 
-/// Slot 0 holds this very program, so a walk can continue in a fresh run.
 export var cpu_walk_next: MapDef linksection(".maps") = .{
     .map_type = MapType.prog_array,
     .key_size = @sizeOf(u32),
@@ -89,7 +69,6 @@ export var cpu_walk_next: MapDef linksection(".maps") = .{
     .max_entries = 1,
 };
 
-/// How many samples each stack got: CountKey -> u64.
 export var cpu_counts: MapDef linksection(".maps") = .{
     .map_type = MapType.hash,
     .key_size = @sizeOf(CountKey),
@@ -97,7 +76,6 @@ export var cpu_counts: MapDef linksection(".maps") = .{
     .max_entries = cpu_wire.counts_max,
 };
 
-/// The frames of each stack, sent the first time a generation counts it.
 export var cpu_records: MapDef linksection(".maps") = .{
     .map_type = MapType.ringbuf,
     .key_size = 0,
@@ -105,7 +83,6 @@ export var cpu_records: MapDef linksection(".maps") = .{
     .max_entries = cpu_wire.records_bytes,
 };
 
-/// Every module's rows, in one value. See unwind_wire.rows_max for why.
 export var unwind_rows: MapDef linksection(".maps") = .{
     .map_type = MapType.array,
     .key_size = @sizeOf(u32),
@@ -113,7 +90,6 @@ export var unwind_rows: MapDef linksection(".maps") = .{
     .max_entries = 1,
 };
 
-/// Where each module's rows start: module id -> Module.
 export var unwind_modules: MapDef linksection(".maps") = .{
     .map_type = MapType.array,
     .key_size = @sizeOf(u32),
@@ -121,7 +97,6 @@ export var unwind_modules: MapDef linksection(".maps") = .{
     .max_entries = modules_max,
 };
 
-/// The executable mappings of each process: tgid -> ProcessEntry.
 export var unwind_procs: MapDef linksection(".maps") = .{
     .map_type = MapType.hash,
     .key_size = @sizeOf(u32),
@@ -130,8 +105,6 @@ export var unwind_procs: MapDef linksection(".maps") = .{
 };
 
 export const LICENSE: [4]u8 linksection("license") = .{ 'G', 'P', 'L', 0 };
-
-// ------------------------------------------------------------------------------------- program
 
 export fn cpu_sample(context: *anyopaque) linksection("perf_event/cpu_sample") c_int {
     var zero: u32 = 0;
@@ -143,15 +116,12 @@ export fn cpu_sample(context: *anyopaque) linksection("perf_event/cpu_sample") c
 
     if (state.walk_in_progress != 0) {
         if (state.walk_pid_tgid != pid_tgid) {
-            // Every path that starts a walk finishes it or tail-calls, so a walk that meets
-            // another task is a bug. Count it, and never continue it with this task's stack.
             state.walks_abandoned += 1;
             state.walk_in_progress = 0;
         }
     }
 
     if (state.walk_in_progress == 0) {
-        // A new sample. A continuation skips this: it is the same sample, already accepted.
         if (!sample_is_target(tgid)) return 0;
         if (!walk_begin(state, context, pid_tgid)) return 0;
     }
@@ -177,17 +147,13 @@ inline fn sample_is_target(tgid: u32) bool {
     return config.tgid == tgid;
 }
 
-/// Starts a walk from the user registers of the current task.
 inline fn walk_begin(state: *WalkState, context: *anyopaque, pid_tgid: u64) bool {
     const task = get_current_task_btf() orelse return false;
     const registers_pointer = task_pt_regs(task) orelse return false;
     const registers: *const Registers = @ptrCast(@alignCast(registers_pointer));
-    // The perf event context starts with the registers at the moment of the sample.
     const sampled: *const Registers = @ptrCast(@alignCast(context));
 
     const sampled_in_user_mode = (sampled.cs & 3) == 3;
-    // In kernel mode, the user pc is where the task entered the kernel. Right after a
-    // `syscall` it is a return address; after an interrupt or a fault it is the instruction.
     const leaf_is_return = !sampled_in_user_mode and follows_syscall(registers.ip);
 
     state.walk_in_progress = 1;
@@ -210,22 +176,16 @@ inline fn walk_begin(state: *WalkState, context: *anyopaque, pid_tgid: u64) bool
     return true;
 }
 
-/// Whether the two bytes before `ip` are a `syscall` instruction.
 inline fn follows_syscall(ip: u64) bool {
     if (ip < 8) return false;
     var preceding: u64 = 0;
-    // A failed read leaves zero, which is not a syscall: the pc is then taken as it is.
     _ = probe_read_user(&preceding, @sizeOf(u64), ip - 8);
     return (preceding >> 48) == syscall_instruction_tail;
 }
 
-/// Unwinds up to `frames_per_run` frames. Returns `.none` when the walk must go on in another
-/// run, or why it ended.
 inline fn walk_run(state: *WalkState, tgid: u32) StopReason {
-    // One lookup per run instead of one per frame: this is the only hash lookup of the walk.
     var tgid_key = tgid;
     const process_pointer = map_lookup_elem(&unwind_procs, &tgid_key) orelse {
-        // The agent has not written this process yet: keep the sampled pc as the one frame.
         if (state.frame_count != 0) return .invalid_stack;
         frame_push(state, 0, state.pc);
         return .no_mapping;
@@ -241,14 +201,10 @@ inline fn walk_run(state: *WalkState, tgid: u32) StopReason {
         const sp = state.sp;
         const bp = state.bp;
 
-        // The leaf is the sampled instruction itself. Every later pc is a return address, so
-        // look up pc - 1: a call can be the last instruction of a function, and its return
-        // address then belongs to the next function.
         const lookup_pc = if (state.pc_is_leaf != 0) pc else pc -% 1;
         const found: RowLookup = @call(.always_inline, row_find, .{ process, lookup_pc });
 
         if (found.status == .no_mapping) {
-            // Only the first address may be outside every mapping (JIT code, for example).
             if (count != 0) return .invalid_stack;
             frame_push(state, 0, pc);
             return .no_mapping;
@@ -269,7 +225,6 @@ inline fn walk_run(state: *WalkState, tgid: u32) StopReason {
     return .none;
 }
 
-/// Stores `pc` as frame `index` and mixes it into the stack hash.
 inline fn frame_push(state: *WalkState, index: u64, pc: u64) void {
     if (index >= user_frames_max) return; // The callers checked; the verifier wants it here.
     state.stack_frames[index] = pc;
@@ -277,7 +232,6 @@ inline fn frame_push(state: *WalkState, index: u64, pc: u64) void {
     state.stack_hash = stack_hash_mix(state.stack_hash ^ pc);
 }
 
-/// The caller's registers, or why there is no caller.
 const Caller = struct {
     stop: StopReason,
     pc: u64,
@@ -286,7 +240,6 @@ const Caller = struct {
     used_frame_pointer: bool,
 };
 
-/// Applies the table row when there is one, and the frame pointer chain otherwise.
 inline fn frame_caller(found: RowLookup, pc: u64, sp: u64, bp: u64) Caller {
     var caller = Caller{ .stop = .none, .pc = 0, .sp = 0, .bp = 0, .used_frame_pointer = false };
 
@@ -306,15 +259,11 @@ inline fn frame_caller(found: RowLookup, pc: u64, sp: u64, bp: u64) Caller {
         return caller;
     }
 
-    // No row: follow the frame pointer. An rbp of 0 here is the end of the stack, not a missing
-    // table: the x86-64 ABI has the outermost frame zero rbp, and _start, which does it, often
-    // has no FDE (Zig's and musl's do not). frame_pointer_unwind ends the walk on it.
     caller = frame_pointer_unwind(sp, bp);
     caller.used_frame_pointer = true;
     return caller;
 }
 
-/// Mixes a value into a stack hash with the splitmix64 finalizer.
 inline fn stack_hash_mix(value: u64) u64 {
     var mixed = value;
     mixed = (mixed ^ (mixed >> 30)) *% 0xbf58476d1ce4e5b9;
@@ -322,10 +271,6 @@ inline fn stack_hash_mix(value: u64) u64 {
     return mixed ^ (mixed >> 31);
 }
 
-// ------------------------------------------------------------------------------ finishing a walk
-
-/// Ends the walk: appends the kernel stack when the sample was in kernel mode, and counts the
-/// stack, sending its record first if this generation has not seen it.
 inline fn walk_finish(state: *WalkState, context: *anyopaque, tgid: u32, stop: StopReason) void {
     state.walk_in_progress = 0;
     state.walks_completed += 1;
@@ -344,7 +289,6 @@ inline fn walk_finish(state: *WalkState, context: *anyopaque, tgid: u32, stop: S
     }
     state.record.kernel_frame_count = @truncate(kernel_frame_count);
 
-    // The stop reason and the kind of leaf are part of the stack's identity.
     const identity_bits = (stop_index << 1) | state.leaf_is_return;
     state.record.stack_hash = stack_hash_mix(stack_hash ^ identity_bits);
     state.record.tgid = tgid;
@@ -355,8 +299,6 @@ inline fn walk_finish(state: *WalkState, context: *anyopaque, tgid: u32, stop: S
     stack_count(state, tgid, record_size);
 }
 
-/// Copies the kernel stack after the user frames and mixes it into `stack_hash`. Returns how
-/// many kernel frames there are.
 inline fn kernel_frames_append(
     state: *WalkState,
     context: *anyopaque,
@@ -378,14 +320,12 @@ inline fn kernel_frames_append(
     while (index < kernel_frame_count) : (index += 1) {
         stack_hash.* = stack_hash_mix(stack_hash.* ^ state.stack_frames[user_frame_count + index]);
     }
-    // A full buffer means the kernel stack may have gone on.
     if (kernel_frame_count == kernel_frames_max) {
         state.record.flags |= cpu_wire.record_flag_kernel_truncated;
     }
     return kernel_frame_count;
 }
 
-/// Counts the finished stack under the current generation.
 inline fn stack_count(state: *WalkState, tgid: u32, record_size: u64) void {
     var zero: u32 = 0;
     const config_pointer = map_lookup_elem(&cpu_config, &zero) orelse return;
@@ -403,9 +343,7 @@ inline fn stack_count(state: *WalkState, tgid: u32, record_size: u64) void {
         return;
     }
 
-    // The record goes first, so a count never exists without its frames.
     if (ringbuf_output(&cpu_records, &state.record, record_size, helpers.ringbuf_no_wakeup) != 0) {
-        // Not inserted, so a later sample of this stack sends it again.
         state.records_dropped += 1;
         return;
     }
@@ -413,7 +351,6 @@ inline fn stack_count(state: *WalkState, tgid: u32, record_size: u64) void {
 
     var count_first: u64 = 1;
     if (map_update_elem(&cpu_counts, &key, &count_first, helpers.update_no_exist) != 0) {
-        // Another CPU inserted the same stack in the meantime, or the map is full.
         if (map_lookup_elem(&cpu_counts, &key)) |count| {
             counter_increment(count);
         } else {
@@ -422,22 +359,15 @@ inline fn stack_count(state: *WalkState, tgid: u32, record_size: u64) void {
     }
 }
 
-/// Counts are shared by all CPUs, so the increment is atomic.
 inline fn counter_increment(counter: *anyopaque) void {
     _ = @atomicRmw(u64, @as(*u64, @ptrCast(@alignCast(counter))), .Add, 1, .monotonic);
 }
 
-// ------------------------------------------------------------------------------- table lookup
-
 const RowStatus = enum(u8) {
     found,
-    /// No executable mapping holds the address.
     no_mapping,
-    /// The mapping has no table: frame pointers are the only way on.
     no_module,
-    /// The module has no row for the address.
     no_rule,
-    /// The module points outside the row array: the agent wrote a bad table.
     invalid_table,
 };
 
@@ -454,8 +384,6 @@ const row_zero = Row{
     .rbp_offset = 0,
 };
 
-/// The unwind row for `ip`: runtime address -> mapping -> module -> row. Every search has a
-/// fixed number of steps, and every index is checked before it is used.
 fn row_find(process: *const ProcessEntry, ip: u64) RowLookup {
     var result = RowLookup{ .status = .no_mapping, .row = row_zero };
 
@@ -470,7 +398,6 @@ fn row_find(process: *const ProcessEntry, ip: u64) RowLookup {
     if (mapping.module >= modules_max) return result;
 
     result.status = .no_rule;
-    // The runtime address as an address in the module's file.
     if (ip < mapping.bias) return result;
     const file_address = ip - mapping.bias;
 
@@ -506,7 +433,6 @@ fn row_find(process: *const ProcessEntry, ip: u64) RowLookup {
     return result;
 }
 
-/// The index of the only mapping that can hold `ip`: the last one that starts at or below it.
 inline fn mapping_search(process: *const ProcessEntry, ip: u64) ?u32 {
     if (process.count == 0) return null;
     if (process.count > mappings_max) return null;
@@ -523,12 +449,11 @@ inline fn mapping_search(process: *const ProcessEntry, ip: u64) ?u32 {
             high = middle;
         }
     }
-    if (low < high) return null; // The search did not converge: the entry is not sorted.
-    if (low == 0) return null; // Below the first mapping.
+    if (low < high) return null;
+    if (low == 0) return null;
     return low - 1;
 }
 
-/// The index of the last row of a module that starts at or below `relative`.
 inline fn row_search(
     rows: *const [rows_max]Row,
     row_start: u32,
@@ -548,12 +473,10 @@ inline fn row_search(
             high = middle;
         }
     }
-    if (low < high) return null; // The search did not converge: the rows are not sorted.
-    if (low == 0) return null; // Before the module's first row.
+    if (low < high) return null;
+    if (low == 0) return null;
     return row_start + (low - 1);
 }
-
-// --------------------------------------------------------------------------- applying a row
 
 const UnwindStatus = enum(u8) { caller, end, unsupported, read_failed };
 
@@ -564,8 +487,6 @@ const UnwindResult = struct {
     bp: u64,
 };
 
-/// The caller's pc, sp and bp by the rules of `row`. User memory is read with
-/// probe_read_user, which fails instead of faulting on a bad address.
 fn frame_unwind(row: Row, ip: u64, sp: u64, bp: u64) UnwindResult {
     var result = UnwindResult{ .status = .unsupported, .pc = 0, .sp = 0, .bp = 0 };
 
@@ -584,7 +505,6 @@ fn frame_unwind(row: Row, ip: u64, sp: u64, bp: u64) UnwindResult {
             }
         },
         cfa_plt => {
-            // The offset holds the threshold: past it, the stub has pushed one more word.
             if (row.cfa_offset < 0 or row.cfa_offset > 15) return result;
             const pushed: i64 = if ((ip & 15) >= @as(u64, @intCast(row.cfa_offset))) 8 else 0;
             if (!offset_apply(sp, 8 + pushed, &cfa)) {
@@ -599,7 +519,6 @@ fn frame_unwind(row: Row, ip: u64, sp: u64, bp: u64) UnwindResult {
         else => return result,
     }
 
-    // The return address is stored right below the CFA.
     if (cfa < 8) {
         result.status = .read_failed;
         return result;
@@ -617,7 +536,6 @@ fn frame_unwind(row: Row, ip: u64, sp: u64, bp: u64) UnwindResult {
             result.status = .read_failed;
             return result;
         }
-        // Below sp, the slot was popped already: the function restored rbp itself.
         if (saved_bp_address >= sp) {
             if (probe_read_user(&caller_bp, @sizeOf(u64), saved_bp_address) != 0) {
                 result.status = .read_failed;
@@ -635,8 +553,6 @@ fn frame_unwind(row: Row, ip: u64, sp: u64, bp: u64) UnwindResult {
     return result;
 }
 
-/// `address + offset`, or false if that would wrap around. The offsets come from i32 and i16
-/// row fields, so negating one never overflows.
 fn offset_apply(address: u64, offset: i64, result: *u64) bool {
     if (offset >= 0) {
         const amount: u64 = @intCast(offset);
@@ -650,8 +566,6 @@ fn offset_apply(address: u64, offset: i64, result: *u64) bool {
     return true;
 }
 
-/// The caller of a frame with the conventional layout: [bp] holds the caller's bp, and
-/// [bp + 8] the return address.
 inline fn frame_pointer_unwind(sp: u64, bp: u64) Caller {
     var caller = Caller{ .stop = .none, .pc = 0, .sp = 0, .bp = 0, .used_frame_pointer = true };
 
@@ -671,7 +585,6 @@ inline fn frame_pointer_unwind(sp: u64, bp: u64) Caller {
     }
 
     const caller_bp = saved_frame[0];
-    // Frames grow down, so a caller's frame pointer is above its callee's, or 0 at the end.
     if (caller_bp != 0) {
         if (caller_bp <= bp or caller_bp % 8 != 0) {
             caller.stop = .invalid_frame_pointer;

@@ -1,12 +1,10 @@
-//! Processes: checking a pid, this process's own, and the files a process sees.
+//! Processes: checking a pid.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const linux = std.os.linux;
 const File = @import("shared").File;
 
-/// A pid the agent may target. 0 means "nothing" to the kernel program, and kill(0) or
-/// kill(-1) would reach a whole process group or every process, so those never get past here.
 pub fn pid_valid(pid: u32) bool {
     if (pid == 0) return false;
     return pid <= std.math.maxInt(i32);
@@ -18,23 +16,17 @@ pub fn current_pid() u32 {
     return @intCast(pid);
 }
 
-/// The file at `path` as process `pid` sees it (/proc/<pid>/root), so files that exist only
-/// inside a container work too. The caller closes it.
 pub fn file_open(pid: u32, path: []const u8) error{Unreadable}!File {
-    // A path can be up to 4096 bytes; the prefix "/proc/4294967295/root" is 21 more.
     var path_buffer: [4200]u8 = undefined;
     const full = std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/root{s}", .{ pid, path }) catch
         return error.Unreadable;
     return File.open(full) catch error.Unreadable;
 }
 
-/// The file mapped at `start` .. `end` in process `pid`: by `path`, else by the mapping itself
-/// (/proc/<pid>/map_files, which needs CAP_SYS_ADMIN), which a sandbox's chroot does not hide.
 pub fn mapping_open(pid: u32, path: []const u8, start: u64, end: u64) error{Unreadable}!File {
     if (file_open(pid, path)) |file| return file else |_| {}
-    if (start >= end) return error.Unreadable; // No mapping to go through.
+    if (start >= end) return error.Unreadable;
 
-    // "/proc/4294967295/map_files/" and two addresses of 16 hex digits.
     var path_buffer: [64]u8 = undefined;
     const mapping = std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/map_files/{x}-{x}", .{
         pid,

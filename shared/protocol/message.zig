@@ -1,16 +1,12 @@
-//! One report of a run: the stacks counted over an interval, and the regions their addresses
-//! fall in.
+//! One report of a run.
 
 const std = @import("std");
 
-/// One executable mapping of the target.
 pub const Region = struct {
     start: u64,
     end: u64,
-    /// The offset in the file that `start` maps.
     offset: u64,
     inode: u64,
-    /// As the process sees it: "[vdso]" for the vDSO, empty for anonymous memory.
     path: []const u8,
     build_id: ?[]const u8,
 };
@@ -19,20 +15,16 @@ pub const Message = struct {
     start_unix_ns: u64,
     duration_ns: u64,
     pid: u32,
-    /// Samples per second per CPU: `samples / sample_hz` is CPU seconds.
     sample_hz: u32,
     samples: u64,
-    /// Samples the window misses, every reason together.
     samples_lost: u64,
     regions: []const Region,
     stacks: []const Stack,
     kernel: Kernel = .{},
 
-    /// What names kernel frames.
     pub const Kernel = struct {
         release: []const u8 = "",
         build_id: ?[]const u8 = null,
-        /// The run-time address of `_text`.
         text_address: ?u64 = null,
     };
 
@@ -40,15 +32,11 @@ pub const Message = struct {
         samples: u64,
         user: []const u64,
         kernel: []const u64,
-        /// The walk reached the outermost frame.
         complete: bool,
-        /// Taken in a system call: `user[0]` is a return address too.
         leaf_is_return: bool = false,
-        /// The kernel stack had more frames than were kept.
         kernel_truncated: bool = false,
     };
 
-    /// A deep copy into `arena`. Too big for a fixed buffer: `OutOfMemory`, nothing to free.
     pub fn clone(message: *const Message, arena: std.mem.Allocator) !Message {
         const stacks = try arena.alloc(Stack, message.stacks.len);
         for (stacks, message.stacks) |*copy, stack| copy.* = try stack_copy(arena, stack);
@@ -59,8 +47,6 @@ pub const Message = struct {
         copy.kernel = try kernel_copy(arena, message.kernel);
         return copy;
     }
-
-    // Each copies the whole value, then its slices: a new number field needs no line here.
 
     pub fn stack_copy(arena: std.mem.Allocator, stack: Stack) !Stack {
         var copy = stack;
@@ -86,8 +72,6 @@ pub const Message = struct {
         return copy;
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 test "clone copies into the given buffer, and fails when it is too small" {
     const stacks = [_]Message.Stack{.{

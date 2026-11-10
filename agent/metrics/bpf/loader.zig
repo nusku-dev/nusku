@@ -1,5 +1,4 @@
-//! Loads a BPF object: creates its maps, patches their descriptors into the code, loads it. A
-//! map made outside and bound by name is shared by several programs (the unwind tables).
+//! Loads a BPF object.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -16,20 +15,15 @@ pub const Error = libbpf.Error || object_file.Error || error{ UnknownMap, MapMis
 
 const log = @import("../../log.zig").agent;
 
-/// R_BPF_64_64: the relocation kind of a map reference.
 const relocation_map: u32 = 1;
-/// The opcode of ld_imm64, the 16-byte "load a 64-bit immediate" instruction.
 const opcode_load_immediate_64: u8 = 0x18;
-/// The src_reg value that tells the kernel the immediate is a map's file descriptor.
 const pseudo_map_fd: u8 = 1;
 
-/// A map the code refers to, by the name of its definition in the object.
 pub const MapBinding = struct {
     name: []const u8,
     fd: i32,
 };
 
-/// Creates the map `name` from its definition in the object.
 pub fn map_create(object: *const Object, name: [:0]const u8) Error!Map {
     const definition = try object.map_definition(name);
     return Map.create(name, .{
@@ -40,8 +34,6 @@ pub fn map_create(object: *const Object, name: [:0]const u8) Error!Map {
     });
 }
 
-/// Checks that `map`, created elsewhere, is what the object declares as `name`. Both sides of a
-/// shared map must agree, or the program would read past its values.
 pub fn map_check(object: *const Object, name: []const u8, map: *const Map) Error!void {
     const definition = try object.map_definition(name);
     if (definition.map_type != map.spec.map_type) return error.MapMismatch;
@@ -53,14 +45,11 @@ pub fn map_check(object: *const Object, name: []const u8, map: *const Map) Error
 pub const LoadOptions = struct {
     kind: Program.Kind,
     section: []const u8,
-    /// The program's function. It must fill its section: calls between functions are not
-    /// supported, so the compiler must inline everything into it.
     function: [:0]const u8,
-    /// Every map the code refers to.
     maps: []const MapBinding,
 };
 
-/// Loads the program. `gpa` holds a copy of the code and the verifier's log during the call.
+/// `gpa` holds a copy of the code and the verifier's log during the call.
 pub fn program_load(gpa: std.mem.Allocator, object: *const Object, options: LoadOptions) !Program {
     assert(options.maps.len > 0);
 
@@ -73,7 +62,6 @@ pub fn program_load(gpa: std.mem.Allocator, object: *const Object, options: Load
     if (section_bytes.len == 0) return error.Unsupported;
     if (section_bytes.len % program_file.instruction_size != 0) return error.Unsupported;
 
-    // An 8-byte aligned copy, patched in place: the kernel reads the instructions as structs.
     const words = try gpa.alloc(u64, section_bytes.len / program_file.instruction_size);
     defer gpa.free(words);
     const code = std.mem.sliceAsBytes(words);
@@ -94,7 +82,6 @@ pub fn program_load(gpa: std.mem.Allocator, object: *const Object, options: Load
         .log = verifier_log,
     }) catch |err| {
         if (err == error.VerifierRejected) {
-            // The whole explanation as one field: the last lines say what the verifier refused.
             log.err("the kernel's verifier refused the BPF program", .{
                 .program = options.function,
                 .verifier_log = std.mem.sliceTo(verifier_log, 0),
@@ -110,8 +97,6 @@ pub fn program_load(gpa: std.mem.Allocator, object: *const Object, options: Load
     return program;
 }
 
-/// Patches each relocation's ld_imm64 with pseudo_map_fd and its map's descriptor. Any other
-/// relocation (.rodata) fails here, before the kernel sees it.
 pub fn relocations_apply(
     object: *const Object,
     program: object_file.Section,
@@ -128,12 +113,10 @@ pub fn relocations_apply(
         const at: usize = @intCast(relocation.offset);
         if (code[at] != opcode_load_immediate_64) return error.Unsupported;
 
-        // Before patching, the immediate holds where the map's definition is inside .maps.
         const immediate = code[at + 4 ..][0..4];
         const definition_offset = std.mem.readInt(i32, immediate, .little);
         const fd = try map_fd_find(object, maps, definition_offset);
 
-        // The register byte holds dst in the low nibble and src in the high nibble.
         code[at + 1] = (code[at + 1] & 0x0f) | (pseudo_map_fd << 4);
         std.mem.writeInt(i32, immediate, fd, .little);
     }
@@ -150,8 +133,6 @@ fn map_fd_find(object: *const Object, maps: []const MapBinding, definition_offse
     }
     return error.UnknownMap;
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -193,7 +174,6 @@ test "relocations_apply fills in the descriptors and touches nothing else" {
     };
     try relocations_apply(&object, program, code, &maps);
 
-    // Every relocated instruction now names the right descriptor.
     var patched_at: [32]u64 = undefined;
     var patched_count: u32 = 0;
     var relocations = try object.relocations(program);
@@ -213,7 +193,6 @@ test "relocations_apply fills in the descriptors and touches nothing else" {
     }
     try testing.expect(patched_count >= 3);
 
-    // Every other byte is exactly as the compiler wrote it.
     for (code, original, 0..) |got, want, byte| {
         var patchable = false;
         for (patched_at[0..patched_count]) |offset| {
@@ -256,7 +235,6 @@ test "every relocation of the cpu program refers to a map the collector binds" {
     defer testing.allocator.free(code);
     try relocations_apply(&object, program, code, &bindings);
 
-    // And every map is used by the code at least once.
     var seen: [cpu_maps.len]bool = @splat(false);
     var relocations = try object.relocations(program);
     while (try relocations.next()) |relocation| {

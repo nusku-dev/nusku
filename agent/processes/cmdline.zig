@@ -3,12 +3,10 @@ const assert = std.debug.assert;
 const process = @import("../os/os.zig").process;
 const File = @import("shared").File;
 
-/// The command line of a process: its arguments, separated by spaces, as `ps` shows them.
 pub const CmdLine = struct {
     buffer: [bytes_max]u8,
     len: u16,
 
-    /// What a row on a terminal can show; a whole command line can be megabytes.
     pub const bytes_max = 256;
 
     pub fn read(cmdline: *CmdLine, pid: u32) !void {
@@ -16,14 +14,12 @@ pub const CmdLine = struct {
         var path_buffer: [32]u8 = undefined;
         const path = try std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/cmdline", .{pid});
 
-        // A missing /proc/<pid> means the same as ESRCH: the process is gone.
         var file = File.open(path) catch |err| switch (err) {
             error.NotFound => return error.ProcessNotFound,
             else => return err,
         };
         defer file.deinit();
 
-        // One byte more than kept: a full read says the command is longer.
         var buffer: [bytes_max + 1]u8 = undefined;
         const len = try file.read_at(&buffer, 0);
 

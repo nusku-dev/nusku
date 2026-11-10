@@ -8,7 +8,6 @@ const c = libbpf.c;
 const Error = libbpf.Error;
 const error_from_errno = libbpf.error_from_errno;
 
-/// BPF instructions are 8 bytes; a few (ld_imm64) take two slots.
 pub const instruction_size = 8;
 
 pub const Program = struct {
@@ -18,17 +17,13 @@ pub const Program = struct {
 
     pub const Options = struct {
         kind: Kind,
-        /// The kernel keeps only the first 15 bytes.
         name: [:0]const u8,
-        /// A whole number of instructions, 8-byte aligned: the kernel reads them as structs.
         instructions: []align(8) const u8,
-        /// The license section, including its terminating zero.
         license: []const u8,
         /// Receives the verifier's explanation, zero-terminated, if the program is refused.
         log: []u8,
     };
 
-    /// Loads a program; the verifier runs here. Needs root or CAP_BPF.
     pub fn load(options: Options) Error!Program {
         assert(options.name.len > 0);
         assert(options.instructions.len > 0);
@@ -43,10 +38,8 @@ pub const Program = struct {
         const instruction_count = options.instructions.len / instruction_size;
 
         var load_options = LoadOptions{ .sz = @sizeOf(LoadOptions) };
-        // libbpf's type for this is opaque to Zig; it is the same memory.
         const load_options_c: *c.struct_bpf_prog_load_opts = @ptrCast(&load_options);
 
-        // First without a log: a log buffer that is too small makes the kernel fail the load.
         var fd = c.bpf_prog_load(
             program_type,
             options.name.ptr,
@@ -72,8 +65,6 @@ pub const Program = struct {
                 instruction_count,
                 load_options_c,
             );
-            // A first failure can be transient (ENOMEM under memory pressure), so the second
-            // attempt may succeed: then the program is loaded and there is nothing to explain.
             if (fd >= 0) return .{ .fd = fd };
         }
 
@@ -89,8 +80,6 @@ pub const Program = struct {
     }
 };
 
-/// libbpf 1.5's `struct bpf_prog_load_opts`, which Zig imports as opaque (it ends in a zero-width
-/// bit-field). The assertions below catch a layout change after a libbpf upgrade.
 const LoadOptions = extern struct {
     sz: usize = 0,
     attempts: c_int = 0,
@@ -116,8 +105,6 @@ const LoadOptions = extern struct {
     token_fd: u32 = 0,
 };
 
-// The C struct laid out by hand for a 64-bit target. If one of these is wrong, the build stops
-// here instead of passing a corrupt struct to a system call.
 comptime {
     assert(@sizeOf(LoadOptions) == 112);
     assert(@offsetOf(LoadOptions, "fd_array") == 48);
@@ -126,19 +113,15 @@ comptime {
     assert(@offsetOf(LoadOptions, "token_fd") == 108);
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 const license_testing = "GPL\x00";
 
-/// r0 = 0; exit
 const instructions_valid: [16]u8 align(8) = .{
     0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-/// r0 = 0; r0 = *(u64 *)(r0 + 0); exit. The read goes through a scalar, not a pointer, so the
-/// verifier must refuse it.
+/// The read goes through a scalar, not a pointer, so the verifier must refuse it.
 const instructions_invalid: [24]u8 align(8) = .{
     0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -161,7 +144,6 @@ test "a minimal perf_event program loads, and deinit closes it (needs root, skip
     try testing.expect(fd >= 0);
     program.deinit();
 
-    // F_GETFD fails with EBADF on a closed descriptor.
     const result = std.os.linux.fcntl(fd, std.os.linux.F.GETFD, 0);
     try testing.expectEqual(std.os.linux.E.BADF, std.os.linux.errno(result));
 }

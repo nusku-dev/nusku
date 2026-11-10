@@ -1,6 +1,4 @@
-//! Names the frames of one window: each address is placed in its region's file, then named by
-//! `lookup`, anything with `name(arena, build_id, offset) !?[]const u8`. The result points
-//! into `message` (module paths) and `arena` (names).
+//! Names the frames of one window.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -15,16 +13,13 @@ const Frame = query.Frame;
 const SymbolStack = query.SymbolStack;
 const Location = normalize.Location;
 
-/// One resolved stack for each stack of the window, in the same order.
 pub fn window_resolve(
     arena: std.mem.Allocator,
     lookup: anytype,
     message: *const Message,
 ) ![]SymbolStack {
-    // Regions not sorted and apart would mislead the search: then every address is in none.
     const regions = if (regions_file.valid(message.regions)) message.regions else &.{};
 
-    // One scratch for every stack's locations.
     var user_max: usize = 0;
     for (message.stacks) |stack| user_max = @max(user_max, stack.user.len);
     const locations = try arena.alloc(Location, user_max);
@@ -38,9 +33,7 @@ pub fn window_resolve(
     return stacks;
 }
 
-/// What names a kernel frame: the kernel's identity for this boot, and its `_text`.
 const Kernel = struct {
-    /// In `arena`: the lookup's cache keeps it for the query.
     id: []const u8,
     text_address: u64,
 };
@@ -53,7 +46,6 @@ fn kernel_of(arena: std.mem.Allocator, message: *const Message) !?Kernel {
     return .{ .id = try arena.dupe(u8, id), .text_address = kernel.text_address.? };
 }
 
-/// `regions` are valid; `locations` is scratch, as long as the user frames.
 fn stack_resolve(
     arena: std.mem.Allocator,
     lookup: anytype,
@@ -65,8 +57,6 @@ fn stack_resolve(
     assert(locations.len == stack.user.len);
     const frames = try arena.alloc(Frame, stack.kernel.len + stack.user.len);
 
-    // Kernel frames are innermost. Named at their distance from `_text`; after the first, a
-    // frame is a return address, so the call is one byte back.
     for (stack.kernel, frames[0..stack.kernel.len], 0..) |address, *frame, index| {
         frame.* = .{ .address = address, .kernel = true };
         const known = kernel orelse continue;
@@ -89,11 +79,8 @@ fn stack_resolve(
     return .{ .samples = stack.samples, .frames = frames, .complete = stack.complete };
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 
-/// Knows two functions of the binary "aa".
 const Fake = struct {
     asked: u32 = 0,
 
@@ -142,7 +129,6 @@ test "user frames are placed in their region and named, innermost first" {
     defer arena.deinit();
 
     const regions = [_]Region{region_test(0x1000, 0x2000, "/bin/app", "aa")};
-    // The leaf is exact; the next one is a return address, so the call is at 0x1603.
     const stacks = [_]Message.Stack{.{
         .samples = 7,
         .user = &.{ 0x1500, 0x1604 },
@@ -159,7 +145,7 @@ test "user frames are placed in their region and named, innermost first" {
     try testing.expectEqual(@as(usize, 2), frames.len);
     try testing.expectEqualStrings("leaf_fn", frames[0].function.?);
     try testing.expectEqualStrings("caller_fn", frames[1].function.?);
-    try testing.expectEqual(@as(u64, 0x1604), frames[1].address); // The raw address is kept.
+    try testing.expectEqual(@as(u64, 0x1604), frames[1].address);
     try testing.expectEqualStrings("/bin/app", frames[0].module.?);
     try testing.expect(!frames[0].kernel);
 }
@@ -178,7 +164,6 @@ test "a leaf that is a return address is looked up one byte back" {
     }};
     var fake = Fake{};
     const resolved = try window_resolve(arena.allocator(), &fake, &message_test(&regions, &stacks));
-    // 0x14ff is offset 0x4ff, which the fake does not know.
     try testing.expectEqual(@as(?[]const u8, null), resolved[0].frames[0].function);
 }
 
@@ -201,14 +186,12 @@ test "kernel frames come first, and what cannot be named keeps its address" {
     try testing.expect(frames[0].kernel);
     try testing.expectEqual(@as(u64, 0xffffffff81000000), frames[0].address);
     try testing.expectEqual(@as(?[]const u8, null), frames[0].function);
-    // In a region, but the file has no build ID: the module is known, the function is not.
     try testing.expectEqualStrings("/bin/app", frames[1].module.?);
     try testing.expectEqual(@as(?[]const u8, null), frames[1].function);
-    // In no region at all.
     try testing.expectEqual(@as(?[]const u8, null), frames[2].module);
     try testing.expectEqual(@as(u64, 0x9000), frames[2].address);
     try testing.expect(!resolved[0].complete);
-    try testing.expectEqual(@as(u32, 0), fake.asked); // Nothing to ask without a build ID.
+    try testing.expectEqual(@as(u32, 0), fake.asked);
 }
 
 test "regions that overlap are not trusted, and the frames are still there" {
@@ -238,7 +221,7 @@ test "kernel frames are named at their distance from _text, with the kernel's id
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const text: u64 = 0xffffffff9a000000; // Where KASLR put it this boot.
+    const text: u64 = 0xffffffff9a000000;
     const KernelFake = struct {
         id_expected: []const u8,
         asked: [2]u64 = undefined,
@@ -269,14 +252,12 @@ test "kernel frames are named at their distance from _text, with the kernel's id
     message.kernel = .{ .release = "test", .build_id = "kk", .text_address = text };
     const resolved = try window_resolve(arena.allocator(), &fake, &message);
 
-    // The leaf is exact; the next is a return address, looked up one byte back.
     try testing.expectEqual(@as(u64, 0x100), fake.asked[0]);
     try testing.expectEqual(@as(u64, 0x500), fake.asked[1]);
     try testing.expectEqualStrings("do_syscall_64", resolved[0].frames[0].function.?);
     try testing.expectEqualStrings("[kernel]", resolved[0].frames[0].module.?);
     try testing.expect(resolved[0].frames[1].kernel);
 
-    // A window that does not say where `_text` is: the addresses stay as they are.
     message.kernel.text_address = null;
     const unnamed = try window_resolve(arena.allocator(), &fake, &message);
     try testing.expectEqual(@as(?[]const u8, null), unnamed[0].frames[0].function);

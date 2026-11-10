@@ -1,15 +1,4 @@
-//! The frames of the stacks sent through the ring buffer, kept until their window is built.
-//!
-//! Two epochs: a record is sent before its count key, so it can arrive one report early, and
-//! must outlive the next report, no longer. Each report starts an epoch and forgets the one
-//! before the last:
-//!
-//!     report N-1: advance   drain   read ring -> epoch A   build window N-1 from A and B
-//!     ticks:                        read ring -> epoch A
-//!     report N:   advance (B forgotten, A kept)   drain   read ring -> epoch B
-//!                 build window N from B and A
-//!
-//! Windows point into the cache, so only `epoch_advance`, at a report, forgets frames.
+//! The frames of the stacks sent through the ring buffer.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -18,18 +7,13 @@ const cpu_wire = @import("../kernel/shared/cpu_wire.zig");
 const RecordHeader = cpu_wire.RecordHeader;
 const header_size = @sizeOf(RecordHeader);
 
-/// A stack is known by its hash within its process: the kernel hashes the frames, the stop
-/// reason and the kind of leaf.
 pub const StackId = struct {
     hash: u64,
     tgid: u32,
 };
 
-/// One record, unpacked.
 pub const Stack = struct {
     header: RecordHeader,
-    /// The user frames, then the kernel frames: `header.user_frame_count` and
-    /// `header.kernel_frame_count` of them.
     frames: []const u64,
 
     pub fn user(stack: *const Stack) []const u64 {
@@ -45,17 +29,12 @@ pub const Stack = struct {
 
 pub const FrameCache = struct {
     epochs: [2]Epoch,
-    /// Records go into `epochs[current]`.
     current: u1,
-    /// Records that failed validation. The kernel program writes them, so this should stay 0.
     records_malformed: u64,
-    /// Records that found no room in the epoch. Their stacks' counts will miss their frames.
     records_overflow: u64,
 
     pub const Options = struct {
-        /// Stacks per epoch: at most one per count key, so the counts map's size is enough.
         stacks_max: u32,
-        /// Frames per epoch, over all its stacks.
         frames_max: u32,
     };
 
@@ -80,20 +59,16 @@ pub const FrameCache = struct {
         cache.* = undefined;
     }
 
-    /// Forgets the older epoch, and sends new records into it from now on. Every Stack and
-    /// frame slice handed out from that epoch is invalid after this.
     pub fn epoch_advance(cache: *FrameCache) void {
         cache.current +%= 1;
         cache.epochs[cache.current].clear();
     }
 
-    /// Stores one ring record. Records come from the kernel: a bad one is counted, never trusted.
     pub fn record_add(cache: *FrameCache, bytes: []const u8) void {
         if (bytes.len < header_size) {
             cache.records_malformed += 1;
             return;
         }
-        // bytesToValue copies through an align(1) pointer: the record's alignment does not matter.
         const header = std.mem.bytesToValue(RecordHeader, bytes[0..header_size]);
         const frame_bytes = bytes[header_size..];
         if (!record_valid(header, frame_bytes.len)) {
@@ -102,12 +77,10 @@ pub const FrameCache = struct {
         }
 
         const id = StackId{ .hash = header.stack_hash, .tgid = header.tgid };
-        // Several CPUs can send the same new stack at once; the first copy is enough.
         if (cache.epochs[cache.current].find(id) != null) return;
         if (!cache.epochs[cache.current].add(id, header, frame_bytes)) cache.records_overflow += 1;
     }
 
-    /// The stack's frames: from this epoch, else from the previous one.
     pub fn find(cache: *const FrameCache, id: StackId) ?*const Stack {
         if (cache.epochs[cache.current].find(id)) |stack| return stack;
         return cache.epochs[cache.current +% 1].find(id);
@@ -115,7 +88,6 @@ pub const FrameCache = struct {
 };
 
 const Epoch = struct {
-    /// StackId -> index into `stacks`. Capacity is reserved at init, so it never grows.
     index: std.AutoHashMapUnmanaged(StackId, u32),
     stacks: []Stack,
     stacks_count: u32,
@@ -157,18 +129,15 @@ const Epoch = struct {
         return &epoch.stacks[stack_index];
     }
 
-    /// False when the epoch has no room for the stack.
     fn add(epoch: *Epoch, id: StackId, header: RecordHeader, frame_bytes: []const u8) bool {
         assert(epoch.find(id) == null);
         const count = frame_count(header);
-        // Pair assertion: record_valid checked the size, check it again where it is used.
         assert(frame_bytes.len == count * @sizeOf(u64));
 
         if (epoch.stacks_count == epoch.stacks.len) return false;
         if (count > epoch.frames.len - epoch.frames_count) return false;
 
         const frames = epoch.frames[epoch.frames_count..][0..count];
-        // Frames are native-endian u64s written by the kernel, so a byte copy is exact.
         @memcpy(std.mem.sliceAsBytes(frames), frame_bytes);
         epoch.stacks[epoch.stacks_count] = .{ .header = header, .frames = frames };
         epoch.index.putAssumeCapacityNoClobber(id, epoch.stacks_count);
@@ -185,23 +154,17 @@ fn frame_count(header: RecordHeader) u32 {
     return @as(u32, header.user_frame_count) + header.kernel_frame_count;
 }
 
-/// Whether the header describes a record the kernel program can write, `frame_bytes_size`
-/// bytes of frames included.
 fn record_valid(header: RecordHeader, frame_bytes_size: usize) bool {
     if (header.user_frame_count > cpu_wire.user_frames_max) return false;
     if (header.kernel_frame_count > cpu_wire.kernel_frames_max) return false;
-    // Only the reasons the program writes: the window turns the byte into a StopReason.
     const stop = std.enums.fromInt(cpu_wire.StopReason, header.stop_reason) orelse return false;
     if (stop == .none) return false;
     if (header.flags & ~cpu_wire.record_flags_known != 0) return false;
-    // Kernel frames exist only for a sample taken in kernel mode.
     if (header.kernel_frame_count > 0) {
         if (header.flags & cpu_wire.record_flag_kernel_mode == 0) return false;
     }
     return frame_bytes_size == @as(usize, frame_count(header)) * @sizeOf(u64);
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -218,7 +181,6 @@ fn header_for_test(hash: u64, user: u8, kernel: u8) RecordHeader {
     };
 }
 
-/// The header and the frames, as the kernel program writes them.
 fn record_encode(buffer: []u8, header: RecordHeader, frames: []const u64) []u8 {
     @memcpy(buffer[0..header_size], std.mem.asBytes(&header));
     const size = frames.len * @sizeOf(u64);
@@ -243,7 +205,7 @@ test "a valid record is unpacked: header, user frames, kernel frames" {
     try testing.expectEqual(@as(u32, 7), stack.header.tgid);
     try testing.expectEqualSlices(u64, frames[0..3], stack.user());
     try testing.expectEqualSlices(u64, frames[3..4], stack.kernel());
-    try testing.expect(cache.find(.{ .hash = 0xabc, .tgid = 8 }) == null); // Another process.
+    try testing.expect(cache.find(.{ .hash = 0xabc, .tgid = 8 }) == null);
 }
 
 test "the largest record fits, and a record that is not 8-byte aligned decodes the same" {
@@ -255,7 +217,6 @@ test "the largest record fits, and a record that is not 8-byte aligned decodes t
     var frames: [cpu_wire.frames_max]u64 = undefined;
     for (&frames, 0..) |*frame, index| frame.* = 0x1000 + index;
     const header = header_for_test(1, cpu_wire.user_frames_max, cpu_wire.kernel_frames_max);
-    // One byte in: the header and the frames sit at odd addresses.
     cache.record_add(record_encode(buffer[1..], header, &frames));
 
     const stack = cache.find(id_of(1)) orelse return error.TestUnexpectedResult;
@@ -274,7 +235,7 @@ test "records the kernel cannot write are counted as malformed and not stored" {
 
     const frames = [_]u64{ 1, 2, 3 };
     const valid = record_encode(&buffer, header_for_test(1, 3, 0), &frames);
-    cache.record_add(valid[0 .. valid.len - 8]); // One frame short.
+    cache.record_add(valid[0 .. valid.len - 8]);
 
     var stop_unknown = header_for_test(2, 1, 0);
     stop_unknown.stop_reason = cpu_wire.stop_reason_count;
@@ -306,7 +267,6 @@ test "a stack outlives one epoch advance, and is forgotten at the second" {
     cache.epoch_advance();
     try testing.expectEqual(@as(u64, 0x11), cache.find(id_of(1)).?.user()[0]);
 
-    // The same stack again in the new epoch: found there, with the new copy's frames.
     cache.record_add(record_encode(&buffer, header_for_test(2, 1, 0), &.{0x22}));
     cache.epoch_advance();
     try testing.expect(cache.find(id_of(1)) == null);
@@ -324,7 +284,6 @@ test "a full epoch counts overflow, keeps what it has, and has room again after 
     for ([_]u64{ 1, 2, 3 }) |hash| {
         cache.record_add(record_encode(&buffer, header_for_test(hash, 1, 0), &.{hash * 0x11}));
     }
-    // The same stack twice is stored once, and is not an overflow.
     cache.record_add(record_encode(&buffer, header_for_test(1, 1, 0), &.{0x11}));
     try testing.expectEqual(@as(u64, 1), cache.records_overflow);
     try testing.expectEqual(@as(u64, 0x11), cache.find(id_of(1)).?.user()[0]);
@@ -350,7 +309,6 @@ test "random records: every one is stored, a duplicate, malformed or an overflow
     var round: u32 = 0;
     while (round < 2000) : (round += 1) {
         if (round % 2 == 0) {
-            // Garbage of any size: it must be refused, never stored.
             const size = random.intRangeAtMost(usize, 0, buffer.len);
             random.bytes(buffer[0..size]);
             cache.record_add(buffer[0..size]);
@@ -364,7 +322,6 @@ test "random records: every one is stored, a duplicate, malformed or an overflow
             const overflow_before = cache.records_overflow;
             const frame_count_sent = @as(usize, user) + kernel;
             cache.record_add(record_encode(&buffer, header, frames[0..frame_count_sent]));
-            // A valid record is never malformed: it is stored, or it overflows.
             try testing.expectEqual(malformed_before, cache.records_malformed);
             if (cache.records_overflow == overflow_before) {
                 const stack = cache.find(.{ .hash = header.stack_hash, .tgid = 7 }) orelse
@@ -377,5 +334,5 @@ test "random records: every one is stored, a duplicate, malformed or an overflow
         if (round % 128 == 0) cache.epoch_advance();
     }
     try testing.expect(valid_sent > 0);
-    try testing.expect(cache.records_malformed > 0); // Garbage was refused.
+    try testing.expect(cache.records_malformed > 0);
 }

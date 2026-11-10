@@ -1,5 +1,4 @@
-//! The processes layer: the newest frame of the processes watch, copied into memory the server
-//! owns, and how many came so far. Safe from any thread: its own lock guards it. Stands on os.
+//! The processes layer.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -7,20 +6,15 @@ const os = @import("../os/os.zig");
 const Frame = protocol.ProcessFrame;
 const ProcessInfo = protocol.ProcessInfo;
 
-/// What `latest` gives.
 pub const Latest = struct {
-    /// Received since the server started: a client waits for it to grow.
     frames: u64,
-    /// Null before the first.
     frame: ?Frame,
 };
 
 pub const Processes = struct {
     lock: os.Lock,
     frames: u64,
-    /// Null before the first. Points into `arena`.
     frame: ?Frame,
-    /// Reset for each frame, keeping its memory.
     arena: std.heap.ArenaAllocator,
 
     pub fn init(gpa: std.mem.Allocator) Processes {
@@ -32,7 +26,6 @@ pub const Processes = struct {
         processes.* = undefined;
     }
 
-    /// Keeps a copy of `frame` in place of the last one: the agent reuses its memory.
     pub fn put(processes: *Processes, frame: *const Frame) !void {
         processes.lock.lock();
         defer processes.lock.unlock();
@@ -42,7 +35,6 @@ pub const Processes = struct {
         processes.frames += 1;
     }
 
-    /// The newest frame, copied into `arena`: the next `put` cannot change it.
     pub fn latest(processes: *Processes, arena: std.mem.Allocator) !Latest {
         processes.lock.lock();
         defer processes.lock.unlock();
@@ -51,7 +43,6 @@ pub const Processes = struct {
     }
 };
 
-/// A deep copy into `arena`.
 fn frame_copy(arena: std.mem.Allocator, frame: *const Frame) !Frame {
     const processes = try arena.alloc(ProcessInfo, frame.processes.len);
     for (processes, frame.processes) |*copy, info| copy.* = try info_copy(arena, info);
@@ -60,7 +51,6 @@ fn frame_copy(arena: std.mem.Allocator, frame: *const Frame) !Frame {
     return copy;
 }
 
-/// The whole value, then its slices: a new number field is copied without a line here.
 fn info_copy(arena: std.mem.Allocator, info: ProcessInfo) !ProcessInfo {
     var copy = info;
     copy.name = try arena.dupe(u8, info.name);
@@ -68,8 +58,6 @@ fn info_copy(arena: std.mem.Allocator, info: ProcessInfo) !ProcessInfo {
     copy.command = try arena.dupe(u8, info.command);
     return copy;
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -99,7 +87,7 @@ test "a kept frame is a copy: it outlives the frame it came from" {
     var name_buffer = "worker".*;
     const infos = [_]ProcessInfo{ info_test(10, &name_buffer), info_test(20, "db") };
     try latest.put(&.{ .unix_ns = 5, .interval_ns = 7, .processes = &infos });
-    name_buffer = "XXXXXX".*; // As the agent reuses its memory.
+    name_buffer = "XXXXXX".*;
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

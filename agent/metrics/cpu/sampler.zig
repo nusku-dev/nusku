@@ -1,5 +1,4 @@
-//! The kernel half of the CPU profiler: the sampling program (metrics/kernel/cpu.bpf.zig) loaded
-//! into the kernel with its own maps, bound to the shared unwind maps.
+//! The kernel half of the CPU profiler.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -18,13 +17,11 @@ const Config = cpu_wire.Config;
 const CountKey = cpu_wire.CountKey;
 const WalkState = cpu_wire.WalkState;
 
-/// The program's own maps, by the names it declares them under.
 pub const MapName = enum { cpu_config, cpu_state, cpu_walk_next, cpu_counts, cpu_records };
 
 const map_count = @typeInfo(MapName).@"enum".fields.len;
 const unwind_map_count = @typeInfo(@import("../unwind_maps.zig").MapName).@"enum".fields.len;
 
-/// The program's counters for the whole run, summed over the CPUs.
 pub const Counters = struct {
     walks_completed: u64 = 0,
     walks_from_kernel: u64 = 0,
@@ -39,14 +36,12 @@ pub const Counters = struct {
 pub const Sampler = struct {
     maps: std.EnumArray(MapName, Map),
     program: Program,
-    /// One per possible CPU: the per-CPU state map returns one value for each.
     states: []WalkState,
 
-    /// Loads the program. `unwind_maps` must outlive the sampler: the program reads its maps.
+    /// `unwind_maps` must outlive the sampler: the program reads its maps.
     pub fn init(sampler: *Sampler, gpa: std.mem.Allocator, unwind_maps: *const UnwindMaps) !void {
         const object = try Object.init(@embedFile("cpu_bpf"));
 
-        // Both sides of each shared map must agree, or the program would read past its values.
         for (unwind_maps.bindings(), 0..) |binding, index| {
             try loader.map_check(&object, binding.name, &unwind_maps.maps.values[index]);
         }
@@ -74,7 +69,6 @@ pub const Sampler = struct {
         });
         errdefer sampler.program.deinit();
 
-        // Slot 0 of the program array is the program itself, so a walk can continue.
         const walk_next = try TypedMap(u32, u32).init(sampler.maps.getPtrConst(.cpu_walk_next));
         try walk_next.update(0, &@as(u32, @intCast(sampler.program.fd)));
         log.debug("cpu sampler loaded", .{
@@ -84,7 +78,6 @@ pub const Sampler = struct {
         });
     }
 
-    /// Call after every perf event that runs the program is closed.
     pub fn deinit(sampler: *Sampler, gpa: std.mem.Allocator) void {
         sampler.program.deinit();
         for (&sampler.maps.values) |*map| map.deinit();
@@ -101,14 +94,12 @@ pub const Sampler = struct {
         return sampler.maps.get(.cpu_records).fd;
     }
 
-    /// The counters of the run so far, summed over the CPUs. Allocates nothing.
     pub fn counters_read(sampler: *const Sampler) !Counters {
         const key: u32 = 0;
         const found = try sampler.maps.getPtrConst(.cpu_state).lookup(
             std.mem.asBytes(&key),
             std.mem.sliceAsBytes(sampler.states),
         );
-        // An array map has every key from creation.
         assert(found);
 
         var counters = Counters{};
@@ -125,12 +116,6 @@ pub const Sampler = struct {
         return counters;
     }
 
-    /// Moves the counts of every generation but `generation_current` out of the kernel, into
-    /// `keys` and `values`, and returns how many there were. Two system calls, whatever the count.
-    ///
-    /// The program counts under the current generation only, so the older keys no longer
-    /// change. A sample that read the generation just before it advanced can still land in an
-    /// older key; if it lands after the read, its key stays and is drained next time.
     pub fn counts_drain(
         sampler: *const Sampler,
         keys: []CountKey,
@@ -144,7 +129,6 @@ pub const Sampler = struct {
         const count_all = try counts.lookup_batch(keys, values);
         assert(count_all <= cpu_wire.counts_max);
 
-        // Keep the older generations' entries, in place, at the front.
         var count_old: u32 = 0;
         for (keys[0..count_all], values[0..count_all]) |key, value| {
             if (key.generation == generation_current) continue;
@@ -166,8 +150,6 @@ fn maps_create(object: *const Object, maps: *std.EnumArray(MapName, Map)) !void 
         created += 1;
     }
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -205,7 +187,6 @@ test "init and deinit, and nothing is counted before a target is set (needs root
     try testing.expectEqual(@as(u64, 0), counters.walks_completed);
     try testing.expectEqual(@as(u64, 0), counters.records_sent);
 
-    // 384 KiB: on the heap, not the test's stack.
     const keys = try testing.allocator.alloc(CountKey, cpu_wire.counts_max);
     defer testing.allocator.free(keys);
     const values = try testing.allocator.alloc(u64, cpu_wire.counts_max);

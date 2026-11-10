@@ -1,6 +1,3 @@
-// The typed bridge to the Zig backend. Every function bound in ../../../src/api.zig gets one
-// wrapper here, so the rest of the UI never calls `webui.call` with a bare string.
-
 type Arg = string | number | boolean | Uint8Array
 
 interface WebUI {
@@ -11,31 +8,81 @@ interface WebUI {
 }
 
 declare global {
-  // Set by /webui.js, which index.html loads before the app.
   var webui: WebUI | undefined
 }
 
-function bridge(): WebUI {
-  if (!globalThis.webui) throw new Error('WebUI bridge not loaded: is the backend running?')
-  return globalThis.webui
-}
-
-async function callJson<T>(fn: string, ...args: Arg[]): Promise<T> {
-  return JSON.parse(await bridge().call(fn, ...args)) as T
-}
-
-/** Calls `onChange` whenever the connection to the backend opens or drops. */
-export function onConnection(onChange: (connected: boolean) => void): void {
-  const ui = bridge()
-  ui.setEventCallback((event) => onChange(event === ui.event.CONNECTED))
-  onChange(ui.isConnected()) // it may have connected before we subscribed
-}
-
-export interface AppInfo {
+export interface ProcessInfoWire {
+  pid: number
   name: string
-  version: string
+  user: string
+  command: string
+  threads: number
+  cpu_percent: number | null
+  memory_bytes: number
+  started_unix_ns: number
+}
+
+export interface MachineCpu {
+  busy_percent: number
+  user_percent: number
+  system_percent: number
+  iowait_percent: number
+  irq_percent: number
+  steal_percent: number
+}
+
+export interface ProcessFrame {
+  unix_ns: number
+  interval_ns: number
+  processes: ProcessInfoWire[]
+  machine: { cpus: number; cpu: MachineCpu | null }
+}
+
+const listeners = new Set<(connected: boolean) => void>()
+let connected = false
+let listening = false
+
+function bridge(): WebUI | undefined {
+  const ui = globalThis.webui
+  if (ui && !listening) {
+    listening = true
+    connected = ui.isConnected()
+    ui.setEventCallback((event) => {
+      connected = event === ui.event.CONNECTED
+      for (const listener of listeners) listener(connected)
+    })
+  }
+  return ui
+}
+
+export function onConnection(listener: (connected: boolean) => void): () => void {
+  bridge()
+  listeners.add(listener)
+  listener(connected)
+  return () => listeners.delete(listener)
+}
+
+function whenConnected(): Promise<WebUI> {
+  const ui = bridge()
+  if (!ui) return Promise.reject(new Error('The backend is not running'))
+  if (connected) return Promise.resolve(ui)
+  return new Promise((resolve) => {
+    const listener = (now: boolean) => {
+      if (!now) return
+      listeners.delete(listener)
+      resolve(ui)
+    }
+    listeners.add(listener)
+  })
+}
+
+async function call<T>(fn: string, ...args: Arg[]): Promise<T> {
+  const ui = await whenConnected()
+  const answer: unknown = JSON.parse(await ui.call(fn, ...args))
+  if (answer && typeof answer === 'object' && 'error' in answer) throw new Error(String(answer.error))
+  return answer as T
 }
 
 export const backend = {
-  appInfo: () => callJson<AppInfo>('app_info'),
+  processes: () => call<ProcessFrame>('get_processes'),
 }

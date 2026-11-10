@@ -1,5 +1,4 @@
-//! Which CPUs are online. CPUs come and go at run time (hotplug, cloud VMs resized, CPUs
-//! taken offline for power), so the agent asks again at every report instead of once.
+//! Which CPUs are online.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -8,14 +7,10 @@ const shared = @import("shared");
 const File = shared.File;
 const FileError = shared.FileError;
 
-/// Ranges keep the list short ("0-3,5,7-63"). A longer one is refused, and the caller tries
-/// every possible CPU.
 const list_size_max = 4096;
 
 pub const Error = error{ ListMalformed, ListTooLong, CpuTooLarge } || FileError;
 
-/// Sets `online[cpu]` for every online CPU and clears the others. `online.len` is the number of
-/// possible CPUs: a CPU the kernel lists outside of it is an error.
 pub fn online_read(online: []bool) Error!void {
     assert(online.len > 0);
     var file = try File.open("/sys/devices/system/cpu/online");
@@ -23,12 +18,10 @@ pub fn online_read(online: []bool) Error!void {
 
     var buffer: [list_size_max]u8 = undefined;
     const size = try file.read(&buffer);
-    // A full buffer may have cut the list: a cut list would leave CPUs out without saying so.
     if (size == buffer.len) return error.ListTooLong;
     try online_parse(buffer[0..size], online);
 }
 
-/// Parses the kernel's CPU list format: comma separated CPUs and inclusive ranges, "0-3,5".
 pub fn online_parse(text: []const u8, online: []bool) Error!void {
     @memset(online, false);
     const trimmed = std.mem.trimEnd(u8, text, "\n");

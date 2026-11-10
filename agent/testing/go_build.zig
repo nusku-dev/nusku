@@ -1,5 +1,4 @@
-//! Builds Go programs for the tests, and finds their functions. Without a Go toolchain (sudo
-//! resets PATH, so the usual places are tried too) those tests are skipped.
+//! Builds Go programs for the tests, and finds their functions.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -11,13 +10,10 @@ extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
 const go_candidates = [_][:0]const u8{ "/usr/local/go/bin/go", "/usr/bin/go", "/snap/bin/go" };
 
 pub const Build = struct {
-    /// The temporary directory holding the source, the Go caches and the binary.
     directory: [:0]u8,
-    /// The binary, inside `directory`.
     binary: [:0]u8,
 
     pub fn deinit(built: *Build, gpa: std.mem.Allocator) void {
-        // Test code: the directory goes with rm, there is no recursive delete to write here.
         const argv = [_:null]?[*:0]const u8{ "/bin/rm", "-rf", built.directory.ptr };
         run(&argv, &.{}) catch {};
         gpa.free(built.binary);
@@ -26,8 +22,6 @@ pub const Build = struct {
     }
 };
 
-/// Writes `source` as the main package of a module in a new temporary directory and builds it.
-/// `ldflags` goes to `go build -ldflags`. Null when there is no Go toolchain.
 pub fn build(gpa: std.mem.Allocator, source: []const u8, ldflags: [:0]const u8) !?Build {
     const go = go_find() orelse return null;
 
@@ -47,11 +41,9 @@ pub fn build(gpa: std.mem.Allocator, source: []const u8, ldflags: [:0]const u8) 
     defer gpa.free(cache);
     const flags = try std.fmt.allocPrintSentinel(gpa, "-ldflags={s}", .{ldflags}, 0);
     defer gpa.free(flags);
-    // -C must come first: go runs in that directory, where go.mod is.
     const argv = [_:null]?[*:0]const u8{
         go.ptr, "-C", directory.ptr, "build", flags.ptr, "-o", binary.ptr, ".",
     };
-    // A clean environment: no download of another toolchain, caches inside the directory.
     const environment = [_:null]?[*:0]const u8{
         home.ptr, cache.ptr, "GOTOOLCHAIN=local", "GOFLAGS=", "CGO_ENABLED=0", "PATH=/usr/bin:/bin",
     };
@@ -83,7 +75,6 @@ fn file_write(
     }
 }
 
-/// Runs a program to completion, and fails unless it exits with 0.
 pub fn run(argv: [*:null]const ?[*:0]const u8, environment: [*:null]const ?[*:0]const u8) !void {
     const pid = std.c.fork();
     if (pid < 0) return error.ForkFailed;
@@ -96,7 +87,6 @@ pub fn run(argv: [*:null]const ?[*:0]const u8, environment: [*:null]const ?[*:0]
     if (status != 0) return error.CommandFailed;
 }
 
-/// Starts the built program as a child. Kill it with testing/process.zig's child_reap.
 pub fn spawn(binary: [:0]const u8) !u32 {
     const pid = std.c.fork();
     if (pid < 0) return error.ForkFailed;
@@ -111,14 +101,12 @@ pub fn spawn(binary: [:0]const u8) !u32 {
 
 pub const Range = struct { start: u64, end: u64 };
 
-/// The address range of the function `name`, from the binary's symbol table.
 pub fn symbol_range(file: []const u8, name: []const u8) !?Range {
     const symbols_section = (try elf.find(file, ".symtab")) orelse return null;
     const names_section = (try elf.find(file, ".strtab")) orelse return null;
     const symbols = elf.bytes_of(file, symbols_section) orelse return null;
     const names = elf.bytes_of(file, names_section) orelse return null;
 
-    // An Elf64_Sym: name u32, info u8, other u8, section u16, value u64, size u64.
     var offset: usize = 0;
     while (offset + 24 <= symbols.len) : (offset += 24) {
         const name_offset = std.mem.readInt(u32, symbols[offset..][0..4], .little);
@@ -131,7 +119,6 @@ pub fn symbol_range(file: []const u8, name: []const u8) !?Range {
     return null;
 }
 
-/// The whole file, for reading its symbols.
 pub fn file_read_whole(gpa: std.mem.Allocator, path: [:0]const u8) ![]u8 {
     var file = try File.open(path);
     defer file.deinit();

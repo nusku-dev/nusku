@@ -1,19 +1,14 @@
-//! How kernel frames are named: the kernel's symbols are sent as a binary, each at its distance
-//! from `_text`, under an identity good for one boot.
+//! How kernel frames are named.
 
 const std = @import("std");
 const elf = @import("../elf.zig");
 
-/// The binary's path, and what a kernel frame is shown under.
 pub const path = "[kernel]";
 
-/// A build ID of at most 56 bytes, then the 8 of `_text`.
 pub const id_bytes_max = 64;
 
-/// Every offset of the kernel's "file" is its own address.
 pub const segment = elf.Segment{ .offset = 0, .vaddr = 0, .filesz = std.math.maxInt(u64) };
 
-/// The kernel's build ID, then `_text`, in `buffer`. Null when the kernel does not say either.
 pub fn id(buffer: *[id_bytes_max]u8, build_id: ?[]const u8, text_address: ?u64) ?[]const u8 {
     const kernel_id = build_id orelse return null;
     const text = text_address orelse return null;

@@ -7,36 +7,28 @@ const linux = std.os.linux;
 const ns_per_ms = std.time.ns_per_ms;
 const ns_per_s = std.time.ns_per_s;
 
-/// Time since an arbitrary start, which never goes backwards. For measuring durations.
 pub fn monotonic_ns() u64 {
     return clock_ns(.MONOTONIC);
 }
 
-/// Time since boot, counting the time the machine was suspended: the clock /proc's start
-/// times are counted on.
 pub fn boottime_ns() u64 {
     return clock_ns(.BOOTTIME);
 }
 
-/// When a run of `duration_s` seconds that starts now ends; null for a run without an end.
 pub fn deadline_from(duration_s: u32) ?u64 {
     if (duration_s == 0) return null;
     return monotonic_ns() + @as(u64, duration_s) * ns_per_s;
 }
 
-/// How long poll may wait: until the deadline, so it wakes for it even if nothing is ready.
 pub fn timeout_ms(deadline_ns: ?u64) i32 {
     const deadline = deadline_ns orelse return -1;
     const now = monotonic_ns();
     if (now >= deadline) return 0;
-    // divCeil fails only on a zero divisor.
     const remaining_ms = std.math.divCeil(u64, deadline - now, std.time.ns_per_ms) catch
         unreachable;
     return @intCast(@min(remaining_ms, std.math.maxInt(i32)));
 }
 
-/// Wall-clock time in nanoseconds since the Unix epoch. For timestamps other machines can read.
-/// It jumps when the clock is set, so two of them never make a duration.
 pub fn realtime_ns() u64 {
     return clock_ns(.REALTIME);
 }
@@ -44,17 +36,14 @@ pub fn realtime_ns() u64 {
 fn clock_ns(clock: linux.clockid_t) u64 {
     var time: linux.timespec = undefined;
     const result = linux.clock_gettime(clock, &time);
-    // Both clocks always exist on Linux, and the pointer is valid.
     assert(linux.errno(result) == .SUCCESS);
     assert(time.sec >= 0);
     assert(time.nsec >= 0);
     return @as(u64, @intCast(time.sec)) * ns_per_s + @as(u64, @intCast(time.nsec));
 }
 
-/// Sleeps for about `duration_ms`. For tests: the agent itself waits on timers, never sleeps.
 pub fn sleep_ms(duration_ms: u64) void {
     const request = timespec_from_ms(duration_ms);
-    // Waking early because of a signal is fine for a test.
     _ = linux.nanosleep(&request, null);
 }
 
@@ -65,7 +54,6 @@ fn timespec_from_ms(duration_ms: u64) linux.timespec {
     };
 }
 
-/// A timerfd that becomes readable every `period_ms`, counted from when it was armed.
 pub const Timer = struct {
     fd: i32,
 
@@ -84,7 +72,6 @@ pub const Timer = struct {
         return timer;
     }
 
-    /// Fires every `period_ms` from now on, the first time `period_ms` from now.
     pub fn period_set(timer: *const Timer, period_ms: u32) error{Unexpected}!void {
         assert(period_ms > 0);
         const period = timespec_from_ms(period_ms);
@@ -100,8 +87,6 @@ pub const Timer = struct {
         timer.* = undefined;
     }
 
-    /// How many periods passed since the last call: more than one when the reader was late.
-    /// Clears the readiness. 0 when the timer had not fired.
     pub fn expirations_read(timer: *const Timer) error{Unexpected}!u64 {
         var expirations: u64 = 0;
         const result = linux.read(timer.fd, std.mem.asBytes(&expirations), @sizeOf(u64));
@@ -123,7 +108,7 @@ test "both clocks advance, and the wall clock is a real date" {
     sleep_ms(20);
     try std.testing.expect(monotonic_ns() - monotonic_start >= 15 * ns_per_ms);
     try std.testing.expect(realtime_ns() - realtime_start >= 15 * ns_per_ms);
-    try std.testing.expect(realtime_start > 1_577_836_800 * ns_per_s); // After 1 January 2020.
+    try std.testing.expect(realtime_start > 1_577_836_800 * ns_per_s);
 }
 
 test "a timer fires once per period, and reads 0 before it has fired" {

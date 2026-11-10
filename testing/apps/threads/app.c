@@ -1,14 +1,10 @@
-// A small C program with several threads, whose CPU profile is known in advance, to check
-// nusku against: every thread is sampled, a sleeping one is not, and time in the kernel has
-// kernel frames.
-//
+// Threads with a known CPU profile:
 //   main thread    spin_main -> spin            busy all the time            1.0 core
 //   one thread     half_main -> half_work       busy 50 ms, asleep 50 ms     0.5 core
 //   one thread     read_main -> read_work       reads /dev/zero: the kernel  1.0 core
 //                  -> read (libc) -> kernel     fills the buffer
 //   one thread     sleep_main                   asleep all the time          0.0 core
-//
-// 2.5 cores in all: 247.5 samples a second at 99 Hz, of which spin 40%, half 20%, read 40%.
+// 2.5 cores: 247.5 samples a second at 99 Hz.
 
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -20,7 +16,7 @@
 
 #define NOINLINE __attribute__((noinline))
 
-static volatile uint64_t sink; // Keeps the work from being optimized away.
+static volatile uint64_t sink;
 static uint64_t until_ns;
 
 static uint64_t now_ns(void) {
@@ -80,7 +76,6 @@ NOINLINE static void *sleep_main(void *unused) {
 }
 
 int main(int argc, char **argv) {
-    // Seconds to run; nusku stops it sooner when it profiles it with --duration.
     uint64_t seconds = argc > 1 ? strtoull(argv[1], 0, 10) : 60;
     until_ns = now_ns() + seconds * 1000000000u;
 
@@ -90,5 +85,5 @@ int main(int argc, char **argv) {
     pthread_create(&threads[2], 0, sleep_main, 0);
     spin_main();
     for (int i = 0; i < 3; i++) pthread_join(threads[i], 0);
-    return sink == 42; // Almost surely 0; reading `sink` keeps the work.
+    return sink == 42;
 }

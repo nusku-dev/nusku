@@ -1,5 +1,4 @@
-//! The processes of the machine as /proc gives them, in the kernel's own units. Nothing here
-//! keeps state between looks or turns ticks into percent: the layer above does that.
+//! The processes of the machine as /proc gives them.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -16,8 +15,6 @@ const Machine = @import("machine.zig").Machine;
 
 pub const Entry = struct {
     stat: Stat,
-    /// When `stat` was read, on the monotonic clock. A look takes a while, and a process's CPU
-    /// is measured between its own two reads, not between the starts of two looks.
     read_ns: u64,
     statm: Statm,
     status: Status,
@@ -27,13 +24,9 @@ pub const Entry = struct {
 
 pub const Proc = struct {
     entries: std.AutoHashMapUnmanaged(u32, Entry) = .empty,
-    /// The names that `Entry.user` points into: kept as long as the entries are.
     users: Users = .{},
-    /// The whole machine's CPU, read just before the processes.
     machine: Machine = .{},
 
-    /// Every process now, keyed by pid. Allocates only when there are more processes than the
-    /// map has room for.
     pub fn read(proc: *Proc, gpa: std.mem.Allocator) !void {
         proc.entries.clearRetainingCapacity();
         try proc.machine.read();
@@ -41,38 +34,36 @@ pub const Proc = struct {
         var dir = try Directory.open("/proc");
         defer dir.deinit();
 
-        // Read again each look, for users added since. The old names go only now: the
-        // entries that pointed into them were just cleared.
         var users: Users = .{};
         try users.load(gpa);
         proc.users.deinit(gpa);
         proc.users = users;
 
         while (try dir.next()) |name| {
-            const pid = pid_parse(name) orelse continue; // ".", "self", "meminfo", ...
+            const pid = pid_parse(name) orelse continue;
 
             var stat: Stat = undefined;
             stat.read(pid) catch |err| switch (err) {
-                error.ProcessNotFound => continue, // Ended while we walked.
+                error.ProcessNotFound => continue,
                 else => return err,
             };
             const read_ns = timer.monotonic_ns();
 
             var statm: Statm = undefined;
             statm.read(pid) catch |err| switch (err) {
-                error.ProcessNotFound => continue, // Ended while we walked.
+                error.ProcessNotFound => continue,
                 else => return err,
             };
 
             var status: Status = undefined;
             status.read(pid) catch |err| switch (err) {
-                error.ProcessNotFound => continue, // Ended while we walked.
+                error.ProcessNotFound => continue,
                 else => return err,
             };
 
             var cmdline: CmdLine = undefined;
             cmdline.read(pid) catch |err| switch (err) {
-                error.ProcessNotFound => continue, // Ended while we walked.
+                error.ProcessNotFound => continue,
                 else => return err,
             };
 
@@ -95,16 +86,13 @@ pub const Proc = struct {
         proc.* = undefined;
     }
 
-    /// The same process in this read: same pid and same start, so not a pid the kernel gave
-    /// again to a new process. Null when it is not here.
     pub fn same(proc: *const Proc, stat: *const Stat) ?*const Entry {
         const entry = proc.entries.getPtr(stat.pid) orelse return null;
-        if (entry.stat.start_ticks != stat.start_ticks) return null; // The pid was reused.
+        if (entry.stat.start_ticks != stat.start_ticks) return null;
         return entry;
     }
 };
 fn pid_parse(name: []const u8) ?u32 {
-    // parseInt would take "+1": a pid starts with a digit.
     if (name.len == 0 or !std.ascii.isDigit(name[0])) return null;
     const pid = std.fmt.parseInt(u32, name, 10) catch return null;
     return if (process.pid_valid(pid)) pid else null;
@@ -129,7 +117,7 @@ test "every entry is filed under its own pid, and this process is whole" {
     defer proc.deinit(testing.allocator);
     try proc.read(testing.allocator);
 
-    try testing.expect(proc.entries.count() >= 2); // This test and the build runner.
+    try testing.expect(proc.entries.count() >= 2);
     var entries = proc.entries.iterator();
     while (entries.next()) |entry| {
         try testing.expectEqual(entry.key_ptr.*, entry.value_ptr.stat.pid);

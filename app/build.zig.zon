@@ -36,6 +36,9 @@
             .url = "https://github.com/webui-dev/zig-webui/archive/main.tar.gz",
             .hash = "zig_webui-2.5.1-M4z7zWPVAQA4GRBq-uS_aPAoxjFsR0hbpszpshwGX1Tf",
         },
+        // The repository's root: the client (and the server and agent behind it) that the CLI
+        // uses too, and the shared protocol types.
+        .nusku = .{ .path = ".." },
     },
     .paths = .{
         "build.zig",

@@ -5,7 +5,6 @@ const assert = std.debug.assert;
 const linux = std.os.linux;
 
 pub const Error = error{
-    /// The CPU is offline: there is nothing to sample on it.
     CpuOffline,
     PermissionDenied,
     NotSupported,
@@ -15,13 +14,7 @@ pub const Error = error{
 pub const PerfEvent = struct {
     fd: i32,
 
-    /// A CPU-clock event on one CPU, firing `sample_hz` times a second while any task runs
-    /// there (the BPF program picks the target's samples). It starts disabled. Needs root or
-    /// CAP_PERFMON.
-    ///
-    /// CPU clock rather than the cycles counter: it exists on every machine (virtual machines
-    /// often have no hardware counters), and its samples measure time, which is what an on-CPU
-    /// profile reports.
+    /// Needs root or CAP_PERFMON.
     pub fn cpu_clock_open(cpu: u32, sample_hz: u32) Error!PerfEvent {
         assert(sample_hz > 0);
         assert(cpu <= std.math.maxInt(i32));
@@ -34,9 +27,9 @@ pub const PerfEvent = struct {
         };
         const result = linux.perf_event_open(
             &attributes,
-            -1, // Every process on this CPU.
+            -1,
             @intCast(cpu),
-            -1, // No group.
+            -1,
             linux.PERF.FLAG.FD_CLOEXEC,
         );
         return switch (linux.errno(result)) {
@@ -54,7 +47,6 @@ pub const PerfEvent = struct {
         event.* = undefined;
     }
 
-    /// Makes every sample of the event run the program.
     pub fn program_attach(event: *const PerfEvent, program_fd: i32) Error!void {
         assert(program_fd >= 0);
         const request = linux.PERF.EVENT_IOC.SET_BPF;

@@ -1,10 +1,4 @@
-//! End to end: the watch sees what four children, named with prctl, are known to do:
-//!   nusku-burn    keeps one core busy: about 100% CPU
-//!   nusku-sleep   sleeps: about 0% CPU
-//!   nusku-memory  writes 64 MiB, then sleeps: at least 64 MiB resident
-//!   nusku-short   killed and reaped after the second frame: in no frame after it
-//! And the machine's CPU, from /proc/stat, has room for the burner's core.
-//! No root needed.
+//! End to end: the watch sees what four children.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -22,7 +16,6 @@ const Frame = process_file.Frame;
 const Role = enum { burn, sleep, memory, short };
 
 const memory_bytes = 64 * 1024 * 1024;
-/// Longer than the watch: the test kills every child itself.
 const child_life_ms = 10_000;
 
 fn role_name(role: Role) [:0]const u8 {
@@ -39,22 +32,19 @@ fn child_spawn(role: Role) !u32 {
     if (pid < 0) return error.ForkFailed;
     if (pid != 0) return @intCast(pid);
 
-    // The child. The parent may have threads: only system calls from here, no allocator.
     _ = linux.prctl(@intFromEnum(linux.PR.SET_NAME), @intFromPtr(role_name(role).ptr), 0, 0, 0);
     switch (role) {
         .burn => child_process.cpu_burn(child_life_ms),
         .sleep, .short => timer.sleep_ms(child_life_ms),
         .memory => {
             const bytes = anonymous_memory.reserve(memory_bytes) catch std.c._exit(1);
-            @memset(bytes, 0xaa); // Written, so every page is resident.
+            @memset(bytes, 0xaa);
             timer.sleep_ms(child_life_ms);
         },
     }
     std.c._exit(0);
 }
 
-/// libc's own reading of /etc/passwd: an answer that does not come from our `Users`.
-/// Only the first field of `struct passwd` is used, so only it is declared.
 const Passwd = extern struct { pw_name: [*:0]const u8 };
 extern "c" fn getpwuid(uid: u32) ?*const Passwd;
 
@@ -67,21 +57,13 @@ const Seen = struct {
     pids: std.EnumArray(Role, u32),
     expected_user: []const u8,
     frames: u32 = 0,
-    /// Each child as the last frame it was in showed it. `name`, `user` and `command` are
-    /// cleared: they point into the frame, which is gone after the callback.
     last: std.EnumArray(Role, ?ProcessInfo) = .initFill(null),
     named: std.EnumArray(Role, bool) = .initFill(false),
-    /// Every child, in every frame, had `expected_user`.
     users_ok: bool = true,
-    /// Every child, in every frame, had one thread: fork copies only the calling one.
     threads_ok: bool = true,
-    /// Every child, in every frame, had the test binary's command line: prctl changes the
-    /// name, not the command.
     commands_ok: bool = true,
     short_reaped: bool = false,
     short_seen_after_reap: bool = false,
-    /// The machine as the first frame and the last frame showed it, and the processes' CPU
-    /// summed in the last.
     machine_first: ?protocol.Machine = null,
     machine_last: protocol.Machine = .{},
     processes_cpu_percent: f32 = 0,
@@ -93,7 +75,6 @@ const Seen = struct {
         seen.processes_cpu_percent = 0;
         for (frame.processes) |info| seen.processes_cpu_percent += info.cpu_percent orelse 0;
 
-        // The test's own command line, from the same frame: what every child inherited.
         const own_pid: u32 = @intCast(linux.getpid());
         const own_command = for (frame.processes) |info| {
             if (info.pid == own_pid) break info.command;
@@ -126,7 +107,6 @@ const Seen = struct {
 test "the watch sees what known children do, and one that ends" {
     var seen = Seen{ .pids = .initUndefined(), .expected_user = user_expected() };
     var spawned: std.EnumSet(Role) = .initEmpty();
-    // Reaped once only: after the wait, the pid may already be another process's.
     defer for (std.enums.values(Role)) |role| {
         if (!spawned.contains(role)) continue;
         if (role == .short and seen.short_reaped) continue;
@@ -153,25 +133,20 @@ test "the watch sees what known children do, and one that ends" {
     const sleep = seen.last.get(.sleep).?;
     const memory = seen.last.get(.memory).?;
     for (std.enums.values(Role)) |role| try testing.expect(seen.named.get(role));
-    // The children run as whoever runs the test, as libc names them.
     try testing.expect(!std.mem.eql(u8, seen.expected_user, "unknown"));
     try testing.expect(seen.users_ok);
-    // Forked children have one thread, and the test binary's command line.
     try testing.expect(seen.threads_ok);
     try testing.expect(seen.commands_ok);
 
     std.debug.print("watch e2e: {d} frames, burn {d:.1}%, sleep {d:.1}%\n", .{
         seen.frames, burn.cpu_percent.?, sleep.cpu_percent.?,
     });
-    // One busy core is about 100%; loose bounds, for a loaded machine.
     try testing.expect(burn.cpu_percent.? > 50 and burn.cpu_percent.? < 130);
     try testing.expect(sleep.cpu_percent.? < 5);
 
-    // The 64 MiB written are resident.
     try testing.expect(memory.memory_bytes >= memory_bytes);
     try testing.expect(sleep.memory_bytes < memory_bytes);
 
-    // Each started when it was forked, give or take the 10 ms ticks.
     for (std.enums.values(Role)) |role| {
         const started = seen.last.get(role).?.started_unix_ns;
         const off_ns = if (started > forked_unix_ns)
@@ -181,14 +156,12 @@ test "the watch sees what known children do, and one that ends" {
         try testing.expect(off_ns < std.time.ns_per_s);
     }
 
-    // Seen while it ran, never after it was reaped.
     try testing.expect(seen.last.get(.short) != null);
     try testing.expect(!seen.short_seen_after_reap);
 
     try machine_check(&seen, burn.cpu_percent.?);
 }
 
-/// The machine's CPU: none on the first frame, then one that holds the burner's core.
 fn machine_check(seen: *const Seen, burn_cpu_percent: f32) !void {
     const first = seen.machine_first.?;
     const machine = seen.machine_last;
@@ -204,6 +177,5 @@ fn machine_check(seen: *const Seen, burn_cpu_percent: f32) !void {
     const states = cpu.user_percent + cpu.system_percent + cpu.irq_percent + cpu.steal_percent;
     try testing.expectApproxEqAbs(cpu.busy_percent, states, 0.1);
     try testing.expect(cpu.busy_percent <= 100 and cpu.iowait_percent >= 0);
-    // The burner alone is one core; a tick of slack between the two clocks.
     try testing.expect(cpu.busy_percent * cpus >= burn_cpu_percent - 10);
 }

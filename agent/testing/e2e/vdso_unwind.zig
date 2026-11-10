@@ -1,6 +1,4 @@
-//! End to end: a child that calls the vDSO's clock_gettime in a loop is profiled with its
-//! callers. Its stacks in the vDSO must climb out into its own code, to the outermost frame.
-//! Needs root.
+//! End to end: a vDSO clock_gettime loop is profiled with its callers.
 
 const std = @import("std");
 const testing = std.testing;
@@ -15,7 +13,6 @@ const Region = @import("../../target/regions.zig").Region;
 test "stacks inside the vDSO keep their callers (needs root, skipped otherwise)" {
     if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
 
-    // Skipped when the vDSO has no clock_gettime to call.
     const clock_gettime = (try child_process.vdso_clock_gettime(testing.allocator)) orelse
         return error.SkipZigTest;
     const child = try child_process.clock_reader_spawn(3000, clock_gettime);
@@ -48,7 +45,6 @@ test "stacks inside the vDSO keep their callers (needs root, skipped otherwise)"
         if (!region_contains(vdso_region, stack.user[0])) continue;
         vdso_samples += stack.samples;
 
-        // Complete, and the caller of the vDSO frame is the child's own code, not the vDSO.
         if (stack.stop != .end) continue;
         if (stack.user.len < 3) continue;
         if (region_contains(vdso_region, stack.user[1])) continue;
@@ -58,9 +54,7 @@ test "stacks inside the vDSO keep their callers (needs root, skipped otherwise)"
         window.samples, vdso_samples, vdso_samples_complete,
     });
 
-    // The child does nothing but call the vDSO, so most samples are in it...
     try testing.expect(vdso_samples * 2 >= window.samples);
-    // ...and nearly all of those must walk out of it to the outermost frame.
     try testing.expect(vdso_samples_complete * 10 >= vdso_samples * 9);
 }
 

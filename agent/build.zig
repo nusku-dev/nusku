@@ -6,13 +6,10 @@ const libelf_dir = "third_party/libelf";
 pub const Options = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    /// The agent's tests are added to this step, so one `zig build test` runs everything.
     test_step: *std.Build.Step,
-    /// The log library (logger/): the agent logs through it, as "agent".
     log: *std.Build.Module,
 };
 
-/// Builds the agent and returns its module.
 pub fn add(b: *std.Build, options: Options) *std.Build.Module {
     const module = b.createModule(.{
         .root_source_file = b.path("agent/root.zig"),
@@ -23,17 +20,13 @@ pub fn add(b: *std.Build, options: Options) *std.Build.Module {
     module.addImport("log", options.log);
     add_c_libraries(b, module, options);
     add_kernel_program(b, module, "cpu", "agent/metrics/kernel/cpu.bpf.zig");
-    // Only the loader's tests use this one.
     add_kernel_program(b, module, "loader_testing", "agent/metrics/kernel/loader_testing.bpf.zig");
 
     add_tests(b, module, options.test_step);
     return module;
 }
 
-// ------------------------------------------------------------ kernel programs
-
-/// Compiles a Zig kernel program for BPF, embedded as the import "<name>_bpf". Optimized: the
-/// verifier rejects an unoptimized build. Debug info is kept for llvm-objdump and bpftool.
+/// Optimized: the verifier rejects an unoptimized build.
 fn add_kernel_program(
     b: *std.Build,
     module: *std.Build.Module,
@@ -49,7 +42,6 @@ fn add_kernel_program(
             .strip = false,
         }),
     });
-    // The unwind tables' layout, which the unwind layer owns: the programs read the tables.
     object.root_module.addAnonymousImport("unwind_wire", .{
         .root_source_file = b.path("agent/unwind/wire.zig"),
     });
@@ -60,8 +52,6 @@ fn add_kernel_program(
     b.getInstallStep().dependOn(&installed.step);
 }
 
-/// Runs the agent's tests, and also installs the test binary as zig-out/bin/agent-tests, so
-/// the tests that need root can be run with sudo without building as root.
 fn add_tests(b: *std.Build, module: *std.Build.Module, test_step: *std.Build.Step) void {
     const tests = b.addTest(.{ .root_module = module });
     tests.build_id = .fast;
@@ -70,12 +60,6 @@ fn add_tests(b: *std.Build, module: *std.Build.Module, test_step: *std.Build.Ste
     test_step.dependOn(&b.addRunArtifact(tests).step);
     test_step.dependOn(&b.addInstallArtifact(tests, .{ .dest_sub_path = "agent-tests" }).step);
 }
-
-// ---------------------------------------------------------------- C libraries
-// Built from source, so the binary needs nothing installed:
-//   libbpf  the kernel calls of bpf/libbpf.zig. Pinned in build.zig.zon.
-//   libelf  needed by libbpf. Vendored in third_party/libelf: elfutils has no fetchable tarball.
-//   zlib    needed by libelf. Pinned in build.zig.zon.
 
 const c_flags = [_][]const u8{
     "-O2",
@@ -93,8 +77,8 @@ fn add_c_libraries(b: *std.Build, module: *std.Build.Module, options: Options) v
     bpf.lib.root_module.linkLibrary(zlib.lib);
 
     module.linkLibrary(bpf.lib);
-    module.addIncludePath(bpf.public_headers); // <bpf/bpf.h>, <bpf/libbpf.h>
-    module.addIncludePath(bpf.uapi); // <linux/bpf.h>
+    module.addIncludePath(bpf.public_headers);
+    module.addIncludePath(bpf.uapi);
 }
 
 fn library_new(b: *std.Build, name: []const u8, options: Options) *std.Build.Step.Compile {
@@ -108,8 +92,6 @@ fn library_new(b: *std.Build, name: []const u8, options: Options) *std.Build.Ste
         }),
     });
 }
-
-// ------------------------------------------------------------------------ zlib
 
 const Zlib = struct { lib: *std.Build.Step.Compile, root: std.Build.LazyPath };
 
@@ -131,8 +113,6 @@ const zlib_sources = [_][]const u8{
     "inflate.c", "inftrees.c", "trees.c",   "uncompr.c", "zutil.c",
 };
 
-// ---------------------------------------------------------------------- libelf
-
 fn add_libelf(
     b: *std.Build,
     options: Options,
@@ -140,7 +120,7 @@ fn add_libelf(
 ) *std.Build.Step.Compile {
     const lib = library_new(b, "elf", options);
     const m = lib.root_module;
-    m.addIncludePath(b.path(libelf_dir ++ "/shim")); // our config.h comes first
+    m.addIncludePath(b.path(libelf_dir ++ "/shim"));
     m.addIncludePath(b.path(libelf_dir ++ "/libelf"));
     m.addIncludePath(b.path(libelf_dir ++ "/lib"));
     m.addIncludePath(zlib_root);
@@ -194,8 +174,6 @@ const libelf_sources = [_][]const u8{
     "libelf_next_prime.c",    "nlist.c",
 };
 
-// ---------------------------------------------------------------------- libbpf
-
 const Bpf = struct {
     lib: *std.Build.Step.Compile,
     public_headers: std.Build.LazyPath,
@@ -215,12 +193,9 @@ fn add_libbpf(b: *std.Build, options: Options, zlib_root: std.Build.LazyPath) Bp
     m.addCSourceFiles(.{
         .root = dep.path("src"),
         .files = &libbpf_sources,
-        // libbpf's include/linux/kernel.h defines offsetof as &((T *)0)->member, which Zig's
-        // Debug undefined-behavior checks report as a null dereference. It is harmless there.
         .flags = &(c_flags ++ .{"-fno-sanitize=undefined"}),
     });
 
-    // libbpf keeps its headers flat in src/, but our code includes them as <bpf/...>.
     const wf = b.addWriteFiles();
     for (libbpf_public_headers) |h| {
         _ = wf.addCopyFile(dep.path(b.fmt("src/{s}", .{h})), b.fmt("bpf/{s}", .{h}));

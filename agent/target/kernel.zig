@@ -1,4 +1,4 @@
-//! The identity of the running kernel, so the server can find its symbols for kernel frames.
+//! The identity of the running kernel.
 
 const std = @import("std");
 const File = @import("shared").File;
@@ -9,17 +9,11 @@ const build_id = @import("build_id.zig");
 const log = @import("../log.zig").agent;
 
 pub const Identity = struct {
-    /// For example "6.8.0-45-generic". Empty if it could not be read.
     release: []const u8 = "",
-    /// The GNU build ID of the kernel image. Null if the kernel has none or it is unreadable.
     build_id: ?[]const u8 = null,
-    /// The run-time address of the kernel's `_text` symbol. Null when the kernel hides it
-    /// (needs CAP_SYSLOG or root) or it could not be read.
     text_address: ?u64 = null,
 };
 
-/// Reads the identity of the running kernel. Whatever the kernel does not tell us is left
-/// empty or null: a missing piece must never fail a profile. Everything returned lives in `arena`.
 pub fn read(arena: std.mem.Allocator) !Identity {
     var identity = Identity{};
 
@@ -27,9 +21,7 @@ pub fn read(arena: std.mem.Allocator) !Identity {
         identity.release = trailing_space_trim(text);
     }
 
-    // /sys/kernel/notes holds the kernel image's ELF notes: the same format as in any binary.
     if (try file_read_or_null(arena, "/sys/kernel/notes", 64 * 1024)) |notes| {
-        // Points into `notes`, which `arena` owns.
         identity.build_id = build_id.find_build_id(notes);
     }
 
@@ -47,14 +39,12 @@ pub fn read(arena: std.mem.Allocator) !Identity {
     return identity;
 }
 
-/// The run-time address of `_text`, else `_stext` (the same on current kernels). Stops reading
-/// kallsyms there: tens of KiB in, after the per-CPU variables.
 fn text_address_scan(comptime chunk: usize, source: *const File) ?u64 {
     var buffer: [chunk]u8 = undefined;
-    var kept: usize = 0; // bytes of an unfinished line, kept at the start of buffer
+    var kept: usize = 0;
     var offset: u64 = 0;
     var stext: ?u64 = null;
-    const limit = 4 * 1024 * 1024; // no kernel has _text this deep
+    const limit = 4 * 1024 * 1024;
 
     while (offset < limit) {
         const n = source.read_at(buffer[kept..], offset) catch break;
@@ -62,8 +52,6 @@ fn text_address_scan(comptime chunk: usize, source: *const File) ?u64 {
         offset += n;
         const filled = kept + n;
 
-        // Work on whole lines only. No newline at all means a line longer than the buffer,
-        // which is not kallsyms.
         const lines_end = (std.mem.lastIndexOfScalar(u8, buffer[0..filled], '\n') orelse break) + 1;
         if (address_of(buffer[0..lines_end], "_text")) |address| return address;
         if (stext == null) stext = address_of(buffer[0..lines_end], "_stext");
@@ -74,14 +62,12 @@ fn text_address_scan(comptime chunk: usize, source: *const File) ?u64 {
     return stext;
 }
 
-/// The first non-zero address printed for `symbol`. Zero means kptr_restrict hides addresses.
 fn address_of(kallsyms: []const u8, symbol: []const u8) ?u64 {
     var lines = std.mem.splitScalar(u8, kallsyms, '\n');
     while (lines.next()) |line| {
-        // A line is: "address type name", and module symbols add "\t[module]".
         var fields = std.mem.splitScalar(u8, line, ' ');
         const address_text = fields.next() orelse continue;
-        _ = fields.next() orelse continue; // the symbol type
+        _ = fields.next() orelse continue;
         const name = fields.next() orelse continue;
         if (!std.mem.eql(u8, name, symbol)) continue;
         const address = std.fmt.parseInt(u64, address_text, 16) catch continue;
@@ -90,7 +76,6 @@ fn address_of(kallsyms: []const u8, symbol: []const u8) ?u64 {
     return null;
 }
 
-/// Reads a small file, or returns null if it cannot be read. Only out of memory is an error.
 fn file_read_or_null(gpa: std.mem.Allocator, path: [:0]const u8, max_bytes: usize) !?[]u8 {
     return file_read(gpa, path, max_bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

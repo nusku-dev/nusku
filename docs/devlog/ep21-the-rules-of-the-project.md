@@ -27,11 +27,13 @@ It is organised by question:
 shared/   what every module uses: the protocol, ELF, files
 agent/    profiles a process with eBPF, watches every process; sends raw addresses
 server/   keeps the reports, names them with the binaries' symbols, answers with profiles
-src/      the nusku program: commands, views, and the client that reaches the server
+client/   how a program reaches a server: shared by the CLI and the app
+src/      the nusku program: commands and views
 cli/      the command-line parser src/ is built on
 logger/   the logger every module logs through
 testing/  small C, Go and Zig apps with known profiles, and the Makefile that checks them
-app/      the UI, with its own build (not part of build.zig)
+app/      the desktop app, nusku-app: a second client, with its own build that imports
+          the root package (client, shared) through its build.zig.zon
 ```
 
 Each module has one way in:
@@ -41,7 +43,9 @@ Each module has one way in:
 | `agent` | `Run` (init · deinit · next · stop · binary_want) and `Watch` (init · deinit · next · stop) |
 | `server` | `Server` (feed · watch_take · profile · processes), `Feed` (take · close), `Controller` (start · stop · wait · running · interrupt) |
 | `shared` | `protocol`, `elf`, `File`, `directory` |
+| `client` | `profile` · `processes` · `processes_watch` · `stop` |
 | `src` | the `nusku` program |
+| `app` | the `nusku-app` program |
 
 What crosses between the agent and the server is a `shared/protocol` type, never an agent or a
 server type. The agent never imports the server; the server imports the agent only in its

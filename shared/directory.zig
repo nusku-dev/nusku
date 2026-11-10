@@ -1,4 +1,4 @@
-//! The names in a directory, read with getdents64. Includes "." and "..": the caller filters.
+//! The names in a directory, read with getdents64.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -12,15 +12,12 @@ pub const FilError = file.OpenError || file.ReadError;
 const buffer_bytes = 8192;
 const interrupt_retries_max = 16;
 
-/// One record is: inode (8 bytes), offset (8), record length (2), type (1), then the name
-/// and a zero.
 const length_at = 16;
 const name_at = 19;
 
 pub const Directory = struct {
     file: File,
     buffer: [buffer_bytes]u8 align(8),
-    /// The part of `buffer` that holds records, and where the next one starts.
     len: usize,
     at: usize,
 
@@ -48,7 +45,6 @@ pub const Directory = struct {
         return std.mem.sliceTo(record[name_at..length], 0);
     }
 
-    /// Reads the next batch of records. Returns how many bytes: 0 is the end.
     fn refill(directory: *Directory) FilError!usize {
         var interrupts: u32 = 0;
         while (true) {
@@ -65,15 +61,12 @@ pub const Directory = struct {
                     if (interrupts < interrupt_retries_max) continue;
                     return error.Interrupted;
                 },
-                // The directory went away while we were reading it (a process that ended).
                 .NOENT => return error.ProcessNotFound,
                 else => return error.Unexpected,
             }
         }
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 

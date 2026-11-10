@@ -1,6 +1,4 @@
-//! Loads the headers and the asked-for sections of an ELF file into a buffer as long as the
-//! file, so offsets stay file offsets; the rest is unread zero pages. Of libc's 2 MiB, about
-//! 60 KiB are read. Every offset is untrusted and checked.
+//! Loads an ELF file's headers and only the sections asked for.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -8,25 +6,18 @@ const File = @import("shared").File;
 const anonymous_memory = @import("../os/os.zig").anonymous_memory;
 const elf = @import("shared").elf;
 
-/// Address space only, so this can be generous. Larger files are refused, not truncated.
 pub const file_size_max: u64 = 4 << 30;
 
 const elf_header_size = 64;
 const program_header_size = 56;
 const section_header_size = 64;
 const machine_x86_64 = 62;
-/// The section names of a linked binary are a few hundred bytes. The size comes from the file,
-/// so without a limit a hostile file could make the agent read gigabytes for its names.
 const names_size_max = 1 << 20;
 
-/// What the unwinder reads: the unwind information of ordinary and of Go binaries, and the
-/// DWARF copy an unstripped binary has for code built without unwind tables.
 pub const sections_unwind = [_][]const u8{ ".eh_frame", ".gopclntab", ".debug_frame" };
 
 pub const Loaded = struct {
-    /// As long as the file. The parts that were not read are zeros that cost nothing.
     bytes: []align(std.heap.page_size_min) u8,
-    /// How many bytes were actually read from the file.
     read_size: u64,
 
     pub fn deinit(loaded: *Loaded) void {
@@ -35,7 +26,6 @@ pub const Loaded = struct {
     }
 };
 
-/// `TooLarge` when the sections would take the bytes read past `read_max`.
 pub fn load(file: *const File, sections: []const []const u8, read_max: u64) !Loaded {
     const size = try file.size_bytes();
     if (size < elf_header_size) return error.NotElf;
@@ -47,8 +37,8 @@ pub fn load(file: *const File, sections: []const []const u8, read_max: u64) !Loa
 
     try range_read(file, bytes, 0, elf_header_size, &read_size);
     if (!std.mem.eql(u8, bytes[0..4], "\x7fELF")) return error.NotElf;
-    if (bytes[4] != 2) return error.Unsupported; // Not 64-bit.
-    if (bytes[5] != 1) return error.Unsupported; // Not little endian.
+    if (bytes[4] != 2) return error.Unsupported;
+    if (bytes[5] != 1) return error.Unsupported;
     if (int_read(u16, bytes, 18) != machine_x86_64) return error.Unsupported;
 
     const program_headers_offset = int_read(u64, bytes, 32);
@@ -70,7 +60,6 @@ pub fn load(file: *const File, sections: []const []const u8, read_max: u64) !Loa
         const table_size = @as(u64, section_count) * section_header_size;
         try range_read(file, bytes, section_headers_offset, table_size, &read_size);
 
-        // The name table's header is in the table just read.
         const names_header =
             section_headers_offset + @as(u64, section_names_index) * section_header_size;
         const names_offset = int_read(u64, bytes, names_header + 24);
@@ -91,7 +80,6 @@ pub fn load(file: *const File, sections: []const []const u8, read_max: u64) !Loa
     return .{ .bytes = bytes, .read_size = read_size };
 }
 
-/// Reads `size` bytes at `offset` into the same place in `bytes`.
 fn range_read(file: *const File, bytes: []u8, offset: u64, size: u64, read_size: *u64) !void {
     if (offset > bytes.len) return error.NotElf;
     if (size > bytes.len - offset) return error.NotElf;
@@ -99,22 +87,17 @@ fn range_read(file: *const File, bytes: []u8, offset: u64, size: u64, read_size:
 
     const start: usize = @intCast(offset);
     const read = try file.read_at(bytes[start..][0..@intCast(size)], offset);
-    if (read != size) return error.ReadFailed; // The file got shorter while it was read.
+    if (read != size) return error.ReadFailed;
     read_size.* += size;
 }
 
-/// The caller checked that the integer is inside `bytes`: the header was read, and its fields
-/// sit at fixed offsets inside it.
 fn int_read(comptime T: type, bytes: []const u8, offset: u64) T {
     assert(offset + @sizeOf(T) <= bytes.len);
     return std.mem.readInt(T, bytes[@intCast(offset)..][0..@sizeOf(T)], .little);
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 
-/// The whole file, for comparing with what `load` read.
 fn file_read_whole(gpa: std.mem.Allocator, path: [:0]const u8) ![]u8 {
     var file = try File.open(path);
     defer file.deinit();
@@ -170,7 +153,6 @@ test "a section over the limit is refused, and symbol sections are read when ask
     defer loaded.deinit();
     const symbols = (try elf.find(loaded.bytes, ".symtab")) orelse return error.SkipZigTest;
     const names = (try elf.find(loaded.bytes, ".strtab")) orelse return error.SkipZigTest;
-    // Both were read: their bytes are not the zeros of the unread parts.
     const symbols_bytes = elf.bytes_of(loaded.bytes, symbols) orelse
         return error.TestUnexpectedResult;
     const names_bytes = elf.bytes_of(loaded.bytes, names) orelse

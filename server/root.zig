@@ -1,21 +1,4 @@
-//! The server: keeps what the agents report, names it with their binaries' symbols, and
-//! answers with profiles. Two things to use:
-//!
-//!     Server      takes the agents' events (`feed`, `watch_take`) and answers (`profile`,
-//!                 `processes`)
-//!     Controller  the local client: runs the agent on threads of this process, feeding the
-//!                 server (`start`, `stop`, `wait`, `running`, `interrupt`)
-//!
-//! The layers, bottom up. Each is a folder, and its facade the file of the same name in it
-//! (naming/naming.zig): the one struct the layers above may import. A layer imports only the
-//! layers below it, never one beside it:
-//!   os         Lock, Condition
-//!   windows    Windows: each target's ring of windows
-//!   symbols    Symbols: the binaries' symbol tables, their uploads and their builder
-//!   processes  Processes: the newest frame of the processes watch
-//!   naming     profile(): windows named with the symbols, equal stacks merged
-//!   server     Server and Feed: the layers together, taking events and answering queries
-//!   control    Controller: the agent on threads, feeding the server
+//! The server: keeps what the agents report.
 
 const server_file = @import("server/server.zig");
 const control_file = @import("control/control.zig");

@@ -1,6 +1,4 @@
-//! The os layer: the system calls every other layer stands on. A toolbox rather than one
-//! struct: each tool is small, and each layer above takes the few it needs. Imports nothing
-//! of the agent.
+//! The os layer: the system calls every other layer stands on.
 
 pub const process = @import("process.zig");
 pub const timer = @import("timer.zig");

@@ -1,5 +1,4 @@
-//! The target's executable regions: its mappings with the build ID of each file. The addresses
-//! in a report are resolved against these, so they travel with every report.
+//! The target's executable regions.
 
 const std = @import("std");
 const process_maps = @import("process_maps.zig");
@@ -12,8 +11,6 @@ const assert = std.debug.assert;
 
 pub const Region = @import("shared").protocol.Region;
 
-/// The regions of `mappings`, with their build IDs. A build ID already known, in this table or
-/// in `previous`, is reused; only a file not seen before is read. Everything lives in `arena`.
 pub fn build(
     arena: std.mem.Allocator,
     mappings: []const Mapping,
@@ -38,8 +35,7 @@ pub fn build(
     return regions;
 }
 
-/// Gives the [vdso] region the build ID of the agent's own image, when it is the same vDSO
-/// (the sizes agree; a 32-bit target's is not). The image must outlive the regions.
+/// The image must outlive the regions.
 pub fn vdso_mark(regions: []Region, image: ?*const vdso.Image) void {
     const found = image orelse return;
     const id = found.build_id orelse return;
@@ -49,8 +45,6 @@ pub fn vdso_mark(regions: []Region, image: ?*const vdso.Image) void {
     }
 }
 
-/// Reuses the build ID of a region for the same file, first from this table, then from
-/// the previous one. Reads the file system only when neither has it.
 fn build_id_for(
     arena: std.mem.Allocator,
     pid: u32,
@@ -61,7 +55,6 @@ fn build_id_for(
         return same.build_id;
     }
     if (region_find(known.previous, mapping)) |same| {
-        // The previous table lives in another arena, which is reset after this read, so copy.
         const found = same.build_id orelse return null;
         return try arena.dupe(u8, found);
     }
@@ -77,18 +70,14 @@ fn region_find(regions: []const Region, mapping: Mapping) ?*const Region {
     return null;
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const read = process_maps.read;
 const process = @import("../os/os.zig").process;
 
 const Location = struct {
     region: *const Region,
-    /// Where the address is inside the region's file.
     file_offset: u64,
 };
 
-/// Which region a raw address falls into, and where in that region's file it is.
 fn locate(regions: []const Region, address: u64) ?Location {
     for (regions) |*r| {
         if (address >= r.start and address < r.end) {
@@ -98,7 +87,7 @@ fn locate(regions: []const Region, address: u64) ?Location {
     return null;
 }
 
-fn marker() void {} // A function whose address lies inside this very binary.
+fn marker() void {}
 
 test "this process: a raw address from our own code resolves to a file" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -137,7 +126,7 @@ test "locate finds the region and the offset inside its file" {
     try std.testing.expectEqualStrings("/bin/a", hit.region.path);
     try std.testing.expectEqual(@as(u64, 0x1234 - 0x1000 + 0x500), hit.file_offset);
 
-    try std.testing.expect(locate(&regions, 0x3000) == null); // the end is exclusive
+    try std.testing.expect(locate(&regions, 0x3000) == null);
     try std.testing.expect(locate(&regions, 0xfff) == null);
     const vdso_test = locate(&regions, 0x7fff) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("[vdso]", vdso_test.region.path);
@@ -166,9 +155,9 @@ test "vdso_mark gives the [vdso] region the build ID of the agent's own image" {
     var regions = [_]Region{ file, same, other };
     vdso_mark(&regions, &image);
 
-    try std.testing.expect(regions[0].build_id == null); // a file keeps what it had
+    try std.testing.expect(regions[0].build_id == null);
     try std.testing.expectEqualSlices(u8, id, regions[1].build_id.?);
-    try std.testing.expect(regions[2].build_id == null); // another size: not our image
+    try std.testing.expect(regions[2].build_id == null);
 }
 
 test "this process: the [vdso] region of the real maps gets an ID" {
@@ -187,5 +176,5 @@ test "this process: the [vdso] region of the real maps gets an ID" {
             return;
         }
     }
-    return error.SkipZigTest; // This process maps no [vdso].
+    return error.SkipZigTest;
 }

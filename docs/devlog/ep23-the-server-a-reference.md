@@ -388,8 +388,9 @@ not change.
 Nothing in the layers changes. A network server is a loop that reads an event from the
 connection, calls `Feed.take` (or `watch_take`), and writes back the `Answer`; and endpoints for
 `profile` and `processes`. It replaces what `control/job.zig` does in-process: the job's loop
-runs in the agent's process instead, with the network between `next()` and `take()`. The CLI
-gets `client/remote.zig` next to `local.zig`, with the same three functions.
+runs in the agent's process instead, with the network between `next()` and `take()`. The
+`client` module gets `remote.zig` next to `local.zig`, with the same functions, and both the CLI
+and the app use it.
 
 ### A new layer
 

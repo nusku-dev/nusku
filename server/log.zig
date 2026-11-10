@@ -1,24 +1,17 @@
-//! The server's log, under the scope "server". Quiet until the program installs a logger.
-//!
-//!     const log = @import("log.zig").server;
-//!     log.info("run started", .{ .target = target, .pid = pid });
+//! The server's log, under the scope "server".
 
 const std = @import("std");
 const logger = @import("log");
-/// The longest build ID the server accepts (see symbols/id_set.zig).
 const id_bytes_max = 256;
 
 pub const server = logger.scope("server");
 
-/// Room for the hex of any build ID the server accepts.
 pub const hex_bytes_max = 2 * id_bytes_max;
 
-/// KiB, rounded up: a small binary shows as 1, not 0.
 pub fn kib(bytes: u64) u64 {
     return std.math.divCeil(u64, bytes, 1024) catch unreachable;
 }
 
-/// A build ID in hex, as `readelf -n` shows it.
 pub fn hex(buffer: *[hex_bytes_max]u8, bytes: []const u8) []const u8 {
     const digits = "0123456789abcdef";
     const length = @min(bytes.len, id_bytes_max);

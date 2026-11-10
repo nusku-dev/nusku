@@ -1,5 +1,4 @@
-//! Which region an address is in: a binary search, as /proc/<pid>/maps is sorted and has no
-//! overlaps. `valid` checks that once per message.
+//! Which region an address is in.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -7,7 +6,6 @@ const protocol = @import("shared").protocol;
 const assert = std.debug.assert;
 const Region = protocol.Region;
 
-/// Each region is non-empty and starts at or after the end of the one before.
 pub fn valid(regions: []const Region) bool {
     for (regions, 0..) |region, index| {
         if (region.start >= region.end) return false;
@@ -16,7 +14,6 @@ pub fn valid(regions: []const Region) bool {
     return true;
 }
 
-/// The index of the region holding `address`. The regions must be `valid`.
 pub fn find(regions: []const Region, address: u64) ?usize {
     var low: usize = 0;
     var high: usize = regions.len;
@@ -35,13 +32,10 @@ pub fn find(regions: []const Region, address: u64) ?usize {
     return null;
 }
 
-/// Where `address` is in the region's file.
 pub fn file_offset(region: *const Region, address: u64) u64 {
     assert(address >= region.start and address < region.end);
     return address - region.start + region.offset;
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -65,9 +59,9 @@ test "find: inside, at the edges, in the gaps, before and after" {
     try testing.expect(valid(&regions));
 
     const none: ?usize = null;
-    try testing.expectEqual(@as(?usize, 0), find(&regions, 0x1000)); // The start is inside.
+    try testing.expectEqual(@as(?usize, 0), find(&regions, 0x1000));
     try testing.expectEqual(@as(?usize, 0), find(&regions, 0x1fff));
-    try testing.expectEqual(none, find(&regions, 0x2000)); // The end is outside.
+    try testing.expectEqual(none, find(&regions, 0x2000));
     try testing.expectEqual(@as(?usize, 1), find(&regions, 0x3500));
     try testing.expectEqual(none, find(&regions, 0x5000));
     try testing.expectEqual(@as(?usize, 2), find(&regions, 0x7fff));

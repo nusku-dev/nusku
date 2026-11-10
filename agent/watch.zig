@@ -1,10 +1,4 @@
-//! Every process of the machine, a frame at a time: the first at once, then one per interval.
-//!
-//!     var watch = try Watch.init(gpa, .{ .interval_ms = 1000 });
-//!     defer watch.deinit();
-//!     while (try watch.next()) |event| switch (event) { ... };
-//!
-//! No root needed: what /proc shows anyone.
+//! Every process of the machine.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -15,9 +9,7 @@ const Processes = @import("processes/processes.zig").Processes;
 const log = @import("log.zig").agent;
 
 pub const Options = struct {
-    /// Milliseconds between two frames. The CPU of each process is measured over this.
     interval_ms: u32 = 1000,
-    /// 0: until `stop`.
     duration_s: u32 = 0,
 };
 
@@ -43,8 +35,6 @@ pub const Watch = struct {
         if (options.interval_ms == 0) return error.InvalidInterval;
         var cancel = try Cancel.init();
         errdefer cancel.deinit();
-        // The first look now, and the timer armed right after it: the second frame's CPU is
-        // measured over a whole interval, however long the caller takes to call `next`.
         var processes = Processes.init();
         errdefer processes.deinit(gpa);
         const first = try processes.take(gpa);
@@ -74,7 +64,6 @@ pub const Watch = struct {
         watch.* = undefined;
     }
 
-    /// The next event, waiting for it. Null after `.stopped`.
     pub fn next(watch: *Watch) !?Event {
         switch (watch.phase) {
             .ended => return null,
@@ -84,7 +73,6 @@ pub const Watch = struct {
             },
             .watching => {},
         }
-        // Every round waits on poll, so the loop cannot spin. A cancel wins over the duration.
         while (true) {
             const ready = try watch.poll.wait(timer.timeout_ms(watch.deadline_ns));
             if (ready.contains(.cancel)) return watch.end(.cancelled);
@@ -92,14 +80,13 @@ pub const Watch = struct {
                 if (timer.monotonic_ns() >= deadline) return watch.end(.duration);
             }
             if (ready.contains(.look_timer)) {
-                // Missed periods are not made up: the frame's interval_ns says how long it was.
                 _ = try watch.look_timer.expirations_read();
                 return try watch.look();
             }
         }
     }
 
-    /// Ends the watch at its next wait. Safe from any thread, and from a signal handler.
+    /// Safe from any thread, and from a signal handler.
     pub fn stop(watch: *const Watch) void {
         watch.cancel.trigger();
     }
@@ -117,11 +104,8 @@ pub const Watch = struct {
     }
 };
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 
-/// Frames until the end, and why it ended.
 fn frames_count(watch: *Watch) !struct { u32, ?protocol.WatchStop } {
     var frames: u32 = 0;
     var stopped: ?protocol.WatchStop = null;
@@ -137,7 +121,6 @@ test "the first frame comes at once, then one per interval, until the duration" 
     defer watch.deinit();
     const frames, const stopped = try frames_count(&watch);
     try testing.expectEqual(@as(?protocol.WatchStop, .duration), stopped);
-    // At 0, 300, 600 and 900 ms; the 4th can lose the race with the deadline.
     try testing.expect(frames >= 3 and frames <= 4);
     try testing.expectEqual(@as(?Event, null), try watch.next());
 }

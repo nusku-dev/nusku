@@ -1,5 +1,4 @@
-//! A small, independent program for testing the loader (bpf/loader.zig): three maps of three
-//! kinds, and code that refers to all of them. It is not used to profile anything.
+//! A small, independent program for testing the loader.
 
 const helpers = @import("helpers.zig");
 
@@ -9,14 +8,12 @@ const MapType = helpers.MapType;
 const stack_depth_max = 127;
 const entries_max = 16384;
 
-/// One counter per (process, user stack, kernel stack).
 const StackKey = extern struct {
     tgid: u32,
     user_stack_id: i32,
     kernel_stack_id: i32,
 };
 
-/// Slot 0 holds the tgid to count. 0 counts nothing.
 export var target_pid: MapDef linksection(".maps") = .{
     .map_type = MapType.array,
     .key_size = @sizeOf(u32),
@@ -24,7 +21,6 @@ export var target_pid: MapDef linksection(".maps") = .{
     .max_entries = 1,
 };
 
-/// Stack id -> up to `stack_depth_max` return addresses.
 export var stacks: MapDef linksection(".maps") = .{
     .map_type = MapType.stack_trace,
     .key_size = @sizeOf(u32),
@@ -32,7 +28,6 @@ export var stacks: MapDef linksection(".maps") = .{
     .max_entries = entries_max,
 };
 
-/// StackKey -> number of samples.
 export var counts: MapDef linksection(".maps") = .{
     .map_type = MapType.hash,
     .key_size = @sizeOf(StackKey),

@@ -1,7 +1,4 @@
-//! The unwind tables in the kernel: the three maps every stack-walking program binds by name.
-//! `write`, at every report, does nothing when nothing changed; else it writes rows, then
-//! modules, then the process entry, so the kernel never follows a reference to something not
-//! there yet.
+//! The unwind tables in the kernel.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -20,9 +17,7 @@ pub const MapName = enum { unwind_rows, unwind_modules, unwind_procs };
 
 pub const UnwindMaps = struct {
     maps: std.EnumArray(MapName, Map),
-    /// Modules `[0, modules_written)` are in the kernel.
     modules_written: u32,
-    /// The entry the kernel has for the target, so an unchanged one is not written again.
     entry_written: ProcessEntry,
 
     pub fn init(unwind_maps: *UnwindMaps) !void {
@@ -39,7 +34,6 @@ pub const UnwindMaps = struct {
         unwind_maps.* = undefined;
     }
 
-    /// The maps, by the names the kernel programs declare them under.
     pub fn bindings(unwind_maps: *const UnwindMaps) [3]loader.MapBinding {
         var result: [3]loader.MapBinding = undefined;
         for (&result, 0..) |*binding, index| {
@@ -49,7 +43,6 @@ pub const UnwindMaps = struct {
         return result;
     }
 
-    /// Writes what the kernel does not have yet of `tables`: new modules, a changed entry.
     pub fn write(unwind_maps: *UnwindMaps, pid: u32, tables: unwind.Tables) !void {
         assert(pid > 0);
         try unwind_maps.modules_write(tables);
@@ -61,14 +54,11 @@ pub const UnwindMaps = struct {
         if (entry_changed) try unwind_maps.process_write(pid, tables.entry);
     }
 
-    /// First the rows, then the descriptors, so a descriptor never points at rows not there.
     fn modules_write(unwind_maps: *UnwindMaps, tables: unwind.Tables) !void {
         const count: u32 = @intCast(tables.modules.len);
         assert(unwind_maps.modules_written <= count);
-        if (unwind_maps.modules_written == count) return; // Nothing new: the usual case.
+        if (unwind_maps.modules_written == count) return;
 
-        // One value holds every row, so it is written whole. The rows the kernel already has
-        // are the same bytes, so a program reading them during the write sees no change.
         assert(tables.rows.len == wire.rows_max);
         const rows = unwind_maps.maps.getPtr(.unwind_rows);
         const key: u32 = 0;
@@ -87,7 +77,6 @@ pub const UnwindMaps = struct {
         unwind_maps.modules_written = count;
     }
 
-    /// Call after the modules the entry refers to are written.
     fn process_write(unwind_maps: *UnwindMaps, pid: u32, entry: *const ProcessEntry) !void {
         for (entry.mappings[0..entry.count]) |mapping| {
             if (mapping.module != wire.module_none) {
@@ -101,7 +90,6 @@ pub const UnwindMaps = struct {
     }
 };
 
-/// The maps as the kernel programs declare them. loader.map_check holds each program to these.
 fn maps_create(maps: *std.EnumArray(MapName, Map)) libbpf.Error!void {
     const c = libbpf.c;
     const specs = std.EnumArray(MapName, map_file.Spec).init(.{
@@ -133,8 +121,6 @@ fn maps_create(maps: *std.EnumArray(MapName, Map)) libbpf.Error!void {
         created += 1;
     }
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 const os = @import("../os/os.zig");

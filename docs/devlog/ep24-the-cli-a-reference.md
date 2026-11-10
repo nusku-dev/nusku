@@ -29,10 +29,17 @@ A command does three things, always in this order: **read its flags**, **ask the
 **print the answer through a view**. It never talks to the agent or the server itself. The
 client is the one door to them; today it runs both in this process.
 
-The CLI stands on two modules of the repository that are not its layers:
+**The CLI is one of two clients.** The desktop app (`app/`, the `nusku-app` binary) is the other,
+and both reach the same server through the same `client` module, at the repository's root. So
+the client is not a layer of the CLI: anything a command can ask, the app can ask the same way.
+They are two binaries on purpose: the CLI stays small, needs no npm to build, and runs on a
+machine with no screen; the app carries WebUI and the React UI.
+
+The CLI stands on modules of the repository that are not its layers:
 
 | Module | What it gives |
 |---|---|
+| `client/` | how a program reaches a server: `profile`, `processes`, `processes_watch`, `stop` |
 | `cli/` | the command-line parser: `cli.Command`, `cli.Flag`, `cli.Context`, `cli.execute` |
 | `logger/` (`log`) | the logger: `--log-level`, `--log-format`, `--verbose`, `NO_COLOR` |
 
@@ -48,8 +55,6 @@ src/
 
   term/    term.zig     toolbox: ANSI styles, Style, bars, erasing lines, the terminal's size,
                         cutting text to a width
-  client/  client.zig   the door: profile, processes, processes_watch
-           local.zig    the server and the agent in this process
   view/    view.zig     toolbox: profile, processes
            profile.zig  a profile: the report, its live version, folded stacks
            processes.zig  the table of `nusku ps`
@@ -57,6 +62,11 @@ src/
            prof.zig     `nusku prof`
            ps.zig       `nusku ps`
            flags.zig    the flags more than one command reads
+           interrupt.zig  Ctrl-C and SIGTERM: `client.stop()`
+
+client/          at the repository's root: a module of its own, shared with app/
+  client.zig     the door: profile, processes, processes_watch, stop
+  local.zig      the server and the agent in this process
 ```
 
 As in the agent and the server, the root holds only `main.zig`, and every layer is a folder with
@@ -67,25 +77,23 @@ its facade named like it.
 ```
    main.zig ─────── cmd.root, the logger
                 │
-   rank 2      cmd ─────────────┬─────────────┐
-                │               │             │
-   rank 1     client           view          (beside each other: never import)
-                │               │
-                │              term   rank 0
-                │
-            server, agent (modules)
+   rank 2      cmd ─────────────────┐
+                │                   │
+   rank 1      view                 │
+                │                   │
+   rank 0      term          the client module ── server ── agent
 ```
 
 | Layer | Rank | Imports | Is |
 |---|---|---|---|
 | `term` | 0 | nothing of the CLI | toolbox |
-| `client` | 1 | the `server` module (which brings the agent) | `profile`, `processes`, `processes_watch` |
 | `view` | 1 | term | toolbox: `profile`, `processes` |
-| `cmd` | 2 | term, client, view | the commands |
+| `cmd` | 2 | term, view, and the `client` module | the commands |
 
-`client` and `view` are beside each other on purpose: **a view never asks the client, and the
-client never prints**. A view is a function of what it is given, so it can be tested with a
-profile made by hand. The client can be swapped for a remote one without touching a view.
+**A view never asks the client, and the client never prints.** A view is a function of what it
+is given, so it can be tested with a profile made by hand; only `cmd` calls the client. The
+client can be swapped for a remote one without touching a view, and the app draws the same
+answers with React instead of `view`.
 
 ## 4. Each layer
 
@@ -103,19 +111,30 @@ profile made by hand. The client can be swapped for a remote one without touchin
 | `size()` | the terminal's rows and columns, or null when not a terminal |
 | `text_cut_write(w, text, width)` | a long command cut with `…` |
 
-### client: the one door to a server
+### The client module (client/ at the root)
 
-**Why:** a command should not know how the profile is made: an agent on a thread here, or a
-server across the network. Three functions, each a whole conversation:
+Not a layer of the CLI, but what its commands ask, so it is described here.
+
+**Why:** a program should not know how the profile is made: an agent on a thread here, or a
+server across the network. Three functions, each a whole conversation, and a way to end one:
 
 ```zig
-// The profile of a whole run, in `arena`. Ctrl-C stops the run, not the program.
+// The profile of a whole run, in `arena`. `stop` ends the run, and its profile still comes.
 pub fn profile(gpa, arena, options: ProfileOptions, live: ?Live) !Result
 // Every process once, with its CPU: the second look (the first has none).
 pub fn processes(gpa, arena, interval_ms) !protocol.ProcessFrame
-// A look every interval, shown to `live`, until Ctrl-C.
+// A look every interval, shown to `live`, until `stop`.
 pub fn processes_watch(gpa, interval_ms, live: ProcessesLive) !void
+// Ends the call running now. Safe from any thread and from a signal handler.
+pub fn stop() void
 ```
+
+**Signals are the program's business, not the client's.** The CLI's `cmd/interrupt.zig` turns
+Ctrl-C and SIGTERM into `client.stop()`, and keeps its handler for the rest of the program, so
+a late second Ctrl-C (sudo passes one on twice) cannot end it before it prints. The app calls
+`stop` when it wants to, and keeps the default Ctrl-C. A `stop` before a call has started its
+job stops that job as soon as it starts. The client runs **one call at a time**; the app
+serializes its calls with a lock.
 
 | Type | What it is |
 |---|---|
@@ -129,8 +148,8 @@ pub fn processes_watch(gpa, interval_ms, live: ProcessesLive) !void
 1. A **backend** on the heap: a `Server` sized for the run (one target; enough windows for the
    whole duration, 600 for a run with no end, at most 3600) and a `Controller` with one job.
 2. `controller.start(.profile)`, then SIGCONT to a launched target.
-3. Ctrl-C (and SIGTERM) armed to `controller.interrupt()`: it stops the run, not the program,
-   so the report still prints. The handler stays after, for a late second Ctrl-C.
+3. From here `stop` reaches the controller: `controller.interrupt()` stops the run, not the
+   program, so the report still prints.
 4. A wait loop every 50 ms: while the job runs, every `every_ms` it asks
    `server.profile(…, .as_they_are)` and shows it to `live`.
 5. `controller.wait`, then the final `server.profile(…, .all_built)`: it waits for the last
@@ -249,9 +268,10 @@ It never calls the client. Test it with data made by hand, as `view/processes.zi
 
 ### A new question to the server
 
-A function in `client/local.zig` that starts a job or queries the server, exported from
-`client/client.zig`. If the server cannot answer it yet, that starts with a query on `Server`
-(Ep23 §9). The command then calls `client.name`, never the server.
+A function in `client/local.zig` (at the root) that starts a job or queries the server, exported
+from `client/client.zig`. If the server cannot answer it yet, that starts with a query on
+`Server` (Ep23 §9). The command then calls `client.name`, never the server, and the app gets
+it with one binding in `app/src/api.zig`.
 
 ### A new metric
 
@@ -260,12 +280,13 @@ Ep23 §9), the CLI needs a view for it, and `hint` drops it from "only the cpu m
 
 ### A remote server (gRPC, …)
 
-1. `client/remote.zig` with the same three functions as `local.zig`, talking to a server over the
+1. `client/remote.zig` with the same functions as `local.zig`, talking to a server over the
    network.
 2. `client/client.zig` picks one (a `--server` flag or an environment variable).
 
-No command and no view changes: they only know `client.profile`, `client.processes` and
-`client.processes_watch`.
+No command, no view, and nothing in the app changes: they only know `client.profile`,
+`client.processes`, `client.processes_watch` and `client.stop`. It is also what lets the app
+run as a normal user: the server with the agent runs as root, the app does not.
 
 ### A new layer
 
@@ -278,7 +299,7 @@ named for what it gives, and its line in `main.zig`'s list and test block.
 |---|---|
 | `view/*.zig` | the views from data made by hand: headers, sorting, cutting, colors off, the folded format, the lines returned |
 | `term/term.zig` | bars and cuts |
-| `client/local.zig` | what is pure: how many windows a run keeps |
+| `client/local.zig` | what is pure: how many windows a run keeps (its own test step) |
 | `cmd/*.zig` | none yet: a command is thin. Checking its flags (`settings_read`, `top_read`) is where a test would start |
 | `testing/` (repo root) | `make check`: the real `nusku prof` against apps with known profiles, and `nusku prof --exec` on a process that exits early |
 

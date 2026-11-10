@@ -1,15 +1,9 @@
-//! The cmd layer: the commands of `nusku`, each reading its flags, asking the client, and
-//! printing through a view:
-//!   prof   profile one process, live, then its report
-//!   ps     every process of the machine, live
-//!   flags  the flags every command shares
-//! Stands on term, client and view.
+//! The cmd layer.
 
 const cli = @import("cli");
 const prof = @import("prof.zig");
 const ps = @import("ps.zig");
 
-/// Read by every command: `flags.log_apply`.
 const flags: []const cli.Flag = &.{
     .{ .name = "verbose", .short = 'v', .kind = .bool, .help = "Same as --log-level=debug" },
     .{
@@ -36,4 +30,5 @@ test {
     _ = prof;
     _ = ps;
     _ = @import("flags.zig");
+    _ = @import("interrupt.zig");
 }

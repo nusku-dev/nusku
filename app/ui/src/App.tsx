@@ -1,22 +1,21 @@
-import { useEffect, useState } from 'react'
-import { backend, onConnection, type AppInfo } from './lib/backend'
+import { Activity } from "react";
+import { AppShell } from "./components/layout/AppShell";
+import { useRoute } from "./lib/router";
+import { ProcessesPage } from "./pages/processes";
 
 export default function App() {
-  const [connected, setConnected] = useState(false)
-  const [info, setInfo] = useState<AppInfo | null>(null)
-
-  useEffect(() => onConnection(setConnected), [])
-
-  useEffect(() => {
-    if (connected) backend.appInfo().then(setInfo, console.error)
-  }, [connected])
+  const route = useRoute();
+  const shown = (page: string) =>
+    route.current === page ? "visible" : "hidden";
 
   return (
-    <main className="flex-col justify-center items-center">
-      <h1>{info ? `${info.name} ${info.version}` : 'Nusku'}</h1>
-      <p className={connected ? 'text-green-500' : 'text-red-500'}>
-        {connected ? 'Connected to backend' : 'Connecting…'}
-      </p>
-    </main>
-  )
+    <AppShell>
+      <Activity mode={shown("processes")}>
+        <ProcessesPage />
+      </Activity>
+      <Activity mode={shown("sessions")}>
+        <h1>sessions</h1>
+      </Activity>
+    </AppShell>
+  );
 }

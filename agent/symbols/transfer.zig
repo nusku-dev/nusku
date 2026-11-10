@@ -1,4 +1,4 @@
-//! One binary on its way: `step` gives its next part, the header, a chunk, or the end.
+//! One binary on its way.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -12,7 +12,6 @@ const sections = std.enums.values(Section);
 
 pub const Part = union(enum) {
     begin: *const binary_file.Header,
-    /// Its bytes are in the buffer given to `step`.
     chunk: binary_file.Chunk,
     end,
 };
@@ -20,11 +19,9 @@ pub const Part = union(enum) {
 pub const Transfer = struct {
     binary: Binary,
     stage: enum { begin, sections, done },
-    /// The section being sent, as an index into the sections, and the offset in it.
     section_index: usize,
     offset: u64,
 
-    /// Takes the binary: `deinit` closes it.
     pub fn init(binary: Binary) Transfer {
         return .{ .binary = binary, .stage = .begin, .section_index = 0, .offset = 0 };
     }
@@ -34,7 +31,6 @@ pub const Transfer = struct {
         transfer.* = undefined;
     }
 
-    /// Whether the header went out: a transfer dropped after it must be aborted.
     pub fn begun(transfer: *const Transfer) bool {
         return transfer.stage != .begin;
     }
@@ -43,7 +39,6 @@ pub const Transfer = struct {
         return transfer.stage == .done;
     }
 
-    /// The next part: the header, then chunks of at most `buffer.len` bytes, then the end.
     pub fn step(transfer: *Transfer, buffer: []u8) !Part {
         assert(transfer.stage != .done);
         assert(buffer.len > 0);
@@ -68,8 +63,6 @@ pub const Transfer = struct {
         return .end;
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 const os = @import("../os/os.zig");
@@ -99,7 +92,7 @@ test "a transfer gives the header, every byte in order, then the end" {
 
     var transfer = Transfer.init(binary);
     defer transfer.deinit();
-    var buffer: [16]u8 = undefined; // Small chunks: many steps.
+    var buffer: [16]u8 = undefined;
     try testing.expect(!transfer.begun());
     try testing.expect((try transfer.step(&buffer)) == .begin);
     try testing.expect(transfer.begun());
@@ -108,7 +101,7 @@ test "a transfer gives the header, every byte in order, then the end" {
     var chunks: u32 = 0;
     while (!transfer.done()) {
         switch (try transfer.step(&buffer)) {
-            .begin => return error.TestUnexpectedResult, // Only once, first.
+            .begin => return error.TestUnexpectedResult,
             .chunk => |chunk| {
                 const list = received.getPtr(chunk.section);
                 try testing.expectEqual(@as(u64, list.items.len), chunk.offset);

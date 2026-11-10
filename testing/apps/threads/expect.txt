@@ -1,5 +1,3 @@
-# What the threads app does, by design (see app.c), and so what its profile must show.
-# Every thread is sampled; the sleeping one is not; time in the kernel has kernel frames.
 rate  247.5 6                    # 2.5 busy cores at 99 Hz
 complete >95
 total spin_main  40

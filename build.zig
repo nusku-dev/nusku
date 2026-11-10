@@ -9,7 +9,6 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    // Created first so components can register their tests with it.
     const test_step = b.step("test", "Run all tests");
 
     const cli_mod = b.createModule(.{
@@ -24,15 +23,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Code that the agent and the server both use.
-    const shared = b.createModule(.{
+    const shared = b.addModule("shared", .{
         .root_source_file = b.path("shared/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
 
-    // The agent: its libraries, kernel programs, module and tests all live in agent/build.zig.
     const agent_mod = agent.add(b, .{
         .target = target,
         .optimize = optimize,
@@ -40,7 +37,6 @@ pub fn build(b: *std.Build) void {
         .log = log_mod,
     });
 
-    // the server
     const server_mod = server.add(b, .{
         .target = target,
         .optimize = optimize,
@@ -51,6 +47,19 @@ pub fn build(b: *std.Build) void {
 
     server_mod.addImport("shared", shared);
     agent_mod.addImport("shared", shared);
+
+    const client_mod = b.addModule("client", .{
+        .root_source_file = b.path("client/client.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "server", .module = server_mod },
+            .{ .name = "shared", .module = shared },
+            .{ .name = "log", .module = log_mod },
+        },
+    });
+    const client_tests = b.addTest(.{ .root_module = client_mod });
+    test_step.dependOn(&b.addRunArtifact(client_tests).step);
 
     const exe = b.addExecutable(.{
         .name = "nusku",
@@ -64,6 +73,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("log", log_mod);
     exe.root_module.addImport("server", server_mod);
     exe.root_module.addImport("shared", shared);
+    exe.root_module.addImport("client", client_mod);
 
     b.installArtifact(exe);
 

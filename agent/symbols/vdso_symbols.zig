@@ -1,5 +1,4 @@
-//! A `.symtab` for the vDSO. Each exported function is a one-`jmp` stub to its unnamed body,
-//! where samples land: the body gets the stub's name, and its size from its unwind entry.
+//! A `.symtab` for the vDSO.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -7,28 +6,19 @@ const target = @import("../target/target.zig");
 const elf = @import("shared").elf;
 const eh_frame = @import("../elf/elf.zig").eh_frame;
 
-/// The size of one Elf64_Sym.
 const sym_bytes = 24;
 const stt_func = 2;
-/// `jmp rel32`: one opcode byte, then a 4-byte offset from the end of the instruction.
 const jmp_opcode = 0xe9;
 const jmp_bytes = 5;
-/// A stub is the jump and some padding. A larger function that happens to start with a jump
-/// is real code, and keeps its own name.
 const stub_bytes_max = 16;
-/// The vDSO exports a dozen symbols. Far more is not a vDSO.
 const symbols_max = 256;
 const segments_max = 4;
 
 pub const Symbols = struct {
-    /// The exported symbols, then one per body.
     symtab: []const u8,
-    /// The vDSO's own `.dynstr`: the bodies share the names of their stubs.
     strtab: []const u8,
 };
 
-/// The `.symtab` to send for the vDSO image `image`, or null when it has no stubs to follow.
-/// `symtab` is in `arena`; `strtab` points into `image`.
 pub fn symbols(arena: std.mem.Allocator, image: []const u8) !?Symbols {
     const dynsym = section_bytes(image, ".dynsym") orelse return null;
     const dynstr = section_bytes(image, ".dynstr") orelse return null;
@@ -39,7 +29,6 @@ pub fn symbols(arena: std.mem.Allocator, image: []const u8) !?Symbols {
     const segments_count = elf.segments_executable(image, &segments_buffer) catch return null;
     const segments = segments_buffer[0..segments_count];
 
-    // The exported symbols first, as they are, then at most one body for each.
     const symtab = try arena.alloc(u8, 2 * count * sym_bytes);
     @memcpy(symtab[0 .. count * sym_bytes], dynsym[0 .. count * sym_bytes]);
     var added: usize = 0;
@@ -47,7 +36,7 @@ pub fn symbols(arena: std.mem.Allocator, image: []const u8) !?Symbols {
         const stub = dynsym[index * sym_bytes ..][0..sym_bytes];
         const body = body_of(image, segments, stub) orelse continue;
         const out = symtab[(count + added) * sym_bytes ..][0..sym_bytes];
-        @memcpy(out, stub); // The same name, kind and section.
+        @memcpy(out, stub);
         std.mem.writeInt(u64, out[8..16], body.start, .little);
         std.mem.writeInt(u64, out[16..24], body.size, .little);
         added += 1;
@@ -59,12 +48,9 @@ pub fn symbols(arena: std.mem.Allocator, image: []const u8) !?Symbols {
 
 const Body = struct {
     start: u64,
-    /// 0 when the vDSO has no unwind entry for it: the server then lets it last until the
-    /// next function.
     size: u64,
 };
 
-/// Where the stub `sym` jumps to, if it is a stub.
 fn body_of(image: []const u8, segments: []const elf.Segment, sym: *const [sym_bytes]u8) ?Body {
     if (sym[4] & 0xf != stt_func) return null;
     const value = std.mem.readInt(u64, sym[8..16], .little);
@@ -78,11 +64,10 @@ fn body_of(image: []const u8, segments: []const elf.Segment, sym: *const [sym_by
 
     const relative: i64 = std.mem.readInt(i32, code[1..5], .little);
     const start = value +% jmp_bytes +% @as(u64, @bitCast(relative));
-    if (file_offset(segments, start) == null) return null; // Jumps out of the vDSO.
+    if (file_offset(segments, start) == null) return null;
     return .{ .start = start, .size = unwind_size(image, start) orelse 0 };
 }
 
-/// How far the unwind entry that covers `address` reaches past it: the end of its function.
 fn unwind_size(image: []const u8, address: u64) ?u64 {
     const section = (elf.find(image, ".eh_frame") catch return null) orelse return null;
     const bytes = elf.bytes_of(image, section) orelse return null;
@@ -106,8 +91,6 @@ fn file_offset(segments: []const elf.Segment, address: u64) ?u64 {
     return null;
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 const os = @import("../os/os.zig");
 
@@ -122,14 +105,12 @@ test "the vDSO's stubs lead to bodies that get the stubs' names" {
     var own = try target.Target.init(testing.allocator, os.process.current_pid());
     defer own.deinit(testing.allocator);
     const image = own.vdso_image() orelse return error.SkipZigTest;
-    // A kernel whose vDSO exports its functions directly has nothing to add.
     const found = (try symbols(arena.allocator(), image.bytes)) orelse return error.SkipZigTest;
 
     const dynsym = section_bytes(image.bytes, ".dynsym").?;
     try testing.expect(found.symtab.len > dynsym.len);
     try testing.expectEqualSlices(u8, dynsym, found.symtab[0..dynsym.len]);
 
-    // Every body is a function of the vDSO, outside the stub it is named after.
     var clock_gettime = false;
     var at = dynsym.len;
     while (at < found.symtab.len) : (at += sym_bytes) {
@@ -146,22 +127,18 @@ test "a jump that is not a stub, or leaves the vDSO, is not followed" {
     var image: [0x100]u8 = @splat(0);
     const segments = [_]elf.Segment{.{ .offset = 0, .vaddr = 0, .filesz = image.len }};
     var sym: [sym_bytes]u8 = @splat(0);
-    sym[4] = 0x12; // Global function.
+    sym[4] = 0x12;
     std.mem.writeInt(u64, sym[8..16], 0x10, .little);
     std.mem.writeInt(u64, sym[16..24], 5, .little);
 
-    // jmp +0x20: from 0x15 to 0x35.
     image[0x10] = jmp_opcode;
     std.mem.writeInt(i32, image[0x11..0x15], 0x20, .little);
     try testing.expectEqual(@as(u64, 0x35), body_of(&image, &segments, &sym).?.start);
 
-    // Out of the image.
     std.mem.writeInt(i32, image[0x11..0x15], 0x1000, .little);
     try testing.expectEqual(@as(?Body, null), body_of(&image, &segments, &sym));
-    // Not a jump.
     image[0x10] = 0x90;
     try testing.expectEqual(@as(?Body, null), body_of(&image, &segments, &sym));
-    // Too big to be a stub.
     image[0x10] = jmp_opcode;
     std.mem.writeInt(i32, image[0x11..0x15], 0x20, .little);
     std.mem.writeInt(u64, sym[16..24], 64, .little);

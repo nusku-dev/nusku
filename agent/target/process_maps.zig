@@ -3,24 +3,18 @@ const std = @import("std");
 const File = @import("shared").File;
 const assert = std.debug.assert;
 
-/// /proc/<pid>/maps of a large process (a browser, a JVM) is a few hundred KiB.
 const file_size_max = 4 * 1024 * 1024;
 
 pub const Mapping = struct {
     start: u64,
     end: u64,
 
-    /// The offset inside the file that `start` corresponds to.
     offset: u64,
     inode: u64,
-    /// The path as the process sees it. Special mappings have names like "[vdso]".
-    /// Empty for anonymous memory, for example JIT-compiled code.
     path: []const u8,
-    /// The kernel appends " (deleted)" when the file was removed or replaced after it was mapped.
     deleted: bool,
 };
 
-/// The executable mappings of process `pid`, in address order. Everything lives in `arena`.
 pub fn read(arena: std.mem.Allocator, pid: u32) ![]Mapping {
     assert(pid > 0);
     var path_buffer: [32]u8 = undefined;
@@ -65,10 +59,10 @@ fn line_parse(line: []const u8) !?Mapping {
 
     const perms = field_next(&rest) orelse return error.BadMapsLine;
     if (perms.len != 4) return error.BadMapsLine;
-    if (perms[2] != 'x') return null; // Not executable: no code to unwind.
+    if (perms[2] != 'x') return null;
 
     const offset = try number_parse(field_next(&rest) orelse return error.BadMapsLine, 16);
-    _ = field_next(&rest) orelse return error.BadMapsLine; // The device, not needed.
+    _ = field_next(&rest) orelse return error.BadMapsLine;
     const inode = try number_parse(field_next(&rest) orelse return error.BadMapsLine, 10);
 
     var path = spaces_skip(rest);
@@ -86,7 +80,6 @@ fn line_parse(line: []const u8) !?Mapping {
     };
 }
 
-/// Takes the next space-separated field off the front of `rest`.
 fn field_next(rest: *[]const u8) ?[]const u8 {
     const text = spaces_skip(rest.*);
     var end: usize = 0;
@@ -105,8 +98,6 @@ fn spaces_skip(text: []const u8) []const u8 {
 fn number_parse(text: []const u8, base: u8) !u64 {
     return std.fmt.parseInt(u64, text, base) catch return error.BadMapsLine;
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const sample =
     \\55d0a8c00000-55d0a8c21000 r--p 00000000 08:01 1310725                    /usr/bin/app
@@ -134,11 +125,10 @@ test "keeps the executable mappings and skips the rest" {
     try std.testing.expectEqualStrings("/usr/bin/app", maps[0].path);
     try std.testing.expect(!maps[0].deleted);
 
-    try std.testing.expectEqualStrings("/opt/my app/lib.so", maps[1].path); // a path with a space
+    try std.testing.expectEqualStrings("/opt/my app/lib.so", maps[1].path);
     try std.testing.expectEqualStrings("/tmp/old-binary", maps[2].path);
     try std.testing.expect(maps[2].deleted);
     try std.testing.expectEqualStrings("[vdso]", maps[3].path);
-    // Anonymous executable memory, like JIT code.
     try std.testing.expectEqualStrings("", maps[4].path);
 }
 
@@ -148,15 +138,15 @@ test "rejects malformed lines" {
 
     try std.testing.expectError(error.BadMapsLine, maps_parse(arena.allocator(), "garbage\n"));
     const lines_bad = [_][]const u8{
-        "zz-yy r-xp 0 00:00 0 /x\n", // Not hexadecimal.
-        "1000-2000 r-x 0 00:00 0 /x\n", // Three permissions, not four.
+        "zz-yy r-xp 0 00:00 0 /x\n",
+        "1000-2000 r-x 0 00:00 0 /x\n",
     };
     for (lines_bad) |line| {
         try std.testing.expectError(error.BadMapsLine, maps_parse(arena.allocator(), line));
     }
 }
 
-fn marker() void {} // a function whose address lies inside this very binary
+fn marker() void {}
 
 test "reads this process's own mappings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -167,7 +157,6 @@ test "reads this process's own mappings" {
     const maps = try read(arena.allocator(), pid);
     try std.testing.expect(maps.len > 0);
 
-    // Our own code must sit inside an executable mapping that is backed by a file.
     const here = @intFromPtr(&marker);
     var found = false;
     for (maps) |m| {
@@ -196,12 +185,9 @@ test "mapping_open finds a mapping by its addresses when its path does not open"
         if (mapping.path.len > 0 and mapping.path[0] == '/') break mapping;
     } else return error.SkipZigTest;
 
-    // The path as it is: opens like `file_open`.
     var file = try process.mapping_open(process.current_pid(), own.path, own.start, own.end);
     file.deinit();
 
-    // A path that is not there, as in a sandbox: only the mapping is left, and opening it
-    // needs CAP_SYS_ADMIN.
     const hidden = process.mapping_open(process.current_pid(), "/no/such/file", own.start, own.end);
     if (std.os.linux.geteuid() != 0) {
         try testing.expectError(error.Unreadable, hidden);

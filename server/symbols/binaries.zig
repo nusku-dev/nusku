@@ -1,5 +1,4 @@
-//! The symbol tables, by build ID, within a fixed number of entries and of bytes. When a new
-//! table does not fit, the least recently used go: used by a query, or by a window that needs it.
+//! The symbol tables.
 
 const std = @import("std");
 const SymbolTable = @import("symbol_table.zig").SymbolTable;
@@ -10,28 +9,22 @@ const assert = std.debug.assert;
 
 pub const Error = error{
     OutOfMemory,
-    /// Bigger than the whole budget.
     TooLarge,
 };
 
 const Entry = struct {
-    /// The build ID.
     id: []u8,
     table: SymbolTable,
     bytes: u64,
-    /// `clock` when it was last put or got.
     used: u64,
 };
 
 pub const Binaries = struct {
-    /// Only the first `count` are in use.
     entries: []Entry,
     count: usize,
     bytes_max: u64,
     bytes_used: u64,
     clock: u64,
-    /// Where `get` found its last table: tried first, since frames in a row are mostly in one
-    /// binary.
     last: usize,
 
     pub fn init(gpa: std.mem.Allocator, entries_max: usize, bytes_max: u64) !Binaries {
@@ -52,12 +45,10 @@ pub const Binaries = struct {
         binaries.* = undefined;
     }
 
-    /// Does not count as a use.
     pub fn has(binaries: *const Binaries, build_id: []const u8) bool {
         return binaries.find(build_id) != null;
     }
 
-    /// Counts as a use. Good until the next `put`, which may drop it.
     pub fn get(binaries: *Binaries, build_id: []const u8) ?*const SymbolTable {
         const index = binaries.find_from(binaries.last, build_id) orelse return null;
         binaries.last = index;
@@ -65,7 +56,6 @@ pub const Binaries = struct {
         return &binaries.entries[index].table;
     }
 
-    /// Takes the table: kept, or freed (already here, or too big).
     pub fn put(
         binaries: *Binaries,
         gpa: std.mem.Allocator,
@@ -83,7 +73,6 @@ pub const Binaries = struct {
         const bytes = owned.bytes();
         if (bytes > binaries.bytes_max) return error.TooLarge;
 
-        // Before anything is dropped to make room.
         const id = try gpa.dupe(u8, build_id);
         errdefer gpa.free(id);
 
@@ -106,7 +95,6 @@ pub const Binaries = struct {
         binaries.verify();
     }
 
-    /// Debug builds only: it walks every entry.
     fn verify(binaries: *const Binaries) void {
         if (!std.debug.runtime_safety) return;
         var bytes: u64 = 0;
@@ -123,7 +111,6 @@ pub const Binaries = struct {
         return null;
     }
 
-    /// `find`, trying the entry at `guess` first.
     fn find_from(binaries: *const Binaries, guess: usize, build_id: []const u8) ?usize {
         if (guess < binaries.count and std.mem.eql(u8, binaries.entries[guess].id, build_id)) {
             return guess;
@@ -136,7 +123,6 @@ pub const Binaries = struct {
         return binaries.clock;
     }
 
-    /// Drops the entry that was used the longest ago.
     fn oldest_drop(binaries: *Binaries, gpa: std.mem.Allocator) void {
         assert(binaries.count > 0);
         var oldest: usize = 0;
@@ -162,12 +148,9 @@ fn entry_free(gpa: std.mem.Allocator, entry: *Entry) void {
     entry.table.deinit(gpa);
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 const elf = @import("shared").elf;
 
-/// A table with one function named with `name_length` letters: 16 + name_length + 1 bytes.
 fn table_make(gpa: std.mem.Allocator, name_length: usize) !SymbolTable {
     var strtab = try gpa.alloc(u8, name_length + 2);
     defer gpa.free(strtab);
@@ -176,9 +159,9 @@ fn table_make(gpa: std.mem.Allocator, name_length: usize) !SymbolTable {
     strtab[strtab.len - 1] = 0;
 
     var sym: [24]u8 = @splat(0);
-    std.mem.writeInt(u32, sym[0..4], 1, .little); // Name at 1.
-    sym[4] = 0x12; // Global function.
-    std.mem.writeInt(u16, sym[6..8], 1, .little); // Defined.
+    std.mem.writeInt(u32, sym[0..4], 1, .little);
+    sym[4] = 0x12;
+    std.mem.writeInt(u16, sym[6..8], 1, .little);
     std.mem.writeInt(u64, sym[8..16], 0x10, .little);
     std.mem.writeInt(u64, sym[16..24], 8, .little);
 
@@ -214,13 +197,12 @@ test "the same build ID put twice is kept once" {
 }
 
 test "when the bytes do not fit, the least recently used table goes" {
-    // Room for two tables, not three.
     var binaries = try Binaries.init(testing.allocator, 10, 2 * table_bytes + 10);
     defer binaries.deinit(testing.allocator);
 
     try binaries.put(testing.allocator, "a", try table_make(testing.allocator, 100));
     try binaries.put(testing.allocator, "b", try table_make(testing.allocator, 100));
-    _ = binaries.get("a"); // "a" was used after "b", so "b" is the oldest.
+    _ = binaries.get("a");
     try binaries.put(testing.allocator, "c", try table_make(testing.allocator, 100));
 
     try testing.expect(binaries.has("a"));
@@ -253,7 +235,6 @@ test "a table bigger than the whole budget is refused and nothing is lost" {
         error.TooLarge,
         binaries.put(testing.allocator, "big", try table_make(testing.allocator, 500)),
     );
-    // The refused one did not push the other out.
     try testing.expect(binaries.has("small"));
     try testing.expect(!binaries.has("big"));
     try testing.expectEqual(@as(u64, table_bytes), binaries.bytes_used);
@@ -265,9 +246,8 @@ test "a get after tables moved finds the right one, whatever it found before" {
 
     try binaries.put(testing.allocator, "a", try table_make(testing.allocator, 10));
     try binaries.put(testing.allocator, "b", try table_make(testing.allocator, 20));
-    try testing.expect(binaries.get("b") != null); // The hint is now b's slot, 1.
+    try testing.expect(binaries.get("b") != null);
 
-    // "a" is the oldest: it goes, and "b" moves into its slot. The hint is stale.
     try binaries.put(testing.allocator, "c", try table_make(testing.allocator, 30));
     try testing.expectEqualStrings("a" ** 20, binaries.get("b").?.lookup(0x10).?.name);
     try testing.expectEqualStrings("a" ** 30, binaries.get("c").?.lookup(0x10).?.name);

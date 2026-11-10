@@ -1,6 +1,4 @@
-//! End to end: a CPU that comes online during a run is sampled. The last CPU goes offline, a
-//! child is sampled, the CPU comes back and the child is pinned to it: its samples prove an
-//! event was opened there. Opt-in, as it changes the machine: root and NUSKU_E2E_HOTPLUG=1.
+//! End to end: a CPU that comes online during a run is sampled.
 
 const std = @import("std");
 const testing = std.testing;
@@ -39,7 +37,6 @@ test "a CPU that comes online during a run is sampled (opt-in: NUSKU_E2E_HOTPLUG
     cpu_offline = false;
     try child_process.cpu_pin(child, cpu);
 
-    // The report notices the CPU and opens its event; samples land in the window after it.
     try fixture.collector.generation_advance();
     _ = try fixture.collector.collect();
     try testing.expect(fixture.collector.events[cpu] != null);
@@ -50,10 +47,9 @@ test "a CPU that comes online during a run is sampled (opt-in: NUSKU_E2E_HOTPLUG
     std.debug.print("hotplug e2e: cpu {d} back online, {d} samples of the pinned child\n", .{
         cpu, window.samples,
     });
-    try testing.expect(window.samples >= 50); // About 300 at 999 Hz.
+    try testing.expect(window.samples >= 50);
 }
 
-/// The highest online CPU other than 0, or null on a machine with one CPU.
 fn cpu_last_online() !?u32 {
     const online = try testing.allocator.alloc(bool, try libbpf.cpu_possible_count());
     defer testing.allocator.free(online);

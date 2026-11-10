@@ -1,5 +1,4 @@
-//! The last windows of one target, in memory reserved at init: `push` copies a message into
-//! its slot's bytes, and never allocates.
+//! The last windows of one target.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -8,17 +7,14 @@ const assert = std.debug.assert;
 const Message = protocol.Message;
 
 pub const WindowRing = struct {
-    /// One `window_bytes_max` slice per slot: slot `i`'s message lives in slice `i`.
     bytes: []align(8) u8,
     messages: []Message,
     window_bytes_max: u32,
-    /// The slot the next push writes; the newest window is the one before.
     head: u32,
     count: u32,
 
     pub const Options = struct {
         windows_max: u32,
-        /// A multiple of 8.
         window_bytes_max: u32,
     };
 
@@ -47,13 +43,10 @@ pub const WindowRing = struct {
         ring.* = undefined;
     }
 
-    /// Keeps a copy of `message` as the newest window; a full ring loses its oldest. A message
-    /// too big for a slot is rejected, and the oldest window is lost all the same.
     pub fn push(ring: *WindowRing, message: *const Message) error{WindowTooLarge}!void {
         assert(ring.count <= ring.messages.len);
         assert(ring.head < ring.messages.len);
 
-        // The oldest window is at `head`: dropped first, so a failed copy leaves no half window.
         if (ring.count == ring.messages.len) ring.count -= 1;
 
         const start = @as(usize, ring.head) * ring.window_bytes_max;
@@ -66,7 +59,6 @@ pub const WindowRing = struct {
         ring.count += 1;
     }
 
-    /// The window `age` pushes ago: 0 is the newest.
     pub fn window_get(ring: *const WindowRing, age: u32) *const Message {
         assert(age < ring.count);
         const len: u32 = @intCast(ring.messages.len);
@@ -74,11 +66,8 @@ pub const WindowRing = struct {
     }
 };
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 
-/// One stack of `user` frames.
 fn stacks_test(user: []const u64) [1]Message.Stack {
     return .{.{ .samples = 1, .user = user, .kernel = &.{}, .complete = true }};
 }
@@ -112,7 +101,7 @@ test "a full ring keeps the newest windows, oldest dropped" {
 
 test "a message too big for a window is rejected and the ring stays consistent" {
     const small = stacks_test(&.{1});
-    const big_frames = [_]u64{0} ** 1000; // 8000 bytes, more than a window
+    const big_frames = [_]u64{0} ** 1000;
     const big = stacks_test(&big_frames);
 
     var ring: WindowRing = undefined;
@@ -122,12 +111,10 @@ test "a message too big for a window is rejected and the ring stays consistent" 
     for (1..4) |n| try ring.push(&message_test(@intCast(n), &small));
     try testing.expectError(error.WindowTooLarge, ring.push(&message_test(9, &big)));
 
-    // The full ring lost its oldest window to the failed write; the others are intact.
     try testing.expectEqual(@as(u32, 2), ring.count);
     try testing.expectEqual(@as(u64, 3), ring.window_get(0).start_unix_ns);
     try testing.expectEqual(@as(u64, 2), ring.window_get(1).start_unix_ns);
 
-    // And it keeps working.
     try ring.push(&message_test(10, &small));
     try testing.expectEqual(@as(u64, 10), ring.window_get(0).start_unix_ns);
     try testing.expectEqual(@as(u32, 3), ring.count);

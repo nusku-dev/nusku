@@ -1,8 +1,4 @@
-//! The windows layer: what the agents reported, a ring of windows per target. A target outlives
-//! its run: its windows stay for queries until the room is needed. Safe from any thread: its
-//! own lock guards it, held for bounded work. Stands on os.
-//!   store.zig        the targets, and which one makes room
-//!   window_ring.zig  one target's windows, copied into fixed slots
+//! The windows layer.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -13,10 +9,8 @@ const log = @import("../log.zig").server;
 
 const Message = protocol.Message;
 
-/// Names one profiled process for as long as the server knows it.
 pub const TargetId = store_file.TargetId;
 
-/// The windows of a target that overlap a time range.
 pub const Query = struct {
     target: TargetId,
     from_unix_ns: u64 = 0,
@@ -24,19 +18,13 @@ pub const Query = struct {
 };
 
 pub const Options = struct {
-    /// Processes tracked at once. A new one takes the place of the oldest finished one.
     targets_max: u32 = 16,
-    /// Windows kept per target; the oldest goes when a new one arrives.
     windows_per_target_max: u32 = 120,
-    /// Bytes per window, a multiple of 8. All together: targets_max * windows_per_target_max *
-    /// window_bytes_max.
     window_bytes_max: u32 = 128 * 1024,
 };
 
-/// What `copy` gives: the windows, oldest first, and how many the target lost.
 pub const Copied = struct {
     windows: []Message,
-    /// Too big to keep, over the target's life: their samples are in no window.
     rejected: u64,
 };
 
@@ -61,7 +49,6 @@ pub const Windows = struct {
         windows.* = undefined;
     }
 
-    /// Registers a process and allocates its windows: once per process, not per report.
     pub fn add(windows: *Windows, gpa: std.mem.Allocator, pid: u32) !TargetId {
         windows.lock.lock();
         defer windows.lock.unlock();
@@ -77,7 +64,6 @@ pub const Windows = struct {
         return target;
     }
 
-    /// No more windows will come. They stay for queries until the room is needed.
     pub fn finish(windows: *Windows, target: TargetId) !void {
         windows.lock.lock();
         defer windows.lock.unlock();
@@ -85,7 +71,6 @@ pub const Windows = struct {
         log.debug("target finished", .{ .target = target });
     }
 
-    /// Keeps a copy of `message` as the target's newest window. Does not allocate.
     pub fn put(windows: *Windows, target: TargetId, message: *const Message) !void {
         windows.lock.lock();
         defer windows.lock.unlock();
@@ -95,7 +80,6 @@ pub const Windows = struct {
         };
     }
 
-    /// The windows of the query, copied into `arena`.
     pub fn copy(windows: *Windows, arena: std.mem.Allocator, query: Query) !Copied {
         windows.lock.lock();
         defer windows.lock.unlock();
@@ -120,7 +104,6 @@ pub const Windows = struct {
         return .{ .windows = copied, .rejected = target.windows_rejected };
     }
 
-    /// Logged for a target's first lost window only; profiles count them all.
     fn lost_log(windows: *Windows, target: TargetId) void {
         if (windows.store.target_find(target).?.windows_rejected != 1) return;
         log.warn("window too big to keep: its samples are lost", .{
@@ -134,8 +117,6 @@ fn overlaps(window: *const Message, query: Query) bool {
     const end_unix_ns = window.start_unix_ns +| window.duration_ns;
     return window.start_unix_ns < query.to_unix_ns and end_unix_ns > query.from_unix_ns;
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -181,13 +162,12 @@ test "a target's windows are kept, copied by time range, and an unknown one is r
     defer arena.deinit();
     const all = try windows.copy(arena.allocator(), .{ .target = target });
     try testing.expectEqual(@as(usize, 2), all.windows.len);
-    try testing.expectEqual(@as(u64, 3), all.windows[0].samples); // Oldest first.
+    try testing.expectEqual(@as(u64, 3), all.windows[0].samples);
     const late = try windows.copy(arena.allocator(), .{ .target = target, .from_unix_ns = 250 });
     try testing.expectEqual(@as(usize, 1), late.windows.len);
     const unknown = windows.copy(arena.allocator(), .{ .target = 999 });
     try testing.expectError(error.TargetUnknown, unknown);
 
-    // Finished, it makes room for the next.
     try windows.finish(target);
     _ = try windows.add(testing.allocator, 43);
 }

@@ -7,10 +7,8 @@ pub const Level = enum(u8) {
     info,
     warn,
     err,
-    /// Only valid as a threshold: nothing is logged.
     off,
 
-    /// Lowercase name used by logfmt and JSON output.
     pub fn name(self: Level) []const u8 {
         return switch (self) {
             .trace => "trace",
@@ -22,7 +20,6 @@ pub const Level = enum(u8) {
         };
     }
 
-    /// Fixed-width label for the human text format.
     pub fn label(self: Level) []const u8 {
         return switch (self) {
             .trace => "TRACE",
@@ -34,7 +31,6 @@ pub const Level = enum(u8) {
         };
     }
 
-    /// Case-insensitive. For flags and environment variables.
     pub fn parse(text: []const u8) ?Level {
         const table = [_]struct { []const u8, Level }{
             .{ "trace", .trace },

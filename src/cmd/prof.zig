@@ -1,11 +1,12 @@
-//! `nusku prof`: profiles a process, live on a terminal, then prints the report.
+//! `nusku prof`: profiles a process.
 
 const std = @import("std");
 const log = @import("log");
 const cli = @import("cli");
 const server = @import("server");
 const flags = @import("flags.zig");
-const client = @import("../client/client.zig");
+const client = @import("client");
+const interrupt = @import("interrupt.zig");
 const term = @import("../term/term.zig");
 const view = @import("../view/view.zig").profile;
 
@@ -91,10 +92,9 @@ pub const cmd: cli.Command = .{
 fn run(ctx: *cli.Context) anyerror!void {
     try flags.log_apply(ctx);
     const settings = try settings_read(ctx);
+    interrupt.arm();
 
-    // A launched process still running when profiling ends is stopped with it. Continued first:
-    // if the run never started, it is still stopped, and `kill` sends SIGTERM and waits, which a
-    // stopped process never acts on.
+    // SIGCONT first: a stopped process never acts on the SIGTERM of `kill`.
     var child: ?std.process.Child = null;
     defer if (child) |*launched| {
         _ = std.os.linux.kill(launched.id.?, std.os.linux.SIG.CONT);
@@ -104,7 +104,6 @@ fn run(ctx: *cli.Context) anyerror!void {
         child = try launch(ctx, ctx.getString("exec"), ctx.args);
         break :target @intCast(child.?.id.?);
     };
-    // Read now, while the process is surely there.
     var name_buffer: [64]u8 = undefined;
     const name = if (child != null)
         std.fs.path.basename(ctx.getString("exec"))
@@ -119,7 +118,6 @@ fn run(ctx: *cli.Context) anyerror!void {
     else
         null;
 
-    // The server frees as it goes, from several threads: not the command's arena.
     const result = client.profile(std.heap.smp_allocator, ctx.allocator, .{
         .pid = target,
         .metrics = settings.metrics,
@@ -148,15 +146,12 @@ fn run(ctx: *cli.Context) anyerror!void {
     try ctx.stdout.flush();
 }
 
-/// The profile so far, drawn over the last view at every report.
 const Live = struct {
     ctx: *cli.Context,
     pid: u32,
     name: ?[]const u8,
     options: view.Options,
-    /// Of the last view: what the next one draws over.
     lines: usize = 0,
-    /// One view's memory, freed by the next.
     arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator),
 
     fn watcher(live: *Live, every_ms: u32) client.Live {
@@ -174,7 +169,6 @@ const Live = struct {
         };
         const stdout = live.ctx.stdout;
         const arena = live.arena.allocator();
-        // A view that cannot be drawn is skipped: the final report still comes.
         const drawn = view.live_write(stdout, arena, profile, summary, live.options, live.lines);
         live.lines = drawn catch live.lines;
     }
@@ -192,9 +186,7 @@ fn folded_save(ctx: *cli.Context, path: []const u8, profile: *const server.Profi
     slog.debug("folded stacks written", .{ .path = path, .stacks = profile.stacks.len });
 }
 
-/// The flags, checked.
 const Settings = struct {
-    /// Null with --exec: the launched process's.
     pid: ?u32,
     metrics: std.EnumSet(Metric),
     interval_ms: u32,
@@ -270,8 +262,6 @@ fn metrics_read(ctx: *cli.Context) error{InvalidUsage}!std.EnumSet(Metric) {
     return set;
 }
 
-/// Starts `exec` with `args`, stopped just after its exec: it goes on once sampling has started
-/// (`continue_target`), so nothing it does runs unsampled, not even its start.
 fn launch(ctx: *cli.Context, exec: []const u8, args: []const []const u8) !std.process.Child {
     const argv = try ctx.allocator.alloc([]const u8, args.len + 1);
     argv[0] = exec;
@@ -280,14 +270,12 @@ fn launch(ctx: *cli.Context, exec: []const u8, args: []const []const u8) !std.pr
     const child = std.process.spawn(ctx.io, .{ .argv = argv }) catch |err| {
         return ctx.fail("cannot launch {s}: {t}", .{ exec, err });
     };
-    // `spawn` returns once the exec has happened: what is stopped is the new program.
     const linux = std.os.linux;
     _ = linux.kill(child.id.?, linux.SIG.STOP);
     slog.info("process launched", .{ .exec = exec, .args = args.len, .pid = child.id.? });
     return child;
 }
 
-/// What to do about an error the user can fix.
 fn hint(err: anyerror) []const u8 {
     return switch (err) {
         error.PermissionDenied => "run as root, or grant CAP_BPF, CAP_PERFMON and CAP_SYSLOG",
@@ -298,7 +286,6 @@ fn hint(err: anyerror) []const u8 {
     };
 }
 
-/// Its comm, as `ps` shows it, or null.
 fn process_name(pid: u32, buffer: *[64]u8) ?[]const u8 {
     const linux = std.os.linux;
     var path_buffer: [32]u8 = undefined;

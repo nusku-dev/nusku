@@ -1,10 +1,4 @@
-//! Turns one log record into bytes. Pure: no clock, no locking, no I/O
-//! beyond the writer it is given.
-//!
-//! Three formats:
-//!   text    2026-10-05T14:03:22.123Z INFO  agent: started addr=:7000
-//!   logfmt  time=2026-10-05T14:03:22.123Z level=info scope=agent msg=started addr=:7000
-//!   json    {"time":"...","level":"info","scope":"agent","msg":"started","addr":":7000"}
+//! Turns one log record into bytes.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -27,8 +21,6 @@ fn levelColor(level: Level) []const u8 {
     };
 }
 
-/// Two field sets treated as one. This is how `with` context and per-call
-/// fields are joined without allocating or merging struct types.
 pub fn Pair(comptime A: type, comptime B: type) type {
     return struct {
         a: A,
@@ -100,7 +92,6 @@ pub fn writeRecord(
     try w.writeByte('\n');
 }
 
-/// `fields` is an anonymous struct like `.{ .port = 7000, .addr = addr }`.
 pub fn writeFields(w: *Writer, format: Format, color: bool, fields: anytype) Writer.Error!void {
     const T = @TypeOf(fields);
     const info = @typeInfo(T);
@@ -173,7 +164,6 @@ fn writeValue(w: *Writer, format: Format, value: anytype) Writer.Error!void {
         },
         .null => try w.writeAll("null"),
         else => {
-            // Anything else: its `{any}` rendering as a string, capped.
             var buf: [512]u8 = undefined;
             var fw: Writer = .fixed(&buf);
             fw.print("{any}", .{value}) catch {};
@@ -195,7 +185,6 @@ fn needsQuote(s: []const u8) bool {
     return false;
 }
 
-/// logfmt and text values: bare when safe, quoted and escaped otherwise.
 fn writeLogfmtString(w: *Writer, s: []const u8) Writer.Error!void {
     if (!needsQuote(s)) return w.writeAll(s);
     try w.writeByte('"');
@@ -225,7 +214,6 @@ fn writeJsonString(w: *Writer, s: []const u8) Writer.Error!void {
     try w.writeByte('"');
 }
 
-/// Text-format messages stay on one line: newlines are shown as `\n`.
 fn writeSingleLine(w: *Writer, s: []const u8) Writer.Error!void {
     for (s) |c| switch (c) {
         '\n' => try w.writeAll("\\n"),

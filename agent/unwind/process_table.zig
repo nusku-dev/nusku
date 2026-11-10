@@ -1,5 +1,4 @@
-//! One process's executable mappings, sorted, each with its module and its bias: how the kernel
-//! program turns a pc into rows. `find` searches as the kernel program must.
+//! One process's executable mappings.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -13,15 +12,12 @@ pub const module_none = unwind_wire.module_none;
 
 pub const Input = struct { start: u64, end: u64, offset: u64, outcome: registry.Outcome };
 
-/// Fills `entry` from `inputs`, which must be sorted by address, without overlaps or empty
-/// ranges, as /proc/<pid>/maps is.
 pub fn build(entry: *ProcessEntry, inputs: []const Input) error{Unsorted}!void {
     var builder = Builder.init(entry);
     for (inputs) |input| try builder.add(input);
     assert(entry.count + entry.dropped == inputs.len);
 }
 
-/// One mapping at a time: the first `mappings_max` are kept, the rest counted.
 pub const Builder = struct {
     entry: *ProcessEntry,
     previous_end: u64,
@@ -60,7 +56,6 @@ pub const Builder = struct {
     }
 };
 
-/// The mapping that holds `pc`, or null if no executable mapping does.
 pub fn find(entry: *const ProcessEntry, pc: u64) ?Mapping {
     assert(entry.count <= mappings_max);
     var low: u32 = 0;
@@ -70,14 +65,11 @@ pub fn find(entry: *const ProcessEntry, pc: u64) ?Mapping {
         const middle = low + @divFloor(high - low, 2);
         if (entry.mappings[middle].start <= pc) low = middle + 1 else high = middle;
     }
-    // The search converged: running out of steps first would give a wrong mapping.
     assert(low == high);
     if (low == 0) return null;
     const mapping = entry.mappings[low - 1];
     return if (pc < mapping.end) mapping else null;
 }
-
-// ------------------------------------------------------------------ tests
 
 const testing = std.testing;
 
@@ -109,12 +101,11 @@ test "find: inside a mapping, at its edges, in gaps, and outside all of them" {
     try testing.expect(find(&entry, 0x3fffff) == null);
     try testing.expectEqual(@as(u32, 0), find(&entry, 0x400000).?.module);
     try testing.expectEqual(@as(u32, 0), find(&entry, 0x400fff).?.module);
-    try testing.expect(find(&entry, 0x401000) == null); // the end is exclusive
+    try testing.expect(find(&entry, 0x401000) == null);
     try testing.expect(find(&entry, 0x7eff_ffff_ffff) == null);
 
     const libc = find(&entry, 0x7f00_0000_0000).?;
     try testing.expectEqual(@as(u32, 1), libc.module);
-    // The start of the mapping is the file address offset + delta.
     try testing.expectEqual(@as(u64, 0x50000), 0x7f00_0000_0000 -% libc.bias);
     try testing.expectEqual(@as(u32, 1), find(&entry, 0x7f00_000f_ffff).?.module);
     try testing.expect(find(&entry, 0x7f00_0010_0000) == null);
@@ -151,7 +142,6 @@ test "more mappings than fit: the first ones are kept and the rest are counted" 
     try build(&entry, &inputs);
     try testing.expectEqual(@as(u32, mappings_max), entry.count);
     try testing.expectEqual(@as(u32, dropped), entry.dropped);
-    // The last one that fit, and the first one that did not.
     const last_kept = mappings_max - 1;
     try testing.expectEqual(last_kept, find(&entry, 0x10000 + last_kept * 0x2000).?.module);
     try testing.expect(find(&entry, 0x10000 + @as(u64, mappings_max) * 0x2000) == null);

@@ -1,26 +1,21 @@
-//! Names (build ID, file offset) pairs for one query, through a cache in front of the tables.
-//! The same return addresses recur in almost every stack, and a pair names the same function
-//! forever, so a cached name stays right even if its table is evicted meanwhile.
+//! Names (build ID.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const Symbols = @import("../symbols/symbols.zig").Symbols;
 
 pub const Lookup = struct {
-    /// Asked once per pair: its lock is held for one lookup, never for the whole query.
     symbols: *Symbols,
     cache: [cache_size]Slot = @splat(.{}),
 
     const cache_size = 1024;
 
     const Slot = struct {
-        /// Points into the query's windows, which outlive the lookup. Empty: unused.
         build_id: []const u8 = &.{},
         offset: u64 = 0,
         name: ?[]const u8 = null,
     };
 
-    /// The function at `offset` of binary `build_id`, copied into `arena`, or null.
     pub fn name(
         lookup: *Lookup,
         arena: std.mem.Allocator,
@@ -39,8 +34,6 @@ pub const Lookup = struct {
         return found;
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 const table_one = @import("../testing/symbols.zig").table_one;
@@ -66,7 +59,6 @@ test "the cache keeps binaries apart, and outlives the table" {
     try testing.expectEqual(none, try lookup.name(names, "aa", 0x9000));
     try testing.expectEqual(none, try lookup.name(names, "cc", 0x1100));
 
-    // The symbols gone altogether: the cached answer is still right, and asks nothing.
     symbols.deinit();
     symbols_live = false;
     try testing.expectEqualStrings("work", (try lookup.name(names, "aa", 0x1100)).?);

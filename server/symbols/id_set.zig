@@ -1,13 +1,11 @@
-//! A few build IDs in fixed slots, never allocating: the server's claims and refusals.
+//! A few build IDs in fixed slots.
 
 const std = @import("std");
 const assert = std.debug.assert;
 
-/// Uploads refuse longer build IDs.
 pub const id_bytes_max = 256;
 
 comptime {
-    // The log prints any build ID the server keeps.
     assert(@import("../log.zig").hex_bytes_max == 2 * id_bytes_max);
 }
 
@@ -16,9 +14,7 @@ pub fn IdSet(comptime slots_max: usize) type {
         const Set = @This();
 
         ids: [slots_max][id_bytes_max]u8 = undefined,
-        /// 0 for a free slot.
         lengths: [slots_max]u16 = @splat(0),
-        /// Where `add_over_oldest` writes next.
         next: usize = 0,
 
         pub const Slot = usize;
@@ -33,7 +29,6 @@ pub fn IdSet(comptime slots_max: usize) type {
             return set.find(id) != null;
         }
 
-        /// Null when every slot is taken.
         pub fn add(set: *Set, id: []const u8) ?Slot {
             for (set.lengths, 0..) |length, slot| {
                 if (length != 0) continue;
@@ -43,7 +38,6 @@ pub fn IdSet(comptime slots_max: usize) type {
             return null;
         }
 
-        /// Over the oldest slot when there is no room: for a set of recent ids.
         pub fn add_over_oldest(set: *Set, id: []const u8) void {
             if (set.has(id)) return;
             set.write(set.next, id);
@@ -72,8 +66,6 @@ pub fn IdSet(comptime slots_max: usize) type {
     };
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 
 test "slots are taken, given back and reused; a full set says so" {
@@ -93,7 +85,7 @@ test "add_over_oldest keeps the most recent ids" {
     var set: IdSet(2) = .{};
     set.add_over_oldest("aa");
     set.add_over_oldest("bb");
-    set.add_over_oldest("bb"); // Already in: takes no slot.
-    set.add_over_oldest("cc"); // Over "aa", the oldest.
+    set.add_over_oldest("bb");
+    set.add_over_oldest("cc");
     try testing.expect(!set.has("aa") and set.has("bb") and set.has("cc"));
 }

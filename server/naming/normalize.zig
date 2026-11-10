@@ -1,5 +1,4 @@
-//! Places the user addresses of a stack in files: the region, and the offset in its file. That
-//! place is the same in every process and run, whatever ASLR did.
+//! Places the user addresses of a stack in files.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -8,13 +7,10 @@ const regions_file = @import("regions.zig");
 const assert = std.debug.assert;
 const Region = protocol.Region;
 
-/// Marks a location in no region (anonymous memory, a gap, address 0).
 pub const region_none: u32 = std.math.maxInt(u32);
 
 pub const Location = struct {
-    /// Index into the message's regions, or `region_none`.
     region: u32,
-    /// In the region's file, of the instruction to name. The raw address for `region_none`.
     offset: u64,
 
     pub fn mapped(location: Location) bool {
@@ -22,9 +18,6 @@ pub const Location = struct {
     }
 };
 
-/// The locations of `user`, into `out`. A return address points after its call, maybe into
-/// the next function, so it is looked up one byte back: every frame but the first, and the
-/// first too when `leaf_is_return` (a sample in a system call).
 pub fn user_locate(
     regions: []const Region,
     user: []const u64,
@@ -41,7 +34,6 @@ pub fn user_locate(
 }
 
 fn address_locate(regions: []const Region, address: u64, is_return: bool) Location {
-    // There is no address before 0.
     if (is_return and address == 0) return .{ .region = region_none, .offset = address };
 
     const lookup = if (is_return) address - 1 else address;
@@ -52,8 +44,6 @@ fn address_locate(regions: []const Region, address: u64, is_return: bool) Locati
         .offset = regions_file.file_offset(&regions[index], lookup),
     };
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -78,20 +68,14 @@ test "the running instruction is exact, return addresses are looked up one byte 
     var out: [5]Location = undefined;
     user_locate(&regions_test, &user, false, &out);
 
-    // The running instruction: exact.
     try testing.expectEqual(@as(u32, 0), out[0].region);
     try testing.expectEqual(@as(u64, 0x500), out[0].offset);
-    // A return address: the call is at 0x34ff, in the second region (offset 0x1000 in its file).
     try testing.expectEqual(@as(u32, 1), out[1].region);
     try testing.expectEqual(@as(u64, 0x14ff), out[1].offset);
-    // A return address at the very end of the first region: the call was in that region, not
-    // in whatever starts at 0x2000.
     try testing.expectEqual(@as(u32, 0), out[2].region);
     try testing.expectEqual(@as(u64, 0xfff), out[2].offset);
-    // In no region: the raw address is kept.
     try testing.expect(!out[3].mapped());
     try testing.expectEqual(@as(u64, 0x9000), out[3].offset);
-    // Address 0 as a return address.
     try testing.expect(!out[4].mapped());
     try testing.expectEqual(@as(u64, 0), out[4].offset);
 }
@@ -103,12 +87,10 @@ test "a leaf that is a return address is looked up one byte back too" {
     try testing.expectEqual(@as(u32, 0), out[0].region);
     try testing.expectEqual(@as(u64, 0x4ff), out[0].offset);
 
-    // Exactly at the start of a region, one byte back is the gap before it.
     user_locate(&regions_test, &.{0x3000}, true, &out);
     try testing.expect(!out[0].mapped());
     try testing.expectEqual(@as(u64, 0x3000), out[0].offset);
 
-    // The same address as the running instruction is inside the region.
     user_locate(&regions_test, &.{0x3000}, false, &out);
     try testing.expectEqual(@as(u32, 1), out[0].region);
     try testing.expectEqual(@as(u64, 0x1000), out[0].offset);

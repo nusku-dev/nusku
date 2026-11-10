@@ -1,5 +1,4 @@
-//! The os layer: what the server's threads share. A toolbox: a lock, and a condition to wait
-//! on under it. Imports nothing of the server.
+//! The os layer: what the server's threads share.
 
 const lock = @import("lock.zig");
 

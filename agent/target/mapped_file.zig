@@ -1,5 +1,4 @@
-//! The file behind a region, as the target sees it, and checked to be the one it mapped. The
-//! unwinder reads its tables from it, and the binary offer streams its symbols from it.
+//! The file behind a region.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -9,14 +8,10 @@ const process = @import("../os/os.zig").process;
 const Region = @import("regions.zig").Region;
 
 pub const Error = error{
-    /// No file to read: it cannot be opened or read, or the path is too long.
     Unreadable,
-    /// The file at the path is not the one the process mapped (an upgrade replaced it).
     WrongFile,
 };
 
-/// The file of `region` as process `pid` sees it, with the region's build ID if it has one.
-/// `prefix_buffer` is `build_id.prefix_size` bytes of scratch. The caller closes the file.
 pub fn open(pid: u32, region: *const Region, prefix_buffer: []u8) Error!File {
     assert(prefix_buffer.len >= build_id.prefix_size);
 
@@ -30,8 +25,6 @@ pub fn open(pid: u32, region: *const Region, prefix_buffer: []u8) Error!File {
     }
     return file;
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -60,7 +53,6 @@ test "a region with a build ID needs a file with the same one" {
     var prefix: [build_id.prefix_size]u8 = undefined;
     const pid = process.current_pid();
 
-    // The real ID of a system binary, to build a region that matches it, and one that does not.
     var file = try open(pid, &region_test("/bin/sh", null), &prefix);
     const read = try file.read_at(&prefix, 0);
     file.deinit();

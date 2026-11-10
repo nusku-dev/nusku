@@ -1,5 +1,4 @@
-//! The part of libbpf the agent calls: the thin wrappers around the bpf(2) system call, and the
-//! ring buffer reader. Everything else in the agent talks to the kernel through std.os.linux.
+//! The part of libbpf the agent calls.
 
 const std = @import("std");
 const log = @import("../../log.zig").agent;
@@ -10,21 +9,18 @@ pub const c = @cImport({
     @cInclude("bpf/libbpf.h");
 });
 
-/// libbpf reports failure as a negative errno; this is the one place that turns it into an error.
 pub const Error = error{
     /// Not root, or missing CAP_BPF / CAP_PERFMON, or blocked by the system.
     PermissionDenied,
     InvalidArgument,
     OutOfMemory,
     NotFound,
-    /// The kernel lacks the feature.
     NotSupported,
     /// The verifier refused the program (the kernel says EACCES, which is not about permissions).
     VerifierRejected,
     Unexpected,
 };
 
-/// `code` is a positive errno value.
 pub fn error_from_errno(code: c_int) Error {
     std.debug.assert(code > 0);
     return switch (code) {
@@ -40,8 +36,6 @@ pub fn error_from_errno(code: c_int) Error {
     };
 }
 
-/// The number of CPU slots the kernel may use, offline ones included. Per-CPU maps have one
-/// value per slot, so their buffers must be this many values long.
 pub fn cpu_possible_count() Error!u32 {
     const count = c.libbpf_num_possible_cpus();
     if (count < 0) return error_from_errno(-count);

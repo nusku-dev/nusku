@@ -1,12 +1,4 @@
-//! The symbols layer: the symbol tables of the agents' binaries, by build ID, and what names an
-//! address with them. A binary arrives through a `Receiver`, one per agent run, under one
-//! budget for all uploads; its table is built on the layer's own thread, so the run never waits.
-//! Safe from any thread: its own lock guards it, held for bounded work. Stands on os.
-//!   upload.zig        one binary arriving: begin, chunks, end, checked against its header
-//!   builder.zig       a binary arrived whole, and the queue of those waiting for their table
-//!   symbol_table.zig  a binary's functions, sorted by file offset
-//!   binaries.zig      the tables, within a budget of entries and bytes: least recently used go
-//!   id_set.zig        a few build IDs in fixed slots: the claims and the refusals
+//! The symbols layer.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -25,30 +17,22 @@ const Upload = upload_file.Upload;
 
 pub const Options = struct {
     binaries_max: usize = 1024,
-    /// All symbol tables together.
     binaries_bytes_max: u64 = 256 * 1024 * 1024,
-    /// All uploads together, from their first chunk until their table is built.
     uploads_bytes_max: u64 = 1024 * 1024 * 1024,
-    /// One binary's upload.
     upload_bytes_max: u64 = 512 * 1024 * 1024,
 };
 
-/// How the symbols are doing.
 pub const Stats = struct {
     binaries: usize,
     binaries_bytes: u64,
-    /// Waiting for the builder, or being built.
     builds_pending: usize,
     builds_failed: u64,
     uploads_bytes: u64,
 };
 
-/// One upload per run at most.
 const uploads_max = 64;
 const refused_max = 64;
 
-/// What a receiver holds while a binary arrives: its claim on the build ID, and its bytes of
-/// the upload budget.
 const Ticket = struct {
     slot: id_set.IdSet(uploads_max).Slot,
     bytes: u64,
@@ -58,20 +42,14 @@ pub const Symbols = struct {
     gpa: std.mem.Allocator,
     lock: os.Lock,
     binaries: Binaries,
-    /// Build IDs arriving now, one per upload.
     claims: id_set.IdSet(uploads_max),
-    /// Binaries whose table was too big: sending them again would fail the same way.
     refused: id_set.IdSet(refused_max),
     uploads_bytes_max: u64,
-    /// Held by uploads arriving, queued or being built.
     uploads_bytes_used: u64,
     upload_bytes_max: u64,
-    /// Binaries waiting for their table, oldest first.
     builds: builder.Queue,
-    /// The build ID being built now, or empty. Owned by the builder thread.
     building: []const u8,
     builds_failed: u64,
-    /// Broadcast when a binary is queued, a build ends, or the layer stops.
     builds_changed: os.Condition,
     builds_stopping: bool,
     builder_thread: std.Thread,
@@ -95,12 +73,9 @@ pub const Symbols = struct {
             .builder_thread = undefined,
         };
         errdefer symbols.binaries.deinit(gpa);
-        // Last: the thread reads the layer as soon as it runs.
         symbols.builder_thread = try std.Thread.spawn(.{}, builder_main, .{symbols});
     }
 
-    /// Stops the builder after the build in progress, and frees everything. Binaries still
-    /// queued are dropped.
     pub fn deinit(symbols: *Symbols) void {
         symbols.lock.lock();
         symbols.builds_stopping = true;
@@ -122,7 +97,6 @@ pub const Symbols = struct {
         symbols.* = undefined;
     }
 
-    /// The tables these regions need count as used, so eviction takes those nobody needs.
     pub fn used(symbols: *Symbols, regions: []const protocol.Region) void {
         symbols.lock.lock();
         defer symbols.lock.unlock();
@@ -132,7 +106,6 @@ pub const Symbols = struct {
         }
     }
 
-    /// The function at `offset` of binary `build_id`, copied into `arena`, or null.
     pub fn name(
         symbols: *Symbols,
         arena: std.mem.Allocator,
@@ -146,7 +119,6 @@ pub const Symbols = struct {
         return try arena.dupe(u8, hit.name);
     }
 
-    /// Until every binary received so far has its table, or failed to get one.
     pub fn wait(symbols: *Symbols) void {
         symbols.lock.lock();
         defer symbols.lock.unlock();
@@ -167,7 +139,6 @@ pub const Symbols = struct {
         };
     }
 
-    /// True when a binary need not be sent: its table is here, will be, or was refused.
     fn known(symbols: *Symbols, build_id: []const u8) bool {
         symbols.lock.lock();
         defer symbols.lock.unlock();
@@ -180,7 +151,6 @@ pub const Symbols = struct {
             symbols.refused.has(build_id);
     }
 
-    /// Claims `build_id` and reserves `bytes` of the upload budget.
     fn claim(
         symbols: *Symbols,
         build_id: []const u8,
@@ -207,7 +177,6 @@ pub const Symbols = struct {
         return .{ .slot = slot, .bytes = bytes };
     }
 
-    /// Gives back the claim and the bytes of an upload that did not finish.
     fn claim_drop(symbols: *Symbols, ticket: Ticket) void {
         symbols.lock.lock();
         defer symbols.lock.unlock();
@@ -215,8 +184,6 @@ pub const Symbols = struct {
         symbols.uploads_release(ticket.bytes);
     }
 
-    /// Queues a whole binary for the builder; its bytes stay reserved until its table is
-    /// built. Takes `received`, whatever it returns.
     fn queue(symbols: *Symbols, ticket: ?Ticket, received: Received) error{QueueFull}!void {
         var owned = received;
         owned.reserved = if (ticket) |held| held.bytes else 0;
@@ -224,7 +191,7 @@ pub const Symbols = struct {
         defer symbols.lock.unlock();
         if (ticket) |held| symbols.claims.remove(held.slot);
         if (symbols.known_locked(owned.id)) {
-            symbols.received_free(&owned); // Another run sent it first.
+            symbols.received_free(&owned);
             return;
         }
         symbols.builds.push(owned) catch |err| {
@@ -248,7 +215,6 @@ pub const Symbols = struct {
         symbols.uploads_bytes_used -= bytes;
     }
 
-    /// Builds the queued tables one at a time, without the lock, until the layer stops.
     fn builder_main(symbols: *Symbols) void {
         symbols.lock.lock();
         defer symbols.lock.unlock();
@@ -286,7 +252,6 @@ pub const Symbols = struct {
             });
         } else |err| {
             symbols.builds_failed += 1;
-            // Too big now is too big next time: no run needs to send it again.
             if (err == error.TooLarge) symbols.refused.add_over_oldest(received.id);
             log.warn("no symbol table: its frames will stay unnamed", .{
                 .path = received.path,
@@ -297,8 +262,6 @@ pub const Symbols = struct {
     }
 };
 
-/// The binaries of one agent run, as they arrive: one at a time, each claimed so no other run
-/// sends it meanwhile. Not shared between threads: one per run.
 pub const Receiver = struct {
     symbols: *Symbols,
     upload: Upload,
@@ -312,15 +275,12 @@ pub const Receiver = struct {
         };
     }
 
-    /// Drops a binary still arriving.
     pub fn deinit(receiver: *Receiver) void {
         receiver.abort();
         receiver.upload.deinit(receiver.symbols.gpa);
         receiver.* = undefined;
     }
 
-    /// One of the run's binary events, and the answer to give the agent. A failure drops that
-    /// binary only (`unwanted` stops it), never the run.
     pub fn take(receiver: *Receiver, event: protocol.RunEvent) protocol.Answer {
         switch (event) {
             .binary_offer => |offer| {
@@ -341,8 +301,6 @@ pub const Receiver = struct {
         return .none;
     }
 
-    /// Claims the binary and its bytes, then gets ready for its chunks. `AlreadyKnown` when
-    /// another run started sending it since this one was offered it.
     fn begin(receiver: *Receiver, header: *const protocol.binary.Header) !void {
         if (receiver.ticket != null) {
             log.warn("binary refused: the last one never ended", .{ .path = header.path });
@@ -373,7 +331,6 @@ pub const Receiver = struct {
         try receiver.upload.chunk(receiver.symbols.gpa, part);
     }
 
-    /// Hands the binary to the builder: the run does not wait for its table.
     fn end(receiver: *Receiver) !void {
         const ticket = receiver.ticket orelse return error.OutOfOrder;
         const received = receiver.upload.end(receiver.symbols.gpa) catch |err| {
@@ -381,13 +338,11 @@ pub const Receiver = struct {
             return err;
         };
         receiver.ticket = null;
-        // Logged before the hand-over: the builder frees `received`.
         log.debug("binary received", .{ .path = received.path, .kib = log_file.kib(ticket.bytes) });
         try receiver.symbols.queue(ticket, received);
     }
 
     fn drop(receiver: *Receiver, err: anyerror) protocol.Answer {
-        // A refused begin said why already.
         const said = err == error.AlreadyKnown or err == error.TooLarge or
             err == error.OutOfOrder;
         if (!said) log.warn("binary not received: dropped", .{ .cause = err });
@@ -402,8 +357,6 @@ pub const Receiver = struct {
         receiver.ticket = null;
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -432,7 +385,6 @@ test "a received binary is known at once, and named once the builder is done" {
 
     try symbols.queue(null, try received_one(testing.allocator, "aa", "work"));
     try testing.expect(symbols.known("aa"));
-    // The same binary from another run is dropped.
     try symbols.queue(null, try received_one(testing.allocator, "aa", "else"));
 
     symbols.wait();
@@ -455,7 +407,7 @@ test "a table too big to keep is counted, refused for later, and the layer goes 
     try symbols.queue(null, try received_one(testing.allocator, "aa", "work"));
     symbols.wait();
     try testing.expectEqual(@as(u64, 1), symbols.stats().builds_failed);
-    try testing.expect(symbols.known("aa")); // Refused: not to be sent again.
+    try testing.expect(symbols.known("aa"));
     try testing.expectEqual(@as(usize, 0), symbols.stats().binaries);
 }
 
@@ -466,7 +418,7 @@ test "binaries still queued when the layer stops are freed" {
         var id: [2]u8 = .{ 'a', @intCast('a' + index) };
         try symbols.queue(null, try received_one(testing.allocator, &id, "work"));
     }
-    symbols.deinit(); // The testing allocator would report a leak.
+    symbols.deinit();
 }
 
 test "uploads share one budget, held from the claim until the table is built" {
@@ -480,7 +432,6 @@ test "uploads share one budget, held from the claim until the table is built" {
     const second = try symbols.claim("bb", "/b", 40);
     try testing.expectEqual(@as(u64, 100), symbols.stats().uploads_bytes);
 
-    // A drop gives its bytes back at once; a queued binary, once its table is built.
     symbols.claim_drop(second);
     try testing.expectEqual(@as(u64, 60), symbols.stats().uploads_bytes);
     try testing.expect(!symbols.known("bb"));
@@ -497,7 +448,6 @@ test "a table the windows use outlives one that nothing uses" {
     try symbols.binaries.put(gpa, "aa", try table_one(gpa, "work"));
     try symbols.binaries.put(gpa, "bb", try table_one(gpa, "rest"));
 
-    // A window needs "aa": now "bb" is the least recently used.
     const regions = [_]protocol.Region{.{
         .start = 0x7000,
         .end = 0x8000,
@@ -524,13 +474,11 @@ test "a receiver answers offers, and turns a binary that arrives into a known on
     try testing.expectEqual(protocol.Answer.none, receiver.take(.{
         .binary_begin = &header_test("some-id", 0),
     }));
-    // Claimed while it arrives: no other run may send it.
     try testing.expectEqual(protocol.Answer.unwanted, receiver.take(offer));
     try testing.expectEqual(protocol.Answer.none, receiver.take(.binary_end));
     try testing.expect(receiver.ticket == null);
     try testing.expect(symbols.known("some-id"));
 
-    // A chunk that does not fit its header drops the binary, and says so.
     _ = receiver.take(.{ .binary_begin = &header_test("other-id", 0) });
     const chunk = protocol.binary.Chunk{ .section = .symtab, .offset = 0, .bytes = "abc" };
     try testing.expectEqual(protocol.Answer.unwanted, receiver.take(.{ .binary_chunk = chunk }));
@@ -549,7 +497,7 @@ test "an aborted binary is dropped, and the next one arrives whole" {
     _ = receiver.take(.{ .binary_chunk = half });
     _ = receiver.take(.binary_abort);
     try testing.expect(!receiver.upload.receiving);
-    _ = receiver.take(.binary_abort); // Nothing in flight: nothing to do.
+    _ = receiver.take(.binary_abort);
 
     _ = receiver.take(.{ .binary_begin = &header_test("second", 4) });
     const whole = protocol.binary.Chunk{ .section = .strtab, .offset = 0, .bytes = "abcd" };

@@ -1,9 +1,10 @@
-//! `nusku ps`: the processes of the machine, redrawn every interval on a terminal, else once.
+//! `nusku ps`: the processes of the machine.
 
 const std = @import("std");
 const cli = @import("cli");
 const flags = @import("flags.zig");
-const client = @import("../client/client.zig");
+const client = @import("client");
+const interrupt = @import("interrupt.zig");
 const term = @import("../term/term.zig");
 const view = @import("../view/view.zig").processes;
 const Frame = @import("shared").protocol.ProcessFrame;
@@ -66,6 +67,7 @@ fn run(ctx: *cli.Context) anyerror!void {
         .width = if (size) |known| known.cols else 0,
     };
     options.top = try top_read(ctx, options.live, size);
+    interrupt.arm();
 
     if (options.live) return live_run(ctx, @intCast(interval), options);
     const listed = client.processes(std.heap.smp_allocator, ctx.allocator, @intCast(interval));
@@ -76,7 +78,6 @@ fn run(ctx: *cli.Context) anyerror!void {
     try ctx.stdout.flush();
 }
 
-/// Until Ctrl-C, with the cursor hidden meanwhile.
 fn live_run(ctx: *cli.Context, interval_ms: u32, options: view.Options) !void {
     var live = Live{ .ctx = ctx, .options = options };
     defer live.arena.deinit();
@@ -91,7 +92,6 @@ fn live_run(ctx: *cli.Context, interval_ms: u32, options: view.Options) !void {
     };
 }
 
-/// As asked; else what fits the screen when live (the header takes 5 lines), or 20.
 fn top_read(ctx: *cli.Context, live: bool, size: ?term.Size) error{InvalidUsage}!usize {
     if (ctx.isSet("top")) {
         const top = ctx.getInt("top");
@@ -104,13 +104,10 @@ fn top_read(ctx: *cli.Context, live: bool, size: ?term.Size) error{InvalidUsage}
     return 20;
 }
 
-/// The table, drawn over the last one at every frame.
 const Live = struct {
     ctx: *cli.Context,
     options: view.Options,
-    /// Of the last table: what the next one draws over.
     lines: usize = 0,
-    /// One table's memory, freed by the next.
     arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator),
 
     fn watcher(live: *Live) client.ProcessesLive {
@@ -122,7 +119,6 @@ const Live = struct {
         _ = live.arena.reset(.retain_capacity);
         const stdout = live.ctx.stdout;
         term.lines_erase(stdout, live.lines) catch return;
-        // A table that cannot be drawn is skipped: the next frame tries again.
         live.lines = view.write(stdout, live.arena.allocator(), frame, live.options) catch 0;
         stdout.flush() catch {};
     }

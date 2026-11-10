@@ -1,14 +1,4 @@
-//! A profiling run, pulled one event at a time: reports at every interval, and the target's
-//! binaries when the caller wants them. The parent of the layers: it takes what the target,
-//! metrics and symbols give, and makes the protocol's events of it.
-//!
-//!     var run = try Run.init(gpa, .{ .pid = pid });
-//!     defer run.deinit();
-//!     while (try run.next()) |event| switch (event) { ... };
-//!
-//! The loop runs inside `next`: a tick drains the kernel's buffers, then sends a little of a
-//! binary; the report timer gives the reports. Needs root, or CAP_BPF and CAP_PERFMON (and
-//! CAP_SYSLOG for kernel addresses).
+//! A profiling run.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -30,31 +20,22 @@ const Symbols = symbols_layer.Symbols;
 pub const Options = struct {
     pid: u32,
     metrics: std.EnumSet(protocol.Metric) = .initOne(.cpu),
-    /// Milliseconds between reports.
     interval_ms: u32 = 1000,
-    /// 0: until the target exits or `stop`.
     duration_s: u32 = 0,
-    /// Offers the target's binaries, so their addresses can be named.
     binaries: bool = true,
 };
 
 /// Each is valid until the next `next`.
 pub const Event = protocol.RunEvent;
 
-/// The ring cannot fill between two ticks: at 99 Hz on 64 CPUs a tick sees 634 samples.
 const tick_ms_max = 100;
-/// Binary events per tick: with chunks of 256 KiB, at most 1.5 MiB per 100 ms.
 const binary_steps_per_tick = 6;
-/// Ticks are this close in the first second of a run, when a program just started maps its
-/// libraries: a walk through code with no table yet is noticed, and the tables written, soon.
 const tick_ms_start = 25;
 const start_ms = 1000;
 
 const Source = enum { report_timer, tick_timer, target_exit, cancel };
 const Poll = os.poll.Poll(Source);
 
-/// The layers of one run, together on the heap: metrics and symbols point into the target,
-/// and the collectors into metrics.
 const Layers = struct {
     target: Target,
     metrics: Metrics,
@@ -70,7 +51,6 @@ const Layers = struct {
         errdefer layers.metrics.deinit(gpa);
         const binaries = options.binaries;
         try layers.symbols.init(gpa, binaries, target.pid, target.vdso_image(), target.kernel);
-        // Offered from the first tick, not the first report: the names are there sooner.
         layers.symbols.regions_see(target.regions);
         return layers;
     }
@@ -94,19 +74,15 @@ pub const Run = struct {
     tick_timer: Timer,
     poll: Poll,
     deadline_ns: ?u64,
-    /// The last report, in `message_arena`.
     message: protocol.Message,
     message_arena: std.heap.ArenaAllocator,
     phase: enum { running, closing, ended },
     stop_reason: protocol.RunStop,
-    /// Binary events left in this tick.
     binary_steps: u32,
-    /// The ticks are still the close ones of the start.
     ticks_fast: bool,
     reports: u64,
     started_ns: u64,
 
-    /// Loads the sampler and builds the target's tables: this can take a second.
     pub fn init(gpa: std.mem.Allocator, options: Options) !Run {
         errdefer |err| log.err("profiling failed", .{ .pid = options.pid, .cause = err });
         if (options.interval_ms == 0) return error.InvalidInterval;
@@ -119,7 +95,6 @@ pub const Run = struct {
         errdefer pidfd.deinit();
         var cancel = try Cancel.init();
         errdefer cancel.deinit();
-        // Armed only now, after the setup: the first window is a whole one.
         var report_timer = try Timer.init(options.interval_ms);
         errdefer report_timer.deinit();
         var tick_timer = try Timer.init(@min(tick_ms_start, options.interval_ms));
@@ -167,7 +142,6 @@ pub const Run = struct {
         run.* = undefined;
     }
 
-    /// The next event, waiting for it. Null after `.stopped`.
     pub fn next(run: *Run) !?Event {
         while (true) {
             switch (run.phase) {
@@ -184,17 +158,15 @@ pub const Run = struct {
         }
     }
 
-    /// Answers `.binary_offer`. During a transfer, false drops the binary.
     pub fn binary_want(run: *Run, wanted: bool) void {
         run.layers.symbols.want(wanted);
     }
 
-    /// Ends the run at its next wait. Safe from any thread, and from a signal handler.
+    /// Safe from any thread, and from a signal handler.
     pub fn stop(run: *const Run) void {
         run.cancel.trigger();
     }
 
-    /// One wait: a tick starts a round of binary events, the report timer or the end a report.
     fn wait(run: *Run) !?Event {
         const ready = try run.poll.wait(timer.timeout_ms(run.deadline_ns));
         if (ready.contains(.tick_timer)) {
@@ -203,7 +175,6 @@ pub const Run = struct {
             run.binary_steps = binary_steps_per_tick;
             try run.ticks_settle();
         }
-        // Missed periods are not made up: one late report covers them.
         const due = ready.contains(.report_timer);
         if (due) _ = try run.report_timer.expirations_read();
         const stop_reason = stop_reason_of(ready, run.deadline_ns);
@@ -215,7 +186,6 @@ pub const Run = struct {
         return try run.report();
     }
 
-    /// Back to the usual ticks once the start is over.
     fn ticks_settle(run: *Run) !void {
         if (!run.ticks_fast) return;
         if (timer.monotonic_ns() - run.started_ns < start_ms * std.time.ns_per_ms) return;
@@ -238,7 +208,6 @@ pub const Run = struct {
         return .{ .report = &run.message };
     }
 
-    /// After the last report: the rest of a binary already begun, then `.stopped`.
     fn close(run: *Run) Event {
         const symbols = &run.layers.symbols;
         symbols.stop();
@@ -264,7 +233,6 @@ fn event_of(event: symbols_layer.Event) Event {
     };
 }
 
-/// A cancel wins over the target's exit, which wins over the duration.
 fn stop_reason_of(ready: std.EnumSet(Source), deadline_ns: ?u64) ?protocol.RunStop {
     if (ready.contains(.cancel)) return .cancelled;
     if (ready.contains(.target_exit)) return .target_exited;
@@ -272,12 +240,9 @@ fn stop_reason_of(ready: std.EnumSet(Source), deadline_ns: ?u64) ?protocol.RunSt
     return if (timer.monotonic_ns() >= deadline) .duration else null;
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 const child_process = @import("testing/process.zig");
 
-/// What a run gave, and the binaries it was sent whole.
 const Seen = struct {
     reports: u32 = 0,
     samples: u64 = 0,
@@ -289,7 +254,6 @@ const Seen = struct {
     stopped: ?protocol.RunStop = null,
     elapsed_ms: u64 = 0,
 
-    /// Runs `options` to its end, as root; null without the rights.
     fn of(options: Options) !?Seen {
         const started_ns = timer.monotonic_ns();
         var run = Run.init(testing.allocator, options) catch |err| switch (err) {
@@ -341,7 +305,6 @@ test "a run stops at its duration, with its reports and the binaries (root)" {
     try testing.expect(seen.elapsed_ms >= 1000 and seen.elapsed_ms < 2500);
     try testing.expect(seen.reports >= 3 and seen.reports <= 5);
     try testing.expect(seen.samples >= 40);
-    // Every binary begun ended, or was aborted when the run stopped.
     try testing.expect(seen.begins >= 1);
     try testing.expectEqual(seen.begins, seen.ends + seen.aborts);
     try testing.expect(seen.aborts <= 1);

@@ -1,15 +1,4 @@
-//! The server: what the agents report, the symbol tables of their binaries, and the profiles
-//! made of both. It takes the agents' events and answers queries:
-//!
-//!     var feed = try server.feed(pid);              // one agent run
-//!     defer feed.close();
-//!     while (try run.next()) |event| answer(try feed.take(event));
-//!
-//!     const profile = try server.profile(arena, .{ .target = feed.target }, .as_they_are);
-//!
-//! It puts the layers together: windows keeps the reports, symbols the tables, processes the
-//! newest frame of the watch, and naming makes a profile of windows and symbols. Each layer has
-//! its own lock, so a query never holds up an agent. Safe from any thread.
+//! The server: what the agents report.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -33,14 +22,12 @@ pub const Options = struct {
     symbols: symbols_layer.Options = .{},
 };
 
-/// For a profile: the names as they are now, or once every binary received has its table.
 pub const Names = enum { as_they_are, all_built };
 
 pub const Server = struct {
     gpa: std.mem.Allocator,
     windows: Windows,
     symbols: Symbols,
-    /// The newest frame of the processes watch.
     latest: Processes,
 
     /// Starts the symbols' builder thread: the server must stay at its address until `deinit`.
@@ -63,7 +50,6 @@ pub const Server = struct {
         });
     }
 
-    /// Stops the builder, after the build in progress, and frees everything.
     pub fn deinit(server: *Server) void {
         server.latest.deinit();
         server.symbols.deinit();
@@ -72,7 +58,6 @@ pub const Server = struct {
         server.* = undefined;
     }
 
-    /// Registers a process, for one agent run to report: once per run, not per report.
     pub fn feed(server: *Server, pid: u32) !Feed {
         const target = try server.windows.add(server.gpa, pid);
         return .{
@@ -82,7 +67,6 @@ pub const Server = struct {
         };
     }
 
-    /// One event of the processes watch.
     pub fn watch_take(server: *Server, event: protocol.WatchEvent) !void {
         switch (event) {
             .frame => |frame| try server.latest.put(frame),
@@ -90,7 +74,6 @@ pub const Server = struct {
         }
     }
 
-    /// The windows of the query, their frames named and equal stacks merged, in `arena`.
     pub fn profile(server: *Server, arena: std.mem.Allocator, query: Query, names: Names) !Profile {
         if (names == .all_built) server.symbols.wait();
         const copied = try server.windows.copy(arena, query);
@@ -104,27 +87,21 @@ pub const Server = struct {
         return result;
     }
 
-    /// The newest frame of the processes watch, copied into `arena`, and how many came.
     pub fn processes(server: *Server, arena: std.mem.Allocator) !Latest {
         return server.latest.latest(arena);
     }
 };
 
-/// One agent run, as the server takes it: its reports become the target's windows, and its
-/// binaries arrive through a receiver. Not shared between threads: one per run.
 pub const Feed = struct {
     server: *Server,
-    /// What the run's windows are queried under.
     target: TargetId,
     receiver: symbols_layer.Receiver,
 
-    /// One event of the run, and what to answer the agent. An error stops the run: only the
-    /// store failing does that; a binary that fails is dropped, and `unwanted` says so.
     pub fn take(feed: *Feed, event: protocol.RunEvent) !protocol.Answer {
         switch (event) {
             .report => |message| {
                 feed.server.windows.put(feed.target, message) catch |err| switch (err) {
-                    error.WindowTooLarge => {}, // Counted with the target; the run goes on.
+                    error.WindowTooLarge => {},
                     else => return err,
                 };
                 feed.server.symbols.used(message.regions);
@@ -135,7 +112,6 @@ pub const Feed = struct {
         }
     }
 
-    /// No more events: the windows stay for queries, a binary half sent is dropped.
     pub fn close(feed: *Feed) void {
         feed.receiver.deinit();
         feed.server.windows.finish(feed.target) catch {};
@@ -143,13 +119,10 @@ pub const Feed = struct {
     }
 };
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 const table_one = @import("../testing/symbols.zig").table_one;
 const Message = protocol.Message;
 
-/// /bin/app, at 0x7000 from file offset 0x1000: the function's file offset 0x1100 is 0x7100.
 const regions_test = [_]protocol.Region{.{
     .start = 0x7000,
     .end = 0x8000,
@@ -201,7 +174,6 @@ test "a feed's reports become a profile that names the functions and keeps to th
     const gpa = testing.allocator;
     try server.symbols.binaries.put(gpa, "aa", try table_one(gpa, "work"));
 
-    // The leaf is in `work`, at two instructions; the caller has no name.
     const first = [_]Message.Stack{stack_test(3, &.{ 0x7110, 0x7220 })};
     const second = [_]Message.Stack{stack_test(4, &.{ 0x7120, 0x7220 })};
     try testing.expectEqual(protocol.Answer.none, try feed.take(.{
@@ -235,7 +207,7 @@ test "a window too big is counted with the target, and the feed goes on" {
     var feed = try server.feed(1);
     defer feed.close();
 
-    const frames = [_]u64{0x7110} ** 1000; // 8000 bytes, more than a window of 4096.
+    const frames = [_]u64{0x7110} ** 1000;
     const big = [_]Message.Stack{stack_test(1, &frames)};
     _ = try feed.take(.{ .report = &window_test(100, 0, &big) });
     const small = [_]Message.Stack{stack_test(2, &.{0x7110})};

@@ -1,18 +1,4 @@
-//! A profile as text: `write` for a terminal (a header, the top functions, the call tree),
-//! `live_write` while it runs, and `folded_write` for flame graph tools.
-//!
-//!      nusku  app [pid 4242] · 5.0 s · 495 samples at 99 Hz · duration reached
-//!
-//!      Top functions  by self time, 20 of 57 that ran
-//!        SELF               TOTAL              FUNCTION
-//!        49.4% ████▉        49.4% ████▉        hot_leaf  app
-//!
-//!      Call tree  outermost frame first, hiding branches under 1.0%
-//!       100.0%  run
-//!        49.4%  ├─ hot
-//!        49.4%  │  hot_leaf
-//!        30.3%  └─ warm
-//!        30.3%     recurse ↻
+//! A profile as text.
 
 const std = @import("std");
 const server = @import("server");
@@ -27,18 +13,13 @@ const Profile = server.Profile;
 
 pub const Summary = struct {
     pid: u32,
-    /// The process's name, when it is known.
     name: ?[]const u8 = null,
-    /// How long the run took, from start to stop.
     elapsed_ms: u64 = 0,
-    /// Null while the run goes: the live view.
     reason: ?protocol.RunStop,
 };
 
 pub const Options = struct {
-    /// Rows of the function table.
     top: usize = 20,
-    /// Call tree branches under this share, in tenths of a percent, are hidden.
     cutoff_tenths: u64 = 10,
     color: bool = false,
 };
@@ -65,8 +46,6 @@ pub fn write(
     try tree.write(w, style, profile.samples, options.cutoff_tenths);
 }
 
-/// The header and the top functions so far, drawn over the last view of `lines_before` lines.
-/// Returns the lines it drew.
 pub fn live_write(
     w: *Writer,
     arena: std.mem.Allocator,
@@ -93,9 +72,6 @@ pub fn live_write(
     return lines;
 }
 
-/// One stack per line, outermost frame first: "outer;...;inner count". A stack whose walk
-/// stopped early starts with "[incomplete]". A named kernel frame ends in "_[k]", as flame
-/// graph tools mark them; an unnamed one is "[kernel]".
 pub fn folded_write(w: *Writer, arena: std.mem.Allocator, profile: *const Profile) !void {
     var names = Names{ .arena = arena };
     for (profile.stacks) |stack| {
@@ -113,9 +89,6 @@ pub fn folded_write(w: *Writer, arena: std.mem.Allocator, profile: *const Profil
     }
 }
 
-// ------------------------------------------------------------------------------------- header
-
-/// Returns the lines it wrote.
 fn header_write(w: *Writer, style: Style, profile: *const Profile, summary: Summary) !usize {
     const lines: usize = 2;
     const separator = " \u{00b7} ";
@@ -146,7 +119,6 @@ fn header_write(w: *Writer, style: Style, profile: *const Profile, summary: Summ
     return lines + try losses_write(w, style, profile);
 }
 
-/// The samples and reports lost, if any. Returns the lines it wrote.
 fn losses_write(w: *Writer, style: Style, profile: *const Profile) !usize {
     var lines: usize = 0;
     if (profile.samples_lost > 0) {
@@ -168,17 +140,13 @@ fn losses_write(w: *Writer, style: Style, profile: *const Profile) !usize {
     return lines;
 }
 
-// ------------------------------------------------------------------------------------- functions
-
 const Function = struct {
     name: []const u8,
-    /// The file name of its binary.
     module: ?[]const u8,
     self: u64,
     total: u64,
 };
 
-/// Most self time first. A function counts once per stack in its total, however deep.
 fn functions_rank(
     arena: std.mem.Allocator,
     names: *Names,
@@ -226,8 +194,6 @@ fn function_more(_: void, a: Function, b: Function) bool {
     return std.mem.order(u8, a.name, b.name) == .lt;
 }
 
-/// Only the functions that ran: those that only called others are in the call tree. Returns
-/// the lines it wrote.
 fn functions_write(
     w: *Writer,
     style: Style,
@@ -257,7 +223,6 @@ fn functions_write(
         try share_write(w, style, function.self, samples, true);
         try w.writeAll("  ");
         if (function.module == null and function.name[0] == '[') {
-            // Unnamed code shares one label: its total would sum unrelated places.
             try w.print("{s}     \u{2013}{s}           ", .{ style.on(term.dim), style.off() });
         } else {
             try share_write(w, style, function.total, samples, true);
@@ -272,13 +237,8 @@ fn functions_write(
     return 3 + shown.len;
 }
 
-// ------------------------------------------------------------------------------------- call tree
-
-/// The stacks merged from the outermost frame in: a node is a function on a path. A function
-/// that calls itself is one node.
 const Tree = struct {
     arena: std.mem.Allocator,
-    /// Node 0 is the root, above every outermost frame.
     nodes: std.ArrayList(Node),
 
     const Node = struct {
@@ -290,7 +250,6 @@ const Tree = struct {
         children: std.ArrayList(u32) = .empty,
     };
 
-    /// Where stacks whose walk stopped early hang: their outer frames are unknown.
     const incomplete = "[walk stopped]";
 
     fn build(arena: std.mem.Allocator, names: *Names, stacks: []const server.SymbolStack) !Tree {
@@ -322,7 +281,6 @@ const Tree = struct {
         tree.nodes.items[current].self += stack.samples;
     }
 
-    /// The child named `name`, made if new, with `samples` more through it.
     fn step(tree: *Tree, parent: u32, name: []const u8, module: ?[]const u8, samples: u64) !u32 {
         const child = for (tree.nodes.items[parent].children.items) |child| {
             if (same(tree.nodes.items[child].name, name)) break child;
@@ -354,8 +312,6 @@ const Tree = struct {
 
     const Context = struct { w: *Writer, style: Style, samples: u64 };
 
-    /// A single child continues in the same column; several branch out, and the hidden ones
-    /// are summed.
     fn children_write(
         tree: *const Tree,
         context: *const Context,
@@ -430,7 +386,6 @@ const Tree = struct {
                 style.off(),
             });
         }
-        // The binary, where the path changes binary.
         const parent_module = tree.nodes.items[parent].module;
         if (node.module) |module| {
             const changed = parent_module == null or !std.mem.eql(u8, parent_module.?, module);
@@ -440,16 +395,12 @@ const Tree = struct {
     }
 };
 
-// ------------------------------------------------------------------------------------- shares
-
-/// `part` of `whole` in tenths of a percent.
 fn tenths(part: u64, whole: u64) u64 {
     assert(whole > 0);
     assert(part <= whole);
     return part * 1000 / whole;
 }
 
-/// The share in 6 columns, colored by heat, and if `bar` a bar of 10 columns.
 fn share_write(w: *Writer, style: Style, part: u64, whole: u64, bar: bool) !void {
     const share = tenths(part, whole);
     try w.writeAll(style.heat(share, 250));
@@ -468,10 +419,6 @@ fn percent_write(w: *Writer, part: u64, whole: u64) !void {
 
 const name_width_max = 72;
 
-// ------------------------------------------------------------------------------------- names
-
-/// A frame's label: its function, else its binary (`[libc.so.6]`), else its kind. Each is made
-/// once, so equal labels are the same slice.
 const Names = struct {
     arena: std.mem.Allocator,
     labels: std.StringHashMapUnmanaged([]const u8) = .empty,
@@ -489,7 +436,6 @@ const Names = struct {
         return entry.value_ptr.*;
     }
 
-    /// The first slice seen with this text.
     fn intern(names: *Names, key: []const u8, label: []const u8) ![]const u8 {
         const entry = try names.labels.getOrPut(names.arena, key);
         if (!entry.found_existing) entry.value_ptr.* = label;
@@ -501,14 +447,11 @@ fn same(a: []const u8, b: []const u8) bool {
     return a.ptr == b.ptr and a.len == b.len;
 }
 
-/// A named frame's binary: an unnamed frame has it in its label.
 fn module_of(frame: Frame) ?[]const u8 {
     if (frame.function == null) return null;
     const module = frame.module orelse return null;
     return std.fs.path.basename(module);
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -517,7 +460,6 @@ fn named(function: []const u8) Frame {
 }
 
 const unnamed_test = Frame{ .address = 0x7f00, .kernel = false, .module = "/usr/lib/libc.so.6" };
-// Innermost first: main -> walk -> walk -> leaf.
 const first_test = [_]Frame{ named("leaf"), named("walk"), named("walk"), named("main") };
 const second_test = [_]Frame{ unnamed_test, named("main") };
 const third_test = [_]Frame{ named("rare"), named("main") };
@@ -560,15 +502,12 @@ test "the header and the function table: self and total, recursion counted once"
     try testing.expect(has(text, header));
     try testing.expect(has(text, "duration reached"));
     try testing.expect(has(text, "! 2 samples lost"));
-    // leaf: 60% self and total, bars of six full blocks.
     const six = " 60.0% " ++ "\u{2588}" ** 6 ++ "    ";
     try testing.expect(has(text, six ++ "  " ++ six ++ "  leaf  app\n"));
-    // walk only called others: it is in the call tree, not here.
     try testing.expect(!has(text, "  walk  app\n"));
     try testing.expect(has(text, "4 of 4 that ran"));
-    // Code without names has its self time, and no total.
     try testing.expect(has(text, "\u{2013}" ++ " " ** 13 ++ "[libc.so.6]\n"));
-    try testing.expect(!has(text, "\x1b[")); // No colors unless asked.
+    try testing.expect(!has(text, "\x1b["));
 }
 
 test "the call tree: one column for a path, branches indented, recursion folded" {
@@ -576,9 +515,7 @@ test "the call tree: one column for a path, branches indented, recursion folded"
     defer arena.deinit();
     const text = try report_test(arena.allocator(), .{ .cutoff_tenths = 150 });
 
-    // Two roots: main, and the stack whose walk stopped (under the cutoff: summed).
     try testing.expect(has(text, " 90.0%  \u{251c}\u{2500} main  app\n"));
-    // main branches: walk, folded as it called itself, then the libc frame; rare is hidden.
     try testing.expect(has(text, " 60.0%  \u{2502}  \u{251c}\u{2500} walk \u{21bb}\n"));
     try testing.expect(has(text, " 60.0%  \u{2502}  \u{2502}  leaf\n"));
     try testing.expect(has(text, " 20.0%  \u{2502}  \u{251c}\u{2500} [libc.so.6]\n"));
@@ -650,8 +587,7 @@ test "the live view: header and functions, drawn over the last view" {
     try testing.expect(has(text, "1.2 s"));
     try testing.expect(has(text, "live \u{00b7} Ctrl-C to stop"));
     try testing.expect(has(text, "leaf  app"));
-    try testing.expect(!has(text, "Call tree")); // Only at the end.
-    // As many lines as it says: the next view goes up by that many.
+    try testing.expect(!has(text, "Call tree"));
     try testing.expectEqual(std.mem.count(u8, text, "\n"), first);
 
     out.clearRetainingCapacity();

@@ -1,11 +1,4 @@
-//! The processes of the machine as a table, the busiest first. A process's CPU is a share of
-//! one CPU, so busy threads can pass 100%; the header's is the whole machine's, as in `top`.
-//!
-//!      nusku ps  312 processes · 8 CPUs · CPU 18.4% (user 12.0 system 5.1 iowait 0.3)
-//!                · memory 5.3G · every 1.0 s
-//!
-//!          PID USER         CPU%          MEM  THR  STARTED  COMMAND
-//!        41722 ali          98.0% ████▉   812.4M  24     3h12m  /opt/google/chrome/chrome …
+//! The processes of the machine as a table, the busiest first.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -19,17 +12,13 @@ const ProcessInfo = protocol.ProcessInfo;
 pub const Sort = enum { cpu, mem, pid };
 
 pub const Options = struct {
-    /// 0 shows all.
     top: usize = 20,
-    /// Of the terminal, to cut commands to. 0: never cut.
     width: usize = 0,
     sort: Sort = .cpu,
     color: bool = false,
-    /// The header says how to stop.
     live: bool = false,
 };
 
-/// Returns the lines it wrote, for a live view to draw over.
 pub fn write(w: *Writer, arena: std.mem.Allocator, frame: *const Frame, options: Options) !usize {
     const style = Style{ .color = options.color };
     const rows = try arena.dupe(ProcessInfo, frame.processes);
@@ -94,7 +83,6 @@ fn header_write(w: *Writer, style: Style, frame: *const Frame, options: Options)
     });
 }
 
-/// The machine's CPU, and where it went. A dash on the first frame: nothing to measure against.
 fn machine_write(w: *Writer, style: Style, cpu: ?protocol.MachineCpu) !void {
     const known = cpu orelse return w.writeAll("CPU -");
     const per_mille: u64 = @intFromFloat(@max(known.busy_percent, 0) * 10);
@@ -117,7 +105,6 @@ fn row_write(
     info: *const ProcessInfo,
     width: usize,
 ) !void {
-    // A kernel thread has no command line: shown by its name in brackets, as by `ps`.
     const kernel_thread = info.command.len == 0;
     try w.print("  {s}{d:>7} {s:<10}{s} ", .{
         if (kernel_thread) style.on(term.dim) else "",
@@ -144,10 +131,8 @@ fn row_write(
     }
 }
 
-/// "  " + 7 + 1 + 10 + 1 + 13 + 1 + 7 + 1 + 4 + 1 + 8 + 2.
 const columns_before_command = 58;
 
-/// The share, and a bar of 6 columns full at one CPU. Null: started since the last look.
 fn cpu_write(w: *Writer, style: Style, percent: ?f32) !void {
     const share = percent orelse {
         try w.print("{s}{s:>6}{s}       ", .{ style.on(term.dim), "-", style.off() });
@@ -159,11 +144,9 @@ fn cpu_write(w: *Writer, style: Style, percent: ?f32) !void {
     try w.writeAll(style.off());
 }
 
-/// The pid decides between equals, so rows do not swap places between frames.
 fn before(sort: Sort, a: ProcessInfo, b: ProcessInfo) bool {
     switch (sort) {
         .cpu => {
-            // No CPU yet counts as the least busy.
             const a_cpu = a.cpu_percent orelse -1;
             const b_cpu = b.cpu_percent orelse -1;
             if (a_cpu != b_cpu) return a_cpu > b_cpu;
@@ -174,7 +157,6 @@ fn before(sort: Sort, a: ProcessInfo, b: ProcessInfo) bool {
     return a.pid < b.pid;
 }
 
-/// K, M or G: at most 7 characters.
 fn memory_text(buffer: *[16]u8, bytes: u64) []const u8 {
     const kib = bytes / 1024;
     if (kib < 1024) return std.fmt.bufPrint(buffer, "{d}K", .{kib}) catch unreachable;
@@ -183,7 +165,6 @@ fn memory_text(buffer: *[16]u8, bytes: u64) []const u8 {
     return std.fmt.bufPrint(buffer, "{d:.1}G", .{mib / 1024}) catch unreachable;
 }
 
-/// "45s", "12m", "3h12m", "12d04h".
 fn ago_text(buffer: *[16]u8, now_unix_ns: u64, then_unix_ns: u64) []const u8 {
     const seconds = (now_unix_ns -| then_unix_ns) / std.time.ns_per_s;
     const minutes = seconds / 60;
@@ -198,8 +179,6 @@ fn ago_text(buffer: *[16]u8, now_unix_ns: u64, then_unix_ns: u64) []const u8 {
     else
         std.fmt.bufPrint(buffer, "{d}d{d:0>2}h", .{ days, hours % 24 })) catch unreachable;
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -271,16 +250,15 @@ test "the header sums the machine; rows go busiest first, a new process last" {
     try testing.expect(has(text, "nusku ps  3 processes \u{00b7} 8 CPUs \u{00b7} CPU 18.4% " ++
         "(user 12.0 system 5.1 iowait 0.3) \u{00b7} memory"));
     try testing.expect(has(text, "every 1.0 s\n"));
-    try testing.expect(!has(text, "Ctrl-C")); // Not live.
+    try testing.expect(!has(text, "Ctrl-C"));
     const chrome = std.mem.indexOf(u8, text, "41722").?;
     const kworker = std.mem.indexOf(u8, text, "  917").?;
     const new = std.mem.indexOf(u8, text, "      5 ").?;
     try testing.expect(chrome < kworker and kworker < new);
-    // 98% of a CPU: a bar of almost six blocks. A kernel thread by its name in brackets.
     try testing.expect(has(text, " 98.0% " ++ "\u{2588}" ** 5 ++ "\u{2589}"));
     try testing.expect(has(text, "[kworker/3:1]"));
     try testing.expect(has(text, "812.0M"));
-    try testing.expect(has(text, "17m")); // Started 1040 s before the look.
+    try testing.expect(has(text, "17m"));
 }
 
 test "the command is cut to the terminal, the rest counted, sorted as asked" {
@@ -295,7 +273,6 @@ test "the command is cut to the terminal, the rest counted, sorted as asked" {
     try testing.expect(has(text, "/opt/google/chrome/\u{2026}\n"));
     try testing.expect(has(text, "\u{2026} 1 more\n"));
     try testing.expect(has(text, "Ctrl-C to stop"));
-    // By memory: chrome, then the new one (4K), and the kernel thread (0) is hidden.
     try testing.expect(!has(text, "kworker"));
-    try testing.expect(!has(text, "\x1b[")); // No colors unless asked.
+    try testing.expect(!has(text, "\x1b["));
 }

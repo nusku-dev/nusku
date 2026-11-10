@@ -1,22 +1,18 @@
-//! The functions of one binary, sorted by file offset (the same wherever it was loaded), with
-//! their names in one blob. Built from untrusted bytes: a symbol that makes no sense is skipped.
+//! The functions of one binary.
 
 const std = @import("std");
 const elf = @import("shared").elf;
 
 const assert = std.debug.assert;
 
-/// The size of one Elf64_Sym.
 const sym_bytes = 24;
 const stt_func = 2;
 const stt_gnu_ifunc = 10;
-/// Longer names are cut.
 const name_bytes_max = 4096;
 
 pub const Error = error{ OutOfMemory, TooLarge };
 
 pub const Input = struct {
-    /// The executable segments, from the binary's header.
     segments: []const elf.Segment,
     symtab: []const u8 = &.{},
     strtab: []const u8 = &.{},
@@ -26,32 +22,27 @@ pub const Input = struct {
 
 pub const Hit = struct {
     name: []const u8,
-    /// How far into the function the offset is.
     inside: u64,
 };
 
 const Entry = struct {
     start: u64,
-    /// Where the name starts in `names`.
     name: u32,
     size: u32,
 };
 
 pub const SymbolTable = struct {
-    /// Only the first `count` are in use.
     entries: []Entry,
     count: usize,
     names: []u8,
 
     pub fn init(gpa: std.mem.Allocator, input: Input) Error!SymbolTable {
-        // The dynamic table is a subset of the full one.
         const syms, const strs = if (input.symtab.len > 0)
             .{ input.symtab, input.strtab }
         else
             .{ input.dynsym, input.dynstr };
         const symbols_count = syms.len / sym_bytes;
 
-        // Counted first, so everything is allocated once.
         var count: usize = 0;
         var names_total: usize = 0;
         for (0..symbols_count) |index| {
@@ -93,15 +84,12 @@ pub const SymbolTable = struct {
         table.* = undefined;
     }
 
-    /// Memory taken, for the store's budget.
     pub fn bytes(table: *const SymbolTable) u64 {
         return table.entries.len * @sizeOf(Entry) + table.names.len;
     }
 
-    /// The function holding file offset `offset`.
     pub fn lookup(table: *const SymbolTable, offset: u64) ?Hit {
         const entries = table.entries[0..table.count];
-        // The first entry after `offset`: the one before it may hold it.
         var low: usize = 0;
         var high: usize = entries.len;
         while (low < high) {
@@ -127,7 +115,6 @@ const Raw = struct {
     size: u64,
 };
 
-/// Symbol `index`, if it is a function defined in an executable segment, with a name.
 fn sym_read(segments: []const elf.Segment, syms: []const u8, strs: []const u8, index: usize) ?Raw {
     const at = index * sym_bytes;
     assert(at + sym_bytes <= syms.len);
@@ -140,7 +127,7 @@ fn sym_read(segments: []const elf.Segment, syms: []const u8, strs: []const u8, i
 
     const kind = info & 0xf;
     if (kind != stt_func and kind != stt_gnu_ifunc) return null;
-    if (section_index == 0) return null; // Undefined: it lives in another file.
+    if (section_index == 0) return null;
     const start = file_offset(segments, value) orelse return null;
 
     if (name_at >= strs.len) return null;
@@ -150,7 +137,6 @@ fn sym_read(segments: []const elf.Segment, syms: []const u8, strs: []const u8, i
     return .{ .name = rest[0..@min(length, name_bytes_max)], .start = start, .size = size };
 }
 
-/// The file offset of virtual address `address`.
 fn file_offset(segments: []const elf.Segment, address: u64) ?u64 {
     for (segments) |segment| {
         if (address < segment.vaddr) continue;
@@ -166,7 +152,6 @@ fn entry_less(_: void, a: Entry, b: Entry) bool {
     return a.name < b.name;
 }
 
-/// Keeps one name of aliases (sorted entries at the same start). Returns how many are kept.
 fn aliases_drop(entries: []Entry) usize {
     var kept: usize = 0;
     for (entries) |entry| {
@@ -177,17 +162,13 @@ fn aliases_drop(entries: []Entry) usize {
     return kept;
 }
 
-/// A function without a size (assembly often has none) lasts until the next; the last, a byte.
 fn sizes_fill(entries: []Entry) void {
     for (entries, 0..) |*entry, index| {
         if (entry.size != 0) continue;
-        // Not `start + 1 - start`: an untrusted start may be the last address.
         const size = if (index + 1 < entries.len) entries[index + 1].start - entry.start else 1;
         entry.size = @intCast(@min(size, std.math.maxInt(u32)));
     }
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -209,7 +190,6 @@ fn sym_write(
     std.mem.writeInt(u64, out[at + 16 ..][0..8], size, .little);
 }
 
-// Names in the test string table: "\0main\0helper\0data\0start\0alias\0".
 const strs_test = "\x00main\x00helper\x00data\x00start\x00alias\x00";
 const name_main = 1;
 const name_helper = 6;
@@ -217,15 +197,14 @@ const name_data = 13;
 const name_start = 18;
 const name_alias = 24;
 
-// File offset = address - 0x400000 + 0x1000 in this segment.
 const segments_test = [_]elf.Segment{.{ .offset = 0x1000, .vaddr = 0x401000, .filesz = 0x2000 }};
 
 test "a lookup finds the function that contains the offset, in file offsets" {
     var syms: [4 * sym_bytes]u8 = @splat(0);
-    sym_write(&syms, 0, name_main, 0x12, 1, 0x401100, 0x40); // Global function.
-    sym_write(&syms, 1, name_helper, 0x02, 1, 0x401200, 0x10); // Local function.
-    sym_write(&syms, 2, name_data, 0x11, 2, 0x402800, 0x100); // An object, not a function.
-    sym_write(&syms, 3, name_start, 0x12, 0, 0x401300, 0x10); // Undefined.
+    sym_write(&syms, 0, name_main, 0x12, 1, 0x401100, 0x40);
+    sym_write(&syms, 1, name_helper, 0x02, 1, 0x401200, 0x10);
+    sym_write(&syms, 2, name_data, 0x11, 2, 0x402800, 0x100);
+    sym_write(&syms, 3, name_start, 0x12, 0, 0x401300, 0x10);
 
     var table = try SymbolTable.init(testing.allocator, .{
         .segments = &segments_test,
@@ -236,7 +215,6 @@ test "a lookup finds the function that contains the offset, in file offsets" {
 
     try testing.expectEqual(@as(usize, 2), table.count);
 
-    // main is at file offset 0x1100 .. 0x1140.
     const first = table.lookup(0x1100).?;
     try testing.expectEqualStrings("main", first.name);
     try testing.expectEqual(@as(u64, 0), first.inside);
@@ -245,7 +223,6 @@ test "a lookup finds the function that contains the offset, in file offsets" {
     try testing.expectEqual(@as(u64, 0x20), middle.inside);
     try testing.expectEqualStrings("main", table.lookup(0x113f).?.name);
 
-    // Outside any function: the gap, before the first, after the last.
     try testing.expectEqual(@as(?Hit, null), table.lookup(0x1140));
     try testing.expectEqual(@as(?Hit, null), table.lookup(0x10ff));
     try testing.expectEqualStrings("helper", table.lookup(0x1200).?.name);
@@ -255,9 +232,9 @@ test "a lookup finds the function that contains the offset, in file offsets" {
 
 test "a function without a size lasts until the next one, and aliases keep one name" {
     var syms: [3 * sym_bytes]u8 = @splat(0);
-    sym_write(&syms, 0, name_start, 0x12, 1, 0x401000, 0); // No size.
+    sym_write(&syms, 0, name_start, 0x12, 1, 0x401000, 0);
     sym_write(&syms, 1, name_main, 0x12, 1, 0x401100, 0x20);
-    sym_write(&syms, 2, name_alias, 0x12, 1, 0x401100, 0x20); // Same start as main.
+    sym_write(&syms, 2, name_alias, 0x12, 1, 0x401100, 0x20);
 
     var table = try SymbolTable.init(testing.allocator, .{
         .segments = &segments_test,
@@ -273,11 +250,11 @@ test "a function without a size lasts until the next one, and aliases keep one n
 }
 
 test "bad symbols are skipped: bad name, address outside the segments, cut-off table" {
-    var syms: [4 * sym_bytes + 10]u8 = @splat(0); // Ten bytes of a fifth symbol.
-    sym_write(&syms, 0, 9999, 0x12, 1, 0x401100, 0x10); // Name offset outside the strings.
-    sym_write(&syms, 1, name_main, 0x12, 1, 0x500000, 0x10); // Address in no segment.
-    sym_write(&syms, 2, 0, 0x12, 1, 0x401100, 0x10); // Empty name.
-    sym_write(&syms, 3, name_helper, 0x12, 1, 0x401200, 0x10); // The only good one.
+    var syms: [4 * sym_bytes + 10]u8 = @splat(0);
+    sym_write(&syms, 0, 9999, 0x12, 1, 0x401100, 0x10);
+    sym_write(&syms, 1, name_main, 0x12, 1, 0x500000, 0x10);
+    sym_write(&syms, 2, 0, 0x12, 1, 0x401100, 0x10);
+    sym_write(&syms, 3, name_helper, 0x12, 1, 0x401200, 0x10);
 
     var table = try SymbolTable.init(testing.allocator, .{
         .segments = &segments_test,
@@ -289,7 +266,6 @@ test "bad symbols are skipped: bad name, address outside the segments, cut-off t
     try testing.expectEqual(@as(usize, 1), table.count);
     try testing.expectEqualStrings("helper", table.lookup(0x1200).?.name);
 
-    // A string table without the final zero: the name is not trusted either.
     var no_end = try SymbolTable.init(testing.allocator, .{
         .segments = &segments_test,
         .symtab = syms[3 * sym_bytes ..][0..sym_bytes],
@@ -319,7 +295,6 @@ test "without a .symtab the dynamic symbols are used, and nothing at all is an e
 test "a function at the very last offset, with no size, does not overflow" {
     var syms: [1 * sym_bytes]u8 = @splat(0);
     sym_write(&syms, 0, name_main, 0x12, 1, 0x10, 0);
-    // A segment that puts address 0x10 at the last file offset there is.
     const segments = [_]elf.Segment{.{
         .offset = std.math.maxInt(u64) - 0x10,
         .vaddr = 0,
@@ -334,7 +309,6 @@ test "a function at the very last offset, with no size, does not overflow" {
     try testing.expectEqualStrings("main", table.lookup(std.math.maxInt(u64)).?.name);
 }
 
-/// Untrusted bytes, as an agent could send: whatever they are, the table is consistent.
 fn table_fuzz(_: void, smith: *testing.Smith) !void {
     var segments: [2]elf.Segment = undefined;
     for (&segments) |*segment| segment.* = .{
@@ -357,7 +331,6 @@ fn table_fuzz(_: void, smith: *testing.Smith) !void {
     };
     defer table.deinit(testing.allocator);
 
-    // Sorted, apart, each with a size and a name inside the blob: found at its own start.
     const entries = table.entries[0..table.count];
     for (entries, 0..) |entry, index| {
         if (index > 0) try testing.expect(entries[index - 1].start < entry.start);

@@ -1,4 +1,4 @@
-//! What the views share to draw on a terminal: ANSI styles, bars, and redrawing in place.
+//! What the views share to draw on a terminal.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -15,7 +15,6 @@ const reset = "\x1b[0m";
 pub const cursor_hide = "\x1b[?25l";
 pub const cursor_show = "\x1b[?25h";
 
-/// ANSI codes when colors are on, nothing otherwise.
 pub const Style = struct {
     color: bool,
 
@@ -27,7 +26,6 @@ pub const Style = struct {
         return style.on(reset);
     }
 
-    /// Red from `red_from`, yellow from a tenth, dim under a hundredth, in per mille.
     pub fn heat(style: Style, per_mille: u64, red_from: u64) []const u8 {
         assert(red_from > 100);
         if (per_mille >= red_from) return style.on(red);
@@ -37,7 +35,6 @@ pub const Style = struct {
     }
 };
 
-/// A bar of `columns` filled `per_mille` of the way: whole blocks, then one in eighths.
 pub fn bar_write(w: *Writer, per_mille: u64, columns: usize) !void {
     const eighths = [_][]const u8{
         "",
@@ -56,8 +53,6 @@ pub fn bar_write(w: *Writer, per_mille: u64, columns: usize) !void {
     try w.splatByteAll(' ', columns - full - @intFromBool(units % 8 != 0));
 }
 
-/// Erases the last `lines` lines and puts the cursor at their start: what a live view draws
-/// over.
 pub fn lines_erase(w: *Writer, lines: usize) !void {
     if (lines == 0) return;
     try w.print("\x1b[{d}F\x1b[J", .{lines});
@@ -65,7 +60,6 @@ pub fn lines_erase(w: *Writer, lines: usize) !void {
 
 pub const Size = struct { rows: usize, cols: usize };
 
-/// The terminal on stdout, or null when it does not say.
 pub fn size() ?Size {
     var window: std.posix.winsize = undefined;
     const linux = std.os.linux;
@@ -74,14 +68,11 @@ pub fn size() ?Size {
     return .{ .rows = window.row, .cols = window.col };
 }
 
-/// `text`, cut to `width` columns with "…" when longer. 0: never cut.
 pub fn text_cut_write(w: *Writer, text: []const u8, width: usize) !void {
     if (width == 0 or text.len <= width) return w.writeAll(text);
     try w.writeAll(text[0 .. width - 1]);
     try w.writeAll("\u{2026}");
 }
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -100,7 +91,7 @@ test "a bar is whole blocks and an eighth, always as wide as asked" {
     defer testing.allocator.free(almost);
     try testing.expectEqualStrings("\u{2588}" ** 5 ++ "\u{2589}", almost);
 
-    const past = try bar_test(1500, 4); // More than full is full.
+    const past = try bar_test(1500, 4);
     defer testing.allocator.free(past);
     try testing.expectEqualStrings("\u{2588}" ** 4, past);
 }

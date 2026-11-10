@@ -1,17 +1,4 @@
 //! Public API of the log module.
-//!
-//!     const log = @import("log");
-//!
-//!     // once, in main:
-//!     var logger = log.Logger.init(.{ .writer = &stderr.interface, .io = io });
-//!     log.setDefault(&logger);
-//!
-//!     // anywhere:
-//!     log.info("server started", .{ .addr = addr, .port = 7000 });
-//!
-//!     // per file or per component:
-//!     const slog = log.scope("agent");
-//!     slog.debug("sample taken", .{ .pid = pid });
 
 const std = @import("std");
 const logger_mod = @import("logger.zig");
@@ -27,9 +14,6 @@ pub const setDefault = logger_mod.setDefault;
 pub const clearDefault = logger_mod.clearDefault;
 pub const getDefault = logger_mod.getDefault;
 pub const shouldColor = logger_mod.shouldColor;
-
-// Process-wide convenience functions. They use the default logger and do
-// nothing when none is installed.
 
 pub fn emit(level: Level, msg: []const u8, fields: anytype) void {
     const lg = getDefault() orelse return;
@@ -51,21 +35,14 @@ pub fn err(msg: []const u8, fields: anytype) void {
     emit(.err, msg, fields);
 }
 
-/// A handle bound to the default logger with a scope name. Fine at file
-/// level: `const slog = log.scope("db");`
 pub fn scope(name: []const u8) Bound(struct {}) {
     return .{ .scope_name = name, .fields = .{} };
 }
 
-/// A handle bound to the default logger with fixed fields.
 pub fn with(fields: anytype) Bound(@TypeOf(fields)) {
     return .{ .fields = fields };
 }
 
-/// Route `std.log` (including libraries that use it) into this logger.
-/// In your root file:
-///
-///     pub const std_options: std.Options = .{ .logFn = log.stdLogFn };
 pub fn stdLogFn(
     comptime level: std.log.Level,
     comptime scope_tag: @EnumLiteral(),
@@ -83,7 +60,7 @@ pub fn stdLogFn(
 
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    w.print(format, args) catch {}; // too long: keep what fit
+    w.print(format, args) catch {};
     const name = if (scope_tag == .default) "" else @tagName(scope_tag);
     lg.emit(mapped, name, w.buffered(), .{});
 }
@@ -94,7 +71,7 @@ test "global functions and std.log bridge" {
     var lg: Logger = .init(.{ .writer = &out.writer, .io = std.testing.io, .timestamps = false, .level = .debug });
 
     clearDefault();
-    info("nobody listens", .{}); // no default yet: no crash
+    info("nobody listens", .{});
 
     setDefault(&lg);
     defer clearDefault();

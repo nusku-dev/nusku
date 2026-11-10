@@ -1,8 +1,4 @@
-//! The agent's log, under the scope "agent". Quiet until the program installs a logger, and
-//! never on the sampling path.
-//!
-//!     const log = @import("log.zig").agent;
-//!     log.info("profiling started", .{ .pid = pid });
+//! The agent's log, under the scope "agent".
 
 const logger = @import("log");
 

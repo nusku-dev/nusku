@@ -1,7 +1,5 @@
 const std = @import("std");
 
-/// The port the backend listens on in dev mode. The Vite dev server proxies `/webui.js` here
-/// (see ui/vite.config.ts), so the two must agree. A release build picks a free port instead.
 const dev_port = 9000;
 
 pub fn build(b: *std.Build) void {
@@ -20,6 +18,8 @@ pub fn build(b: *std.Build) void {
         .is_static = true,
     });
 
+    const nusku = b.dependency("nusku", .{ .target = target, .optimize = optimize });
+
     const exe = b.addExecutable(.{
         .name = "nusku-app",
         .root_module = b.createModule(.{
@@ -30,6 +30,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "webui", .module = webui.module("webui") },
                 .{ .name = "build_options", .module = options.createModule() },
                 .{ .name = "assets", .module = assets(b, dev) },
+                .{ .name = "client", .module = nusku.module("client") },
+                .{ .name = "shared", .module = nusku.module("shared") },
             },
         }),
     });
@@ -44,8 +46,6 @@ pub fn build(b: *std.Build) void {
     b.step("test", "Run tests").dependOn(&b.addRunArtifact(tests).step);
 }
 
-/// The module that holds the UI. In dev mode it is empty: the page comes from Vite. Otherwise
-/// the UI is built with Vite and every output file is embedded in the executable.
 fn assets(b: *std.Build, dev: bool) *std.Build.Module {
     if (dev) {
         const empty = b.addWriteFiles().add("assets.zig", "pub const files = [_]File{};\n" ++
@@ -53,15 +53,16 @@ fn assets(b: *std.Build, dev: bool) *std.Build.Module {
         return b.createModule(.{ .root_source_file = empty });
     }
 
-    // `npm run build` type-checks, then bundles into a directory in the cache. It runs on every
-    // build (it has no way to tell Zig which sources it read), but nothing downstream is
-    // rebuilt unless the output actually changes.
-    const vite = b.addSystemCommand(&.{ "npm", "run", "build", "--", "--emptyOutDir", "--outDir" });
+    const vite = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "npm run build -- --emptyOutDir --outDir \"$1\" 1>&2",
+        "vite",
+    });
     vite.setCwd(b.path("ui"));
     vite.has_side_effects = true;
     const dist = vite.addOutputDirectoryArg("dist");
 
-    // Turn the output into a Zig source file with one ready-made HTTP response per file.
     const embed_tool = b.addExecutable(.{
         .name = "embed",
         .root_module = b.createModule(.{

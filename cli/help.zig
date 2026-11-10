@@ -1,5 +1,4 @@
-//! Help and usage rendering. Pure functions over the command tree, writing
-//! to any `*std.Io.Writer`, no allocation.
+//! Help and usage rendering.
 
 const std = @import("std");
 const command = @import("command.zig");
@@ -9,12 +8,10 @@ const Flag = command.Flag;
 const Writer = std.Io.Writer;
 pub const Error = Writer.Error;
 
-/// Shown for every command unless the command defines its own `help` flag.
 const help_flag: Flag = .{ .name = "help", .short = 'h', .kind = .bool, .help = "Show help for this command" };
 
 const Section = enum { local, inherited };
 
-/// `app list`, `app`, ...
 pub fn writePath(w: *Writer, path: []const *const Command) Error!void {
     for (path, 0..) |c, i| {
         if (i > 0) try w.writeByte(' ');
@@ -22,7 +19,6 @@ pub fn writePath(w: *Writer, path: []const *const Command) Error!void {
     }
 }
 
-/// Two lines for a usage error: where to look next.
 pub fn writeUsageHint(w: *Writer, path: []const *const Command) Error!void {
     try w.writeAll("Run '");
     try writePath(w, path);
@@ -89,8 +85,6 @@ fn visibleSubcommands(cmd: *const Command) usize {
     return n;
 }
 
-/// Calls `visitor.flag(*const Flag)` for every flag in the section, in
-/// display order. Used twice: once to measure columns, once to print.
 fn visit(path: []const *const Command, section: Section, visitor: anytype) Error!void {
     const cmd = path[path.len - 1];
     switch (section) {
@@ -172,7 +166,6 @@ fn typeWord(kind: command.FlagKind) ?[]const u8 {
     };
 }
 
-/// Visible width of "  -n, --limit int" (everything before the padding).
 fn labelLen(f: Flag) usize {
     const type_len = if (typeWord(f.kind)) |t| t.len + 1 else 0;
     return 2 + 4 + 2 + f.name.len + type_len;

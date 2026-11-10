@@ -1,16 +1,14 @@
-//! A binary sent for its symbols: a `Header`, then the section bytes as `Chunk`s.
+//! A binary sent for its symbols.
 
 const std = @import("std");
 const elf = @import("../elf.zig");
 
-/// The sections the symbols are read from.
 pub const Section = enum {
     symtab,
     strtab,
     dynsym,
     dynstr,
 
-    /// The name in the ELF file.
     pub fn name(section: Section) []const u8 {
         return switch (section) {
             .symtab => ".symtab",
@@ -21,19 +19,14 @@ pub const Section = enum {
     }
 };
 
-/// A binary the agent can send: the server says whether it wants it.
 pub const Offer = struct {
     build_id: []const u8,
-    /// For display only; never opened.
     path: []const u8,
 };
 
-/// A section the file lacks has size 0.
 pub const Header = struct {
     build_id: []const u8,
-    /// For display only; never opened.
     path: []const u8,
-    /// The executable segments: how a file offset becomes the address the symbols use.
     segments: []const Segment,
     sizes: std.EnumArray(Section, u64),
 
@@ -49,7 +42,6 @@ pub const Header = struct {
     }
 };
 
-/// The bytes of `section` from `offset`.
 pub const Chunk = struct {
     section: Section,
     offset: u64,

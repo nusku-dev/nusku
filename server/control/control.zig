@@ -1,13 +1,4 @@
-//! The control layer: the local client. It runs the agent on threads of this process, feeding
-//! the server: profiling runs, and the processes watch. Called from one control thread only,
-//! except `interrupt`.
-//!
-//!     const started = try controller.start(.{ .profile = .{ .pid = pid } });
-//!     while (controller.running(started.job)) show(server.profile(...));
-//!     const done = try controller.wait(started.job);
-//!
-//! Over a network the same loop runs in the agent's process instead: see control/job.zig.
-//! Stands on the server.
+//! The control layer: the local client.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -30,23 +21,18 @@ pub const Spec = union(enum) {
     pub const Profile = struct {
         pid: u32,
         metrics: std.EnumSet(protocol.Metric) = .initOne(.cpu),
-        /// Milliseconds between reports.
         interval_ms: u32 = 1000,
-        /// 0: until the target exits or `stop`.
         duration_s: u32 = 0,
     };
 
     pub const Processes = struct {
-        /// Milliseconds between two frames.
         interval_ms: u32 = 1000,
-        /// 0: until `stop`.
         duration_s: u32 = 0,
     };
 };
 
 pub const Started = struct {
     job: JobId,
-    /// What a profile's windows are queried under; null for the processes watch.
     target: ?server_layer.TargetId,
 };
 
@@ -57,7 +43,6 @@ pub const Options = struct {
 pub const Controller = struct {
     gpa: std.mem.Allocator,
     server: *Server,
-    /// A job's thread points into its slot, so the array never moves.
     jobs: []Job,
     next_id: JobId,
 
@@ -73,7 +58,6 @@ pub const Controller = struct {
         controller.* = .{ .gpa = gpa, .server = server, .jobs = jobs, .next_id = 1 };
     }
 
-    /// Stops whatever is still going, then frees the controller.
     pub fn deinit(controller: *Controller) void {
         controller.interrupt();
         for (controller.jobs) |*job| {
@@ -83,8 +67,6 @@ pub const Controller = struct {
         controller.* = undefined;
     }
 
-    /// Starts the job. A profile waits for the agent's setup, about a second: no permission,
-    /// or the process gone, comes out here.
     pub fn start(controller: *Controller, spec: Spec) !Started {
         const kind = std.meta.activeTag(spec);
         errdefer |err| log.err("job not started", .{ .kind = kind, .cause = err });
@@ -129,26 +111,23 @@ pub const Controller = struct {
         return .{ .job = job.id, .target = target };
     }
 
-    /// Asks the job to stop, waits for it, and says why it ended.
     pub fn stop(controller: *Controller, id: JobId) !Done {
         const job = controller.find(id) orelse return error.JobUnknown;
         job.stop();
         return controller.finish(job);
     }
 
-    /// Waits for the job to end by itself: its duration, or the target exiting.
     pub fn wait(controller: *Controller, id: JobId) !Done {
         const job = controller.find(id) orelse return error.JobUnknown;
         return controller.finish(job);
     }
 
-    /// False once `wait` would return at once.
     pub fn running(controller: *Controller, id: JobId) bool {
         const job = controller.find(id) orelse return false;
         return !job.finished.load(.acquire);
     }
 
-    /// Asks every job to stop; `wait` gets why. Safe from a signal handler.
+    /// Safe from a signal handler.
     pub fn interrupt(controller: *const Controller) void {
         for (controller.jobs) |*job| {
             if (job.active) job.stop();
@@ -192,7 +171,6 @@ pub const Controller = struct {
         return null;
     }
 
-    /// One watch per machine: two would only take turns writing the same frame.
     fn watching(controller: *const Controller) bool {
         for (controller.jobs) |*job| {
             if (job.active and job.work == .processes) return true;
@@ -201,12 +179,9 @@ pub const Controller = struct {
     }
 };
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 const burn = @import("../testing/burn.zig").burn;
 
-/// A small server and its controller, on the heap: threads point into both.
 const Fixture = struct {
     server: Server,
     controller: Controller,
@@ -261,7 +236,6 @@ test "a profile of this process feeds the server until it is stopped (root)" {
     const spec = Spec{ .profile = .{ .pid = pid, .interval_ms = 100 } };
     const started = try fixture.controller.start(spec);
     try testing.expect(fixture.controller.running(started.job));
-    // Sampling needs something to sample.
     var waited: u32 = 0;
     while (try fixture.samples(started.target.?) < 10) : (waited += 1) {
         if (waited > 200) return error.NoSamples;
@@ -285,7 +259,6 @@ test "the processes watch starts, refuses a second, and stops when asked" {
     const second = controller.start(.{ .processes = .{ .interval_ms = 100 } });
     try testing.expectError(error.AlreadyWatching, second);
 
-    // The first frame at once, then one every 100 ms: polled, as a loaded machine is slower.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var latest = try server.processes(arena.allocator());

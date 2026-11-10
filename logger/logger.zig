@@ -1,5 +1,4 @@
-//! The Logger: owns the output writer, the level threshold, and a lock so
-//! that one record is never interleaved with another.
+//! The Logger: owns the output writer.
 const std = @import("std");
 const Writer = std.Io.Writer;
 const Level = @import("level.zig").Level;
@@ -7,18 +6,13 @@ const encode = @import("encode.zig");
 const Format = encode.Format;
 
 pub const Options = struct {
-    /// Where records go. For a CLI this is stderr.
     writer: *Writer,
-    /// Used for the clock and the lock.
     io: std.Io,
     level: Level = .info,
     format: Format = .text,
-    /// ANSI colors in the text format. Resolve it yourself (see `shouldColor`).
     color: bool = false,
     timestamps: bool = true,
-    /// Flush the writer after every record. Leave on for stderr.
     flush: bool = true,
-    /// Replace the clock. Returns nanoseconds since the Unix epoch.
     now_fn: ?*const fn () i96 = null,
 };
 
@@ -46,8 +40,7 @@ pub const Logger = struct {
         };
     }
 
-    // Settings that can change while the program runs (for example after
-    // flags are parsed). Safe to call from any thread.
+    // Safe to call from any thread.
 
     pub fn setLevel(self: *Logger, level: Level) void {
         self.level.store(level, .monotonic);
@@ -73,8 +66,6 @@ pub const Logger = struct {
         return level != .off and @intFromEnum(level) >= @intFromEnum(self.getLevel());
     }
 
-    /// The one place records are written. Logging never fails the caller:
-    /// a broken pipe or full disk is swallowed.
     pub fn emit(self: *Logger, level: Level, scope_name: []const u8, msg: []const u8, fields: anytype) void {
         if (!self.enabled(level)) return;
 
@@ -107,21 +98,15 @@ pub const Logger = struct {
         self.emit(.err, "", msg, fields);
     }
 
-    /// A handle that tags every record with a scope name.
     pub fn scope(self: *Logger, name: []const u8) Bound(struct {}) {
         return .{ .logger = self, .scope_name = name, .fields = .{} };
     }
 
-    /// A handle that adds the same fields to every record.
     pub fn with(self: *Logger, fields: anytype) Bound(@TypeOf(fields)) {
         return .{ .logger = self, .fields = fields };
     }
 };
 
-/// A logger plus a scope name plus fixed fields. Cheap to copy and to build
-/// on the stack. When `logger` is null it resolves the process-wide default
-/// on every call, which is what lets `const slog = log.scope("db")` live at
-/// file level before the logger exists.
 pub fn Bound(comptime F: type) type {
     return struct {
         const Self = @This();
@@ -151,7 +136,6 @@ pub fn Bound(comptime F: type) type {
             self.emit(.err, msg, extra);
         }
 
-        /// Same handle with more fixed fields. Earlier fields print first.
         pub fn with(self: Self, extra: anytype) Bound(encode.Pair(F, @TypeOf(extra))) {
             return .{
                 .logger = self.logger,
@@ -168,13 +152,9 @@ pub fn Bound(comptime F: type) type {
     };
 }
 
-// process default
-
 var default_logger: std.atomic.Value(?*Logger) = .init(null);
 
-/// Install the logger used by `log.info(...)` and by unattached `Bound`
-/// handles. The logger must outlive its use. Call `clearDefault` before it
-/// goes away.
+/// The logger must outlive its use.
 pub fn setDefault(logger: *Logger) void {
     default_logger.store(logger, .release);
 }
@@ -187,8 +167,6 @@ pub fn getDefault() ?*Logger {
     return default_logger.load(.acquire);
 }
 
-/// Color only when asked for by the environment (`NO_COLOR` unset) and the
-/// file is a terminal.
 pub fn shouldColor(io: std.Io, file: std.Io.File, no_color_set: bool) bool {
     if (no_color_set) return false;
     return file.isTty(io) catch false;

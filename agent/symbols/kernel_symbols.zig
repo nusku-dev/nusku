@@ -1,6 +1,4 @@
-//! The kernel's code symbols from /proc/kallsyms, sent like a binary's. Each is kept at its
-//! distance from `_text`, which KASLR moves. Modules load elsewhere on every boot, so the
-//! identity is the build ID and `_text`: good for one boot. Only root reads real addresses.
+//! The kernel's code symbols from /proc/kallsyms, sent like a binary's.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -13,13 +11,9 @@ pub const id = protocol_kernel.id;
 pub const id_bytes_max = protocol_kernel.id_bytes_max;
 pub const segment = protocol_kernel.segment;
 
-/// The size of one Elf64_Sym.
 const sym_bytes = 24;
-/// More symbols than a kernel with every module loaded has (a few hundred thousand).
 const symbols_max = 1 << 20;
-/// The names of so many symbols: kept well under the server's budget for one binary.
 const names_bytes_max = 64 * 1024 * 1024;
-/// A kallsyms line: an address, a type, a name of at most KSYM_NAME_LEN (512), a module.
 const line_bytes_max = 1024;
 
 pub const Symbols = struct {
@@ -28,19 +22,15 @@ pub const Symbols = struct {
     count: usize,
 };
 
-/// Reads kallsyms a piece per `step`: the kernel writes it as it is read, 0.6 s of CPU for all
-/// of it, too long to hold up the agent's loop.
 pub const Reader = struct {
     file: File,
     builder: Builder,
-    /// The bytes read and not parsed yet: the start of a line cut by the end of the last read.
     buffer: []u8,
     kept: usize,
     done: bool,
 
     const buffer_bytes = 64 * 1024;
 
-    /// Null when kallsyms cannot be opened. The buffer and the symbols are in `arena`.
     pub fn init(arena: std.mem.Allocator, text_address: u64) !?Reader {
         var file = File.open("/proc/kallsyms") catch return null;
         errdefer file.deinit();
@@ -60,7 +50,6 @@ pub const Reader = struct {
         reader.* = undefined;
     }
 
-    /// Reads and parses about `bytes_max` more of kallsyms. True once it is all read.
     pub fn step(reader: *Reader, bytes_max: usize) !bool {
         assert(!reader.done);
         assert(bytes_max > 0);
@@ -89,28 +78,21 @@ pub const Reader = struct {
         return false;
     }
 
-    /// The symbols, once `step` said it is done. Null when the addresses were hidden (not root).
     pub fn symbols(reader: *const Reader) ?Symbols {
         assert(reader.done);
         return reader.builder.finish();
     }
 };
 
-/// kallsyms read on a thread of its own: some 0.8 s of the kernel's time for its 15 MB, which no
-/// loop should wait on. In the arena it is started with, and at its address until `deinit`.
 pub const Background = struct {
     reader: Reader,
     thread: std.Thread,
     done: std.atomic.Value(bool),
-    /// Checked between two steps: a stop waits for one step at most.
     cancelled: std.atomic.Value(bool),
-    /// Written by the thread before `done`.
     failed: ?anyerror,
 
-    /// A step of the thread: about 13 ms of the kernel's time.
     const step_bytes = 256 * 1024;
 
-    /// Null when kallsyms cannot be opened.
     pub fn start(arena: std.mem.Allocator, text_address: u64) !?*Background {
         const reader = (try Reader.init(arena, text_address)) orelse return null;
         const background = try arena.create(Background);
@@ -126,7 +108,6 @@ pub const Background = struct {
         return background;
     }
 
-    /// Stops the reading if it still goes on, and waits for the thread.
     pub fn deinit(background: *Background) void {
         background.cancelled.store(true, .release);
         background.thread.join();
@@ -138,7 +119,6 @@ pub const Background = struct {
         return background.done.load(.acquire);
     }
 
-    /// Once `finished`: the symbols; null when the addresses were hidden (not root).
     pub fn symbols(background: *const Background) !?Symbols {
         assert(background.finished());
         if (background.failed) |err| return err;
@@ -158,8 +138,6 @@ pub const Background = struct {
     }
 };
 
-/// The code symbols of /proc/kallsyms, as distances from `text_address`, in `arena`, read in
-/// one go: for tests and tools, not the agent's loop. Null when the addresses are hidden.
 pub fn read(arena: std.mem.Allocator, text_address: u64) !?Symbols {
     var reader = (try Reader.init(arena, text_address)) orelse return null;
     defer reader.deinit();
@@ -167,7 +145,6 @@ pub fn read(arena: std.mem.Allocator, text_address: u64) !?Symbols {
     return reader.symbols();
 }
 
-/// The same from text already read: for tests, and whatever has kallsyms at hand.
 pub fn parse(arena: std.mem.Allocator, text: []const u8, text_address: u64) !?Symbols {
     var builder = Builder{ .arena = arena, .text_address = text_address };
     try builder.start();
@@ -181,11 +158,9 @@ const Builder = struct {
     symtab: std.ArrayList(u8) = .empty,
     strtab: std.ArrayList(u8) = .empty,
     count: usize = 0,
-    /// Lines with an address of 0: the kernel hides them from this process.
     hidden: usize = 0,
 
     fn start(builder: *Builder) !void {
-        // Symbol 0 and name 0 are empty, as in every ELF file.
         try builder.symtab.appendNTimes(builder.arena, 0, sym_bytes);
         try builder.strtab.append(builder.arena, 0);
     }
@@ -195,16 +170,14 @@ const Builder = struct {
         while (lines.next()) |line| try builder.line_add(line);
     }
 
-    /// One line: "ffffffff81000000 T _text", or "ffffffffc0a01000 t nft_do_chain\t[nf_tables]".
     fn line_add(builder: *Builder, line: []const u8) !void {
         if (line.len == 0 or line.len > line_bytes_max) return;
         var fields = std.mem.tokenizeAny(u8, line, " \t");
         const address_text = fields.next() orelse return;
         const kind = fields.next() orelse return;
         const name = fields.next() orelse return;
-        const module = fields.next(); // "[nf_tables]", for a module's symbol.
+        const module = fields.next();
 
-        // Code only: data symbols never hold a frame.
         if (kind.len != 1 or (kind[0] != 't' and kind[0] != 'T')) return;
         const address = std.fmt.parseInt(u64, address_text, 16) catch return;
         if (address == 0) {
@@ -225,9 +198,8 @@ const Builder = struct {
 
         var sym: [sym_bytes]u8 = @splat(0);
         std.mem.writeInt(u32, sym[0..4], name_offset, .little);
-        sym[4] = 0x12; // A global function.
-        std.mem.writeInt(u16, sym[6..8], 1, .little); // Defined.
-        // Kallsyms has no sizes: a function lasts until the next one (the server's rule).
+        sym[4] = 0x12;
+        std.mem.writeInt(u16, sym[6..8], 1, .little);
         std.mem.writeInt(u64, sym[8..16], address -% builder.text_address, .little);
         try builder.symtab.appendSlice(builder.arena, &sym);
         builder.count += 1;
@@ -243,8 +215,6 @@ const Builder = struct {
         };
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -262,7 +232,6 @@ fn value_at(symbols: *const Symbols, index: usize) u64 {
 test "kallsyms lines become code symbols at their distance from _text" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    // As kallsyms writes it: a tab before a module's name.
     const text = "0000000000000000 A fixed_percpu_data\n" ++
         "ffffffff81000000 T _text\n" ++
         "ffffffff81000100 t do_one_initcall\n" ++
@@ -271,11 +240,10 @@ test "kallsyms lines become code symbols at their distance from _text" {
         "not a line";
     const symbols = (try parse(arena.allocator(), text, 0xffffffff81000000)).?;
 
-    try testing.expectEqual(@as(usize, 3), symbols.count); // Code only.
+    try testing.expectEqual(@as(usize, 3), symbols.count);
     try testing.expectEqualStrings("_text", name_at(&symbols, 0));
     try testing.expectEqual(@as(u64, 0), value_at(&symbols, 0));
     try testing.expectEqual(@as(u64, 0x100), value_at(&symbols, 1));
-    // A module's symbol says which module.
     try testing.expectEqualStrings("nft_do_chain [nf_tables]", name_at(&symbols, 2));
     try testing.expectEqual(@as(u64, 0x3fa01000), value_at(&symbols, 2));
 }
@@ -298,10 +266,9 @@ test "kallsyms read a little at a time: hidden without root, the same symbols ei
     defer reader.deinit();
     var steps: usize = 1;
     while (!try reader.step(4096)) steps += 1;
-    try testing.expect(steps > 100); // Kallsyms is megabytes: it took many small steps.
+    try testing.expect(steps > 100);
 
     const stepped = reader.symbols() orelse {
-        // Not root: every address reads as 0, and there is nothing to send.
         try testing.expect(std.os.linux.geteuid() != 0);
         return;
     };

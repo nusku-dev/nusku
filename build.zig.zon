@@ -82,6 +82,13 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "agent",
+        "server",
+        "shared",
+        "client",
+        "cli",
+        "logger",
+        "third_party",
         // For example...
         //"LICENSE",
         //"README.md",

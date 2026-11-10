@@ -1,5 +1,4 @@
-//! End to end: the controller profiles this process while it spins in `burn`, and the profile
-//! must name `burn` and its caller (a return address). Needs root.
+//! End to end: a profile of this process names `burn` and its caller.
 
 const std = @import("std");
 const testing = std.testing;
@@ -31,12 +30,11 @@ test "a profile of this process names its functions and their callers (root)" {
         error.PermissionDenied => return error.SkipZigTest,
         else => return err,
     };
-    burn(2300); // Past the end of the run: every window has samples in `burn`.
+    burn(2300);
     _ = try controller.wait(started.job);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    // The tables are built on the symbols' own thread: `all_built` waits for the last one.
     const query = @import("../../windows/windows.zig").Query{ .target = started.target.? };
     const profile = try server.profile(arena.allocator(), query, .all_built);
 
@@ -61,15 +59,10 @@ test "a profile of this process names its functions and their callers (root)" {
 
     try testing.expect(binaries_count >= 1);
     try testing.expect(profile.stacks.len > 0);
-    // `burn` ran the whole 2 s on one thread: about 198 samples at 99 Hz. Not a share of the
-    // profile: the agent works in this same process (reading the kernel's symbols, too), and
-    // is profiled with it...
     try testing.expect(burn_samples >= 160);
-    // ...and nearly all of those name the caller, from a return address.
     try testing.expect(burn_samples_caller_named * 10 >= burn_samples * 9);
 }
 
-/// Where `burn` is in the frames, innermost first.
 fn burn_index(frames: []const Frame) ?usize {
     for (frames, 0..) |frame, index| {
         const function = frame.function orelse continue;
@@ -83,7 +76,6 @@ fn binaries_used(server: *Server) struct { usize, u64 } {
     return .{ stats.binaries, stats.binaries_bytes };
 }
 
-/// The heaviest stacks, to see what the profile looks like when the test fails.
 fn stacks_print(stacks: anytype) void {
     for (stacks[0..@min(stacks.len, 5)], 0..) |stack, index| {
         std.debug.print("  stack {d}: {d} samples:", .{ index, stack.samples });

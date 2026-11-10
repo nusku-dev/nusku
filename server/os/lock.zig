@@ -17,11 +17,9 @@ pub const Lock = struct {
     }
 };
 
-/// A wake-up may be spurious: wait in a loop that checks the state.
 pub const Condition = struct {
     inner: std.c.pthread_cond_t = std.c.PTHREAD_COND_INITIALIZER,
 
-    /// Lets go of `held` while it waits.
     pub fn wait(condition: *Condition, held: *Lock) void {
         const result = std.c.pthread_cond_wait(&condition.inner, &held.inner);
         assert(result == .SUCCESS);
@@ -32,8 +30,6 @@ pub const Condition = struct {
         assert(result == .SUCCESS);
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 const Counter = struct {
     lock: Lock = .{},

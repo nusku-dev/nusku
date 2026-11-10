@@ -1,11 +1,3 @@
-//! Build-time tool: embeds a directory of web assets in the app.
-//!
-//! Usage: embed <input dir> <output dir>
-//!
-//! Copies every file under the input to `<output>/files/<n>` and writes `<output>/assets.zig`,
-//! which lists each file with a complete HTTP response (headers and body) built at compile time.
-//! The app hands these straight to WebUI's file handler, with no copying or I/O at run time.
-
 const std = @import("std");
 const Io = std.Io;
 
@@ -71,8 +63,6 @@ pub fn main(init: std.process.Init) !void {
     try output.writeFile(io, .{ .sub_path = "assets.zig", .data = source.written() });
 }
 
-/// Vite puts a content hash in every file name under `assets/`, so those never change and can be
-/// cached forever. Everything else (index.html above all) must be checked each time.
 fn cacheControl(path: []const u8) []const u8 {
     return if (std.mem.startsWith(u8, path, "assets/")) "public, max-age=31536000, immutable" else "no-cache";
 }

@@ -5,8 +5,6 @@ const assert = std.debug.assert;
 
 const page_align = std.heap.page_size_min;
 
-/// Address space only: a page costs memory when it is written, and reads give zeros.
-/// Anonymous memory, so unlike a mapped file it can never raise SIGBUS.
 pub fn reserve(size: usize) error{OutOfMemory}![]align(page_align) u8 {
     assert(size > 0);
     const pointer = std.c.mmap(
@@ -25,7 +23,6 @@ pub fn reserve(size: usize) error{OutOfMemory}![]align(page_align) u8 {
 pub fn release(bytes: []align(page_align) u8) void {
     assert(bytes.len > 0);
     const result = std.c.munmap(@ptrCast(bytes.ptr), bytes.len);
-    // munmap fails only for a range that was never mapped: a bug in the caller.
     assert(result == 0);
 }
 

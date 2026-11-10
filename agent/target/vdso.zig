@@ -1,6 +1,4 @@
-//! The vDSO, the kernel's library for clock_gettime and the like. It has no file, but every
-//! 64-bit process maps the same image, so the agent copies its own: a whole ELF file, unwind
-//! entries included. A target with another vDSO (a 32-bit one) is told apart by its size.
+//! The vDSO, the kernel's library for clock_gettime and the like.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -9,20 +7,15 @@ const process_maps = @import("process_maps.zig");
 const build_id = @import("build_id.zig");
 const log = @import("../log.zig").agent;
 
-/// The vDSO is two pages today. Far more would mean the mapping is not what we think it is.
 const image_size_max = 64 * 1024;
 
-/// The path /proc/<pid>/maps gives the vDSO's mapping.
 pub const path = "[vdso]";
 
-/// `getauxval(AT_SYSINFO_EHDR)`: where the kernel mapped the vDSO's ELF header in this process.
 extern "c" fn getauxval(kind: c_ulong) c_ulong;
 const auxv_sysinfo_ehdr = std.elf.AT_SYSINFO_EHDR;
 
 pub const Image = struct {
-    /// A copy of the whole mapping, owned.
     bytes: []const u8,
-    /// Null if the image has no GNU build ID note.
     build_id: ?[]const u8,
 
     pub fn deinit(image: *Image, gpa: std.mem.Allocator) void {
@@ -30,14 +23,11 @@ pub const Image = struct {
         image.* = undefined;
     }
 
-    /// Whether a [vdso] mapping of `size` bytes in a target is this image.
     pub fn matches(image: *const Image, size: u64) bool {
         return image.bytes.len == size;
     }
 };
 
-/// Copies this process's vDSO. Null when the kernel maps none (vdso=0 on its command line), or
-/// it is not where the auxiliary vector says: then targets get no vDSO table, nothing more.
 pub fn read(gpa: std.mem.Allocator) !?Image {
     const header_address = getauxval(auxv_sysinfo_ehdr);
     if (header_address == 0) return null;
@@ -49,7 +39,6 @@ pub fn read(gpa: std.mem.Allocator) !?Image {
         if (std.mem.eql(u8, mapping.path, path)) break mapping;
     } else return null;
 
-    // Two sources must agree before memory is read: the kernel's auxiliary vector and our maps.
     if (mapping.start != header_address) {
         log.warn("vdso: the auxiliary vector and /proc/self/maps disagree, not reading it", .{});
         return null;
@@ -58,12 +47,10 @@ pub fn read(gpa: std.mem.Allocator) !?Image {
     if (size > image_size_max) return null;
     assert(size > 0);
 
-    // The mapping is readable and executable, and cannot go away while this process lives.
     const memory: [*]const u8 = @ptrFromInt(mapping.start);
     if (!std.mem.eql(u8, memory[0..4], "\x7fELF")) return null;
 
     const bytes = try gpa.dupe(u8, memory[0..@intCast(size)]);
-    // Points into `bytes`, which the image owns.
     const image = Image{ .bytes = bytes, .build_id = build_id.from_prefix(bytes) };
     log.debug("vdso image copied", .{
         .size = bytes.len,
@@ -77,7 +64,7 @@ test "this process has a vDSO, a whole ELF file with unwind information" {
     defer image.deinit(std.testing.allocator);
 
     try std.testing.expect(image.bytes.len >= 4096);
-    try std.testing.expectEqual(@as(u8, 2), image.bytes[4]); // 64-bit.
+    try std.testing.expectEqual(@as(u8, 2), image.bytes[4]);
     const elf = @import("shared").elf;
     const eh_frame = try elf.find(image.bytes, ".eh_frame");
     try std.testing.expect(eh_frame != null);

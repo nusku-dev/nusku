@@ -1,5 +1,4 @@
-//! Read-only file access with positional reads. Every read goes through pread, so the
-//! file position never matters and reads from different places can't interfere.
+//! Read-only file access with positional reads.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -7,22 +6,18 @@ const assert = std.debug.assert;
 const c = std.c;
 
 comptime {
-    // pread and errno come from a POSIX libc.
     if (builtin.os.tag == .windows) {
         @compileError("file.zig needs POSIX pread, which Windows does not have");
     }
     if (!builtin.link_libc) {
         @compileError("file.zig calls libc: add link_libc = true in build.zig");
     }
-    // Offsets into /proc/<pid>/mem are 64-bit addresses, so a 32-bit off_t cannot reach them.
     if (@sizeOf(c.off_t) != 8) {
         @compileError("file.zig needs a 64-bit off_t");
     }
 }
 
-/// PATH_MAX on Linux, including the terminating zero.
 const path_bytes_max = 4096;
-/// A signal storm should not keep a read spinning forever.
 const interrupt_retries_max = 16;
 
 pub const OpenError = error{ NotFound, PermissionDenied, ProcessNotFound, Unexpected };
@@ -54,8 +49,6 @@ pub const File = struct {
         file.* = undefined;
     }
 
-    /// Size in bytes. Files under /proc report 0. This moves the file position, which is
-    /// fine because every read in this file is positional.
     pub fn size_bytes(file: *const File) ReadError!u64 {
         assert(file.fd >= 0);
         const result = c.lseek(file.fd, 0, c.SEEK.END);
@@ -65,12 +58,9 @@ pub const File = struct {
         return read_error(errno());
     }
 
-    /// Reads at `offset` until `buffer` is full or the file ends. Returns the part of
-    /// `buffer` that was filled, which is shorter than `buffer` only at end of file.
     pub fn read_at(file: *const File, buffer: []u8, offset: u64) ReadError!usize {
         assert(file.fd >= 0);
         assert(buffer.len > 0);
-        // pread takes a signed offset, so the whole range must fit in an off_t.
         assert(offset <= std.math.maxInt(c.off_t) - buffer.len);
 
         var read_total: usize = 0;
@@ -85,7 +75,7 @@ pub const File = struct {
             if (result > 0) {
                 read_total += @intCast(result);
             } else {
-                if (result == 0) break; // End of file.
+                if (result == 0) break;
 
                 const code = errno();
                 if (code == .INTR) {
@@ -116,12 +106,10 @@ fn errno() c.E {
 }
 
 fn read_error(code: c.E) ReadError {
-    assert(code != .INTR); // Callers retry EINTR themselves.
+    assert(code != .INTR);
     return switch (code) {
         .SRCH => error.ProcessNotFound,
-        // For /proc/<pid>/mem on Linux this means the address is not mapped in the target.
         .IO => error.InputOutput,
-        // The fd was closed or never opened: a bug in our code, not an operating error.
         .BADF => unreachable,
         else => error.Unexpected,
     };

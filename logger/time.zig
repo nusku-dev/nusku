@@ -3,8 +3,6 @@
 const std = @import("std");
 const Writer = std.Io.Writer;
 
-/// Writes `2026-10-05T14:03:22.123Z`. `ns` is nanoseconds since the Unix
-/// epoch. Times before 1970 are clamped to the epoch.
 pub fn writeRfc3339(w: *Writer, ns: i96) Writer.Error!void {
     const total_ms: i64 = @intCast(@divFloor(ns, std.time.ns_per_ms));
     const secs: u64 = @intCast(@max(@divFloor(total_ms, 1000), 0));

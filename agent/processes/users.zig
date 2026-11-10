@@ -4,15 +4,13 @@ const std = @import("std");
 const File = @import("shared").File;
 
 pub const Users = struct {
-    /// The whole file: the names point into it.
     text: []u8 = &.{},
     names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
 
-    /// /etc/passwd is a few KiB; a file bigger than this is not a passwd file.
     const file_bytes_max = 4 * 1024 * 1024;
 
     pub fn load(users: *Users, gpa: std.mem.Allocator) !void {
-        const text = file_read(gpa, "/etc/passwd") catch |err| switch (err) { // 1. no `try`
+        const text = file_read(gpa, "/etc/passwd") catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => return,
         };
@@ -24,7 +22,7 @@ pub const Users = struct {
             if (line.len == 0 or line[0] == '#') continue;
             var fields = std.mem.splitScalar(u8, line, ':');
             const name = fields.next() orelse continue;
-            _ = fields.next() orelse continue; // password
+            _ = fields.next() orelse continue;
             const uid_text = fields.next() orelse continue;
             if (name.len == 0) continue;
             const uid = std.fmt.parseInt(u32, uid_text, 10) catch continue;
@@ -40,7 +38,6 @@ pub const Users = struct {
         users.* = undefined;
     }
 
-    /// The name of `uid`, or null when /etc/passwd does not list it. Good until `deinit`.
     pub fn get(users: *const Users, uid: u32) []const u8 {
         return users.names.get(uid) orelse "unknown";
     }

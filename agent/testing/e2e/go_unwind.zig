@@ -1,6 +1,4 @@
-//! End to end: Go is unwound with its pclntab, stripped or not. go/frameless.go's `leaf` has no
-//! frame, so a frame-pointer walk would skip `middle`; every sample in `leaf` must have
-//! `middle` as its caller. Skipped without a Go toolchain.
+//! End to end: Go is unwound with its pclntab, stripped or not.
 
 const std = @import("std");
 const testing = std.testing;
@@ -18,14 +16,11 @@ const build_id = @import("../../target/build_id.zig");
 
 const source = @embedFile("go/frameless.go");
 
-/// The table of the binary at `path`, built as the agent builds it. A Go executable is not
-/// position independent: it maps at the addresses written in it, so its bias is 0.
 fn table_of(path: [:0]const u8, target: *table.Table) !module.Built {
     var file = try File.open(path);
     defer file.deinit();
     var loaded = try elf_file.load(&file, &elf_file.sections_unwind, elf_file.file_size_max);
     defer loaded.deinit();
-    // Its text segment is mapped at file offset 0x1000, at 0x401000: as /proc/<pid>/maps says.
     return module.table_build(target, testing.allocator, .{
         .file = loaded.bytes,
         .start = 0x401000,
@@ -49,7 +44,6 @@ test "a Go binary's table comes from its pclntab, stripped or not, frameless fun
     var stripped_table: table.Table = undefined;
     _ = try table_of(stripped.binary, &stripped_table);
     defer stripped_table.deinit(testing.allocator);
-    // Stripping removes symbols and DWARF, never the pclntab: the rows are the same.
     try testing.expectEqualSlices(
         u8,
         std.mem.sliceAsBytes(plain_table.rows),
@@ -61,14 +55,12 @@ test "a Go binary's table comes from its pclntab, stripped or not, frameless fun
     const leaf = (try go_build.symbol_range(file, "main.leaf")).?;
     const middle = (try go_build.symbol_range(file, "main.middle")).?;
 
-    // leaf never moves rsp: everywhere, the return address is right at rsp.
     var address = leaf.start;
     while (address < leaf.end) : (address += 1) {
         const row = plain_table.find(address) orelse return error.TestUnexpectedResult;
         try testing.expectEqual(@intFromEnum(table.CfaType.rsp), row.cfa_type);
         try testing.expectEqual(@as(i32, 8), row.cfa_offset);
     }
-    // middle pushes rbp: after that, rbp is saved right below the return address.
     var saved_rows: u32 = 0;
     address = middle.start;
     while (address < middle.end) : (address += 1) {
@@ -88,11 +80,10 @@ test "a Go binary has a build ID, though its note segment leaves it out" {
     var file = try File.open(plain.binary);
     defer file.deinit();
     var prefix: [build_id.prefix_size]u8 = undefined;
-    // Go's note segment holds only Go's own note: the program headers do not lead to the ID.
     const prefix_read = try file.read_at(&prefix, 0);
     try testing.expect(build_id.from_prefix(prefix[0..prefix_read]) == null);
     const id = build_id.from_file(&file, &prefix) orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(@as(usize, 20), id.len); // SHA-1, as Go writes it.
+    try testing.expectEqual(@as(usize, 20), id.len);
 }
 
 test "a running Go program: the caller of a frameless function is found (needs root)" {
@@ -107,7 +98,7 @@ test "a running Go program: the caller of a frameless function is found (needs r
 
     const child = try go_build.spawn(plain.binary);
     defer child_process.child_reap(child);
-    timer.sleep_ms(50); // Long enough for exec: the maps must show the Go binary, not our fork.
+    timer.sleep_ms(50);
 
     var target = try Target.init(testing.allocator, child);
     defer target.deinit(testing.allocator);
@@ -130,7 +121,6 @@ test "a running Go program: the caller of a frameless function is found (needs r
         if (stack.user.len < 2) continue;
         if (stack.user[0] < leaf.start or stack.user[0] >= leaf.end) continue;
         leaf_samples += stack.samples;
-        // Return addresses point after the call: look one byte back, inside the call.
         const caller = stack.user[1] - 1;
         if (caller < middle.start or caller >= middle.end) continue;
         leaf_samples_called_by_middle += stack.samples;
@@ -142,6 +132,5 @@ test "a running Go program: the caller of a frameless function is found (needs r
 
     try testing.expect(leaf_samples > 0);
     try testing.expect(leaf_samples_called_by_middle * 10 >= leaf_samples * 9);
-    // A goroutine's stack ends at runtime.goexit, which the pclntab marks as the top frame.
     try testing.expect(complete * 10 >= window.samples * 9);
 }

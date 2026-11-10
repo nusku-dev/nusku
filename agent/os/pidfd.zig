@@ -1,5 +1,4 @@
-//! A process file descriptor: it becomes readable when the process exits, so the agent can wait
-//! on the target's exit together with its timers, and a reused pid can never be mistaken for it.
+//! A process file descriptor.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -19,7 +18,7 @@ pub const PidFd = struct {
             .SUCCESS => .{ .fd = @intCast(result) },
             .SRCH => error.ProcessNotFound,
             .PERM => error.PermissionDenied,
-            .NOSYS => error.NotSupported, // Linux older than 5.3.
+            .NOSYS => error.NotSupported,
             else => error.Unexpected,
         };
     }

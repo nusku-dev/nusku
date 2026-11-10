@@ -1,13 +1,7 @@
-// A small C program whose CPU profile is known in advance, to check nusku against.
-//
-// Every round of 100 ms is split by the clock, not by how much work gets done, so the shares
-// are the same on any machine:
-//
+// A C app with a known CPU profile, per 100 ms round:
 //   50%  run -> hot -> hot_leaf                       a plain loop in one function
 //   30%  run -> warm -> recurse x8                    a recursion 8 deep, spinning at the bottom
 //   20%  run -> cold -> qsort (libc) -> compare       the stack goes through libc and back
-//
-// Built without frame pointers (-O2), so nusku has to unwind with .eh_frame, libc's included.
 
 #define _GNU_SOURCE
 #include <stdint.h>
@@ -16,7 +10,7 @@
 
 #define NOINLINE __attribute__((noinline))
 
-static volatile uint64_t sink; // Keeps the work from being optimized away.
+static volatile uint64_t sink;
 
 static uint64_t now_ns(void) {
     struct timespec t;
@@ -71,8 +65,7 @@ NOINLINE static void run(uint64_t until_ns) {
 }
 
 int main(int argc, char **argv) {
-    // Seconds to run; nusku stops it sooner when it profiles it with --duration.
     uint64_t seconds = argc > 1 ? strtoull(argv[1], 0, 10) : 60;
     run(now_ns() + seconds * 1000000000u);
-    return sink == 42; // Almost surely 0; reading `sink` keeps the work.
+    return sink == 42;
 }

@@ -1,5 +1,4 @@
-//! Child processes for the tests to profile. Test-only: nothing outside a `test` block or
-//! testing/ may import this, so the agent built for production never contains it.
+//! Child processes for the tests to profile.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -9,7 +8,6 @@ const process = @import("../os/os.zig").process;
 const vdso = @import("../target/vdso.zig");
 const elf = @import("shared").elf;
 
-/// Forks a child that keeps one CPU busy in its own code for `duration_ms`, then exits.
 pub fn burner_spawn(duration_ms: u64) error{ForkFailed}!u32 {
     const pid = std.c.fork();
     if (pid < 0) return error.ForkFailed;
@@ -20,11 +18,8 @@ pub fn burner_spawn(duration_ms: u64) error{ForkFailed}!u32 {
     return @intCast(pid);
 }
 
-/// The vDSO's clock_gettime, called directly.
 pub const ClockGettime = *const fn (clock: i32, time: *linux.timespec) callconv(.c) c_int;
 
-/// Forks a child that spends its time inside the vDSO, the kernel code every process maps to
-/// read the clock without a system call. `clock_gettime` comes from `vdso_clock_gettime`.
 pub fn clock_reader_spawn(duration_ms: u64, clock_gettime: ClockGettime) error{ForkFailed}!u32 {
     const pid = std.c.fork();
     if (pid < 0) return error.ForkFailed;
@@ -35,8 +30,6 @@ pub fn clock_reader_spawn(duration_ms: u64, clock_gettime: ClockGettime) error{F
     return @intCast(pid);
 }
 
-/// `__vdso_clock_gettime`, from the vDSO's symbols; valid in a forked child too. Not std's, which
-/// in a static musl build makes a system call every time.
 pub fn vdso_clock_gettime(gpa: std.mem.Allocator) !?ClockGettime {
     var image = (try vdso.read(gpa)) orelse return null;
     defer image.deinit(gpa);
@@ -46,7 +39,6 @@ pub fn vdso_clock_gettime(gpa: std.mem.Allocator) !?ClockGettime {
     const symbols = elf.bytes_of(image.bytes, symbols_section) orelse return null;
     const names = elf.bytes_of(image.bytes, names_section) orelse return null;
 
-    // An Elf64_Sym: name u32, info u8, other u8, section u16, value u64, size u64.
     var offset: usize = 0;
     while (offset + 24 <= symbols.len) : (offset += 24) {
         const name_offset = std.mem.readInt(u32, symbols[offset..][0..4], .little);
@@ -55,7 +47,6 @@ pub fn vdso_clock_gettime(gpa: std.mem.Allocator) !?ClockGettime {
         if (!std.mem.eql(u8, name, "__vdso_clock_gettime")) continue;
 
         const value = std.mem.readInt(u64, symbols[offset + 8 ..][0..8], .little);
-        // The vDSO is linked at address 0, so a symbol's value is its offset in the mapping.
         const base = std.c.getauxval(std.elf.AT_SYSINFO_EHDR);
         if (base == 0) return null;
         return @ptrFromInt(base + value);
@@ -63,7 +54,6 @@ pub fn vdso_clock_gettime(gpa: std.mem.Allocator) !?ClockGettime {
     return null;
 }
 
-/// Forks a child that sleeps for a long time without using the CPU.
 pub fn sleeper_spawn() error{ForkFailed}!u32 {
     const pid = std.c.fork();
     if (pid < 0) return error.ForkFailed;
@@ -74,8 +64,6 @@ pub fn sleeper_spawn() error{ForkFailed}!u32 {
     return @intCast(pid);
 }
 
-/// Keeps the thread busy in its own code. The clock is read only every
-/// `burn_iterations_per_check` iterations, or the samples would land in the vDSO.
 pub fn cpu_burn(duration_ms: u64) void {
     const deadline_ns = timer.monotonic_ns() + duration_ms * std.time.ns_per_ms;
     var counter: u64 = 0;
@@ -88,11 +76,8 @@ pub fn cpu_burn(duration_ms: u64) void {
     }
 }
 
-/// About 50 µs of work per clock read in a Debug build: far finer than any test's duration.
 const burn_iterations_per_check = 1 << 16;
 
-/// Reads the clock through the vDSO until `duration_ms` passed. Not inlined, so it is a frame of
-/// its own that a walk out of the vDSO must find.
 noinline fn clock_read_loop(duration_ms: u64, clock_gettime: ClockGettime) void {
     const deadline_ns = timer.monotonic_ns() + duration_ms * std.time.ns_per_ms;
     var time: linux.timespec = undefined;
@@ -104,7 +89,6 @@ noinline fn clock_read_loop(duration_ms: u64, clock_gettime: ClockGettime) void 
     }
 }
 
-/// Restricts process `pid` to `cpu`, so every sample of it is taken on that CPU.
 pub fn cpu_pin(pid: u32, cpu: u32) !void {
     assert(cpu < linux.CPU_SETSIZE * 8);
     var set = std.mem.zeroes(linux.cpu_set_t);
@@ -113,8 +97,6 @@ pub fn cpu_pin(pid: u32, cpu: u32) !void {
     try linux.sched_setaffinity(@intCast(pid), &set);
 }
 
-/// Through sysfs, as root. This changes the machine: only an opt-in test uses it, and always
-/// brings the CPU back.
 pub fn cpu_online_set(cpu: u32, online: bool) !void {
     assert(cpu > 0);
     var path_buffer: [64]u8 = undefined;
@@ -127,15 +109,11 @@ pub fn cpu_online_set(cpu: u32, online: bool) !void {
     if (std.c.write(fd, value.ptr, value.len) != 1) return error.CpuOnlineWriteFailed;
 }
 
-/// Kills the child, without waiting for it.
 pub fn child_kill(pid: u32) void {
     assert(process.pid_valid(pid));
     _ = linux.kill(@intCast(pid), .KILL);
 }
 
-/// Kills the child if it still runs, and waits for it, so it leaves no zombie.
-/// Until the killed child is a zombie: it has no mappings left. Polls, instead of sleeping and
-/// hoping.
 pub fn zombie_wait(pid: u32) !void {
     const process_maps = @import("../target/process_maps.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

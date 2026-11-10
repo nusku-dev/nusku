@@ -4,7 +4,6 @@ const std = @import("std");
 const cli = @import("cli");
 const log = @import("log");
 
-/// The root's log flags. First thing in every command's `run`.
 pub fn log_apply(ctx: *cli.Context) error{InvalidUsage}!void {
     const logger = log.getDefault() orelse return;
     if (ctx.getBool("verbose")) logger.setLevel(.debug);
@@ -34,7 +33,6 @@ pub const color: cli.Flag = .{
     .help = "auto (when the output is a terminal and NO_COLOR is unset), always, never",
 };
 
-/// Whether stdout gets colors: always, never, or on a terminal without NO_COLOR.
 pub fn color_read(ctx: *cli.Context) error{InvalidUsage}!bool {
     const text = ctx.getString("color");
     if (std.mem.eql(u8, text, "always")) return true;

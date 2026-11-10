@@ -1,11 +1,4 @@
-//! The symbols layer: the target's binaries, offered once per build ID so the server can name
-//! the addresses in them. `regions_see` queues the new ones, and each `step` gives one event:
-//! an offer, which `want` answers, or a part of a binary being sent. Stands on os, elf and
-//! target.
-//!   binary.zig          a binary as it is sent: its header and the sections that name things
-//!   transfer.zig        one binary on its way, a part per step
-//!   vdso_symbols.zig    names for the vDSO's functions, which only its jump stubs have
-//!   kernel_symbols.zig  the kernel's symbols, from /proc/kallsyms
+//! The symbols layer.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -17,17 +10,11 @@ const KernelIdentity = target.KernelIdentity;
 const Transfer = @import("transfer.zig").Transfer;
 const log = @import("../log.zig").agent;
 
-/// Build IDs remembered. Four times the unwind modules, like the registry: many mapped files
-/// never matter.
 pub const binaries_max = 256;
-/// Binaries waiting for their turn. Reports find new ones now and then, not all at once.
 pub const pending_max = 16;
-/// PATH_MAX without the terminating zero.
 pub const path_bytes_max = 4096;
-/// Bytes in one chunk.
 pub const chunk_bytes = 256 * 1024;
 
-/// A build ID, held by value.
 const Id = struct {
     len: u8,
     bytes: [target.build_id_bytes_max]u8,
@@ -44,7 +31,6 @@ const Id = struct {
     }
 };
 
-/// A region waiting to be offered, held by value: the report it came from will be gone.
 const Candidate = struct {
     id: Id,
     start: u64,
@@ -54,7 +40,6 @@ const Candidate = struct {
     path_len: u16,
     path: [path_bytes_max]u8,
 
-    /// The region, pointing into this candidate: valid while the candidate stays where it is.
     fn region(candidate: *const Candidate) Region {
         return .{
             .start = candidate.start,
@@ -68,63 +53,42 @@ const Candidate = struct {
 };
 
 pub const Event = union(enum) {
-    /// A binary to send, if `want(true)` answers before the next `step`.
     offer: Offered,
     begin: *const binary_file.Header,
     /// Its bytes are valid until the next `step`.
     chunk: binary_file.Chunk,
     end,
-    /// The binary begun will not end: reading it failed.
     abort,
 };
 
 pub const Offered = @import("shared").protocol.binary.Offer;
 
 pub const Symbols = struct {
-    /// False: every call is a no-op.
     enabled: bool,
     pid: u32,
-    /// Build IDs asked about in this run: `[0, seen_count)`.
     seen: []Id,
     seen_count: u32,
-    /// A queue of capacity `pending_max`: `pending_count` entries from `pending_head` on.
     pending: []Candidate,
     pending_head: u32,
     pending_count: u32,
-    /// `seen` filled up, and the binaries found after that are not offered. Said once.
     seen_full_logged: bool,
-    /// The agent's own vDSO image, if it has one: what a [vdso] region is sent from.
     vdso_image: ?*const target.VdsoImage,
-    /// Who the running kernel is: its symbols are offered once, before the first binary.
     kernel: KernelIdentity,
     kernel_offered: bool,
-    /// Reading the kernel's symbols, on a thread of its own: their transfer starts once it is
-    /// done and no binary waits. In `kernel_arena`.
     kernel_reading: ?*kernel_symbols.Background,
-    /// Holds the kernel's symbols while they are read and sent, apart from `arena`, which each
-    /// binary's transfer resets. Freed once they are sent: a few MiB, not kept for the run.
     kernel_arena: std.heap.ArenaAllocator,
-    /// Whether `current` is the kernel's transfer, whose memory is `kernel_arena`.
     current_is_kernel: bool,
-    /// The kernel's identity for this boot: `kernel_id[0..kernel_id_len]`.
     kernel_id: [kernel_symbols.id_bytes_max]u8,
     kernel_id_len: usize,
 
-    /// `stop` was called: only the transfer in flight goes on.
     stopping: bool,
-    /// What was offered and waits for `want`.
     asked: ?enum { region, kernel },
-    /// The region offered, by value: it left the queue.
     asked_region: Candidate,
-    /// `want`'s answer. No answer is no.
     answer: bool,
 
-    /// The transfer in flight, if any. One at a time.
     current: ?Transfer,
-    /// Holds the header of `current`; reset when the next transfer starts.
     arena: std.heap.ArenaAllocator,
     chunk_buffer: []u8,
-    /// Scratch for checking a file's build ID: `target.build_id_prefix_size` bytes.
     prefix: []u8,
 
     /// `vdso_image` and what `kernel` points into must outlive the offer.
@@ -185,7 +149,6 @@ pub const Symbols = struct {
         symbols.* = undefined;
     }
 
-    /// Looks at the regions of a new report for binaries not offered yet, and queues them.
     pub fn regions_see(symbols: *Symbols, regions: []const Region) void {
         if (!symbols.enabled) return;
         assert(symbols.seen_count <= binaries_max);
@@ -197,7 +160,6 @@ pub const Symbols = struct {
             if (region.path.len == 0 or region.path.len > path_bytes_max) continue;
             if (region.path[0] != '/' and !std.mem.eql(u8, region.path, target.vdso_path)) continue;
             if (symbols.seen_has(id)) continue;
-            // Not marked as seen: the next report queues it.
             if (symbols.pending_count == pending_max) continue;
             if (symbols.seen_count == binaries_max) {
                 if (!symbols.seen_full_logged) {
@@ -213,9 +175,6 @@ pub const Symbols = struct {
         }
     }
 
-    /// One event, or null when there is nothing to do now: the caller tries again later. The
-    /// kernel is offered first, so its symbols are read on their thread while the binaries are
-    /// offered and sent; they are sent once read, when no binary waits.
     pub fn step(symbols: *Symbols) ?Event {
         if (!symbols.enabled) return null;
         if (symbols.stopping) {
@@ -236,7 +195,6 @@ pub const Symbols = struct {
         return symbols.transfer_step(transfer);
     }
 
-    /// Answers the last `.offer`. During a transfer, false drops it: the caller had to.
     pub fn want(symbols: *Symbols, wanted: bool) void {
         if (symbols.asked != null) {
             symbols.answer = wanted;
@@ -245,8 +203,6 @@ pub const Symbols = struct {
         if (!wanted and symbols.current != null) symbols.current_end();
     }
 
-    /// The run ends: nothing more is offered or read. A binary already begun goes on to its end
-    /// through `step`, so a short run keeps the names it was being sent; one bounded transfer.
     pub fn stop(symbols: *Symbols) void {
         symbols.stopping = true;
         if (symbols.kernel_reading) |reading| {
@@ -312,7 +268,6 @@ pub const Symbols = struct {
         return .{ .offer = .{ .build_id = id, .path = kernel_symbols.path } };
     }
 
-    /// Acts on the answer to the offer: opens the binary, or starts reading the kernel's.
     fn asked_take(symbols: *Symbols) void {
         const asked = symbols.asked.?;
         const wanted = symbols.answer;
@@ -351,14 +306,12 @@ pub const Symbols = struct {
         };
     }
 
-    /// The kernel's symbols, read: they become the transfer.
     fn kernel_finish(symbols: *Symbols) void {
         const reading = symbols.kernel_reading.?;
         defer {
             reading.deinit();
             symbols.kernel_reading = null;
         }
-        // Only root reads the addresses: anyone else, zeros.
         const found = reading.symbols() catch |err| {
             log.debug("kernel symbols not sent: kallsyms could not be read", .{ .cause = err });
             return;
@@ -379,13 +332,11 @@ pub const Symbols = struct {
         symbols.current_is_kernel = true;
     }
 
-    /// Nothing waits, nothing is in flight.
     fn idle(symbols: *const Symbols) bool {
         return symbols.pending_count == 0 and symbols.asked == null and symbols.current == null and
             symbols.kernel_reading == null and symbols.kernel_offered;
     }
 
-    /// Frees the last binary's memory, keeping it for the next.
     fn arena_reset(symbols: *Symbols) void {
         _ = symbols.arena.reset(.retain_capacity);
     }
@@ -413,7 +364,6 @@ pub const Symbols = struct {
         symbols.pending_count += 1;
     }
 
-    /// The `index`-th waiting candidate, 0 being the next to send.
     fn pending_at(symbols: *const Symbols, index: u32) *const Candidate {
         assert(index < symbols.pending_count);
         return &symbols.pending[(symbols.pending_head + index) % pending_max];
@@ -425,8 +375,6 @@ pub const Symbols = struct {
         symbols.pending_count -= 1;
     }
 };
-
-// ------------------------------------------------------------------------------------- tests
 
 const testing = std.testing;
 
@@ -470,10 +418,10 @@ test "each file with a build ID is queued once, in order, and the rest is ignore
 
     const regions = [_]Region{
         region_test("/bin/a", "\x0a"),
-        region_test("/bin/a", "\x0a"), // another mapping of the same file
+        region_test("/bin/a", "\x0a"),
         region_test("/lib/b.so", "\x0b"),
-        region_test("", "\x0c"), // anonymous memory
-        region_test("[vdso]", "\x0d"), // the vDSO: no file, but the agent holds its image
+        region_test("", "\x0c"),
+        region_test("[vdso]", "\x0d"),
         region_test("/bin/no_id", null),
     };
     symbols.regions_see(&regions);
@@ -482,7 +430,6 @@ test "each file with a build ID is queued once, in order, and the rest is ignore
     try testing.expectEqualSlices(u8, "\x0b", symbols.pending_at(1).region().build_id.?);
     try testing.expectEqualStrings("[vdso]", symbols.pending_at(2).region().path);
 
-    // The next report sees the same regions and one new library.
     symbols.regions_see(&(regions ++ [_]Region{region_test("/lib/c.so", "\x0e")}));
     try testing.expectEqual(@as(u32, 4), symbols.pending_count);
     try testing.expectEqualStrings("/lib/c.so", symbols.pending_at(3).region().path);
@@ -501,7 +448,6 @@ test "a full queue leaves the rest for the next report" {
     symbols.regions_see(&regions);
     try testing.expectEqual(@as(u32, pending_max), symbols.pending_count);
 
-    // The sender took them all; the four that did not fit were not marked as seen.
     symbols.pending_count = 0;
     symbols.pending_head = 0;
     symbols.regions_see(&regions);
@@ -516,22 +462,19 @@ test "more build IDs than the table holds are not offered, and the run goes on" 
     for (0..binaries_max + 10) |index| {
         const id: u32 = @intCast(index);
         symbols.regions_see(&.{region_test("/bin/x", std.mem.asBytes(&id))});
-        symbols.pending_count = 0; // The sender keeps up.
+        symbols.pending_count = 0;
         symbols.pending_head = 0;
     }
     try testing.expectEqual(@as(u32, binaries_max), symbols.seen_count);
     try testing.expect(symbols.seen_full_logged);
-    // The same binaries again, at the next report: still not offered, nothing grows.
     const id: u32 = binaries_max + 1;
     symbols.regions_see(&.{region_test("/bin/x", std.mem.asBytes(&id))});
     try testing.expectEqual(@as(u32, 0), symbols.pending_count);
     try testing.expectEqual(@as(u32, binaries_max), symbols.seen_count);
 }
 
-/// What a server does with the events: wants what it does not know, and counts the rest.
 const Consumer = struct {
     known: []const []const u8 = &.{},
-    /// Drops a transfer at its first chunk, as a server whose upload failed.
     drop_at_chunk: bool = false,
     offers: u32 = 0,
     begins: u32 = 0,
@@ -570,7 +513,6 @@ const Consumer = struct {
         return false;
     }
 
-    /// Steps until the offer is idle; returns the steps it took.
     fn drain(consumer: *Consumer, symbols: *Symbols) !u32 {
         var steps: u32 = 0;
         while (!symbols.idle()) : (steps += 1) {
@@ -582,7 +524,6 @@ const Consumer = struct {
     }
 };
 
-/// The build ID of /bin/sh, or null when it has none. `prefix` holds it.
 fn sh_id(prefix: []u8) !?[]const u8 {
     var file = try target.file_open(process.current_pid(), &region_test("/bin/sh", null), prefix);
     defer file.deinit();
@@ -606,7 +547,6 @@ test "each binary is offered; a known one is skipped, a wanted one sent whole" {
     vdso_region.end = vdso_region.start + image.bytes.len;
     symbols.regions_see(&.{ vdso_region, region_test("/bin/sh", shell) });
 
-    // The server has the shell; it wants the vDSO.
     const known = [_][]const u8{shell};
     var consumer = Consumer{ .known = &known };
     _ = try consumer.drain(&symbols);
@@ -625,7 +565,7 @@ test "an offer not answered is not sent, and a transfer dropped midway stops" {
     defer symbols.deinit(testing.allocator);
     symbols.regions_see(&.{region_test("/bin/sh", shell)});
     try testing.expect(symbols.step().? == .offer);
-    try testing.expectEqual(@as(?Event, null), symbols.step()); // No answer: no.
+    try testing.expectEqual(@as(?Event, null), symbols.step());
     try testing.expect(symbols.current == null);
 
     var again = try symbols_test(true, null);
@@ -635,7 +575,7 @@ test "an offer not answered is not sent, and a transfer dropped midway stops" {
     _ = try consumer.drain(&again);
     try testing.expectEqual(@as(u32, 1), consumer.chunks);
     try testing.expectEqual(@as(u32, 0), consumer.ends);
-    try testing.expectEqual(@as(u32, 0), consumer.aborts); // The consumer dropped it itself.
+    try testing.expectEqual(@as(u32, 0), consumer.aborts);
 }
 
 test "a run that stops during a transfer finishes it, and starts nothing new" {
@@ -649,14 +589,14 @@ test "a run that stops during a transfer finishes it, and starts nothing new" {
     symbols.want(true);
     try testing.expect(symbols.step().? == .begin);
 
-    symbols.regions_see(&.{region_test("/bin/ls", "\x01\x02")}); // Waiting: never offered.
+    symbols.regions_see(&.{region_test("/bin/ls", "\x01\x02")});
     symbols.stop();
     var consumer = Consumer{ .begins = 1 };
     while (symbols.step()) |event| consumer.take(&symbols, event);
     try testing.expectEqual(@as(u32, 1), consumer.ends);
     try testing.expectEqual(@as(u32, 0), consumer.offers);
     try testing.expect(symbols.current == null);
-    symbols.stop(); // Again: nothing more.
+    symbols.stop();
     try testing.expectEqual(@as(?Event, null), symbols.step());
 }
 
@@ -687,19 +627,17 @@ test "the kernel is offered first and read on its thread, while a binary is sent
     const kernel_offer = symbols.step().?;
     try testing.expectEqualStrings(kernel_symbols.path, kernel_offer.offer.path);
     symbols.want(true);
-    // Its reading starts with the next step, which offers the binary meanwhile.
     const binary_offer = symbols.step().?;
     try testing.expectEqualStrings("/bin/sh", binary_offer.offer.path);
     try testing.expect(symbols.kernel_reading != null);
     symbols.want(true);
 
-    // The binary is sent whole first; the kernel's symbols, once read, after it.
     var consumer = Consumer{};
     var steps: u32 = 0;
     while (!symbols.idle()) : (steps += 1) {
         if (steps > 100_000) return error.NeverIdle;
         const event = symbols.step() orelse {
-            os.timer.sleep_ms(1); // The thread is reading.
+            os.timer.sleep_ms(1);
             continue;
         };
         if (event == .begin and consumer.ends == 0) {
@@ -707,7 +645,6 @@ test "the kernel is offered first and read on its thread, while a binary is sent
         }
         consumer.take(&symbols, event);
     }
-    // As root the kernel's symbols are then sent; without, they were hidden, and are not.
     const root = std.os.linux.geteuid() == 0;
     try testing.expectEqual(@as(u32, if (root) 2 else 1), consumer.ends);
 }
@@ -725,6 +662,5 @@ test "a run that stops while the kernel is read stops the reading" {
     const started_ns = os.timer.monotonic_ns();
     symbols.stop();
     try testing.expect(symbols.kernel_reading == null);
-    // At most one step of the thread: well under the 0.8 s of the whole read.
     try testing.expect(os.timer.monotonic_ns() - started_ns < 300 * std.time.ns_per_ms);
 }

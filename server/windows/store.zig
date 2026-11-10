@@ -1,5 +1,4 @@
-//! The reports of each target, a ring of windows per target. A target outlives its run; when
-//! the store is full, the oldest finished one makes room. Not thread-safe on its own.
+//! The reports of each target, a ring of windows per target.
 
 const std = @import("std");
 const protocol = @import("shared").protocol;
@@ -21,9 +20,7 @@ pub const Store = struct {
         id: TargetId,
         pid: u32,
         ring: WindowRing,
-        /// Too big for the run's buffer, or for a slot of the ring.
         windows_rejected: u64,
-        /// No more reports will come: it may make room for a new target.
         finished: bool,
     };
 
@@ -43,7 +40,6 @@ pub const Store = struct {
         };
     }
 
-    /// Registers a process and allocates its ring.
     pub fn target_add(
         store: *Store,
         gpa: std.mem.Allocator,
@@ -72,13 +68,11 @@ pub const Store = struct {
         return target.id;
     }
 
-    /// The target keeps its windows until it is removed or its room is needed.
     pub fn target_finish(store: *Store, id: TargetId) error{TargetUnknown}!void {
         const target = store.target_find(id) orelse return error.TargetUnknown;
         target.finished = true;
     }
 
-    /// Drops the target and its windows. Ids are never reused.
     pub fn target_remove(
         store: *Store,
         gpa: std.mem.Allocator,
@@ -87,10 +81,9 @@ pub const Store = struct {
         const target = store.target_find(id) orelse return error.TargetUnknown;
         target.ring.deinit(gpa);
         store.count -= 1;
-        target.* = store.targets[store.count]; // The order does not matter.
+        target.* = store.targets[store.count];
     }
 
-    /// The finished target that started first: ids grow with time.
     fn finished_oldest(store: *const Store) ?TargetId {
         var oldest: ?TargetId = null;
         for (store.targets[0..store.count]) |target| {
@@ -100,7 +93,6 @@ pub const Store = struct {
         return oldest;
     }
 
-    /// A linear scan: there are few targets.
     pub fn target_find(store: *Store, id: TargetId) ?*Target {
         for (store.targets[0..store.count]) |*target| {
             if (target.id == id) return target;
@@ -108,7 +100,6 @@ pub const Store = struct {
         return null;
     }
 
-    /// Keeps a copy of `message` as the target's newest window. Does not allocate.
     pub fn ingest(
         store: *Store,
         id: TargetId,
@@ -128,11 +119,8 @@ pub const Store = struct {
     }
 };
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 
-/// One stack of `user` frames.
 fn stacks_test(user: []const u64) [1]Message.Stack {
     return .{.{ .samples = 1, .user = user, .kernel = &.{}, .complete = true }};
 }
@@ -182,7 +170,7 @@ test "each target has its own windows" {
 
 test "an unknown target, a full store and a message too big are errors, counted" {
     const small = stacks_test(&.{1});
-    const big_frames = [_]u64{0} ** 200; // 1600 bytes, more than a window of 1024
+    const big_frames = [_]u64{0} ** 200;
     const big = stacks_test(&big_frames);
 
     var store = try store_test(1);
@@ -195,7 +183,7 @@ test "an unknown target, a full store and a message too big are errors, counted"
 
     try testing.expectError(error.WindowTooLarge, store.ingest(id, &message_test(1, &big)));
     try testing.expectEqual(@as(u64, 1), store.target_find(id).?.windows_rejected);
-    try store.ingest(id, &message_test(2, &small)); // still works afterwards
+    try store.ingest(id, &message_test(2, &small));
 }
 
 test "a full store makes room by dropping its oldest finished target, never a running one" {
@@ -211,7 +199,6 @@ test "a full store makes room by dropping its oldest finished target, never a ru
     try store.target_finish(second);
     try store.target_finish(first);
     const third = try store.target_add(testing.allocator, 300);
-    // The first started first: it went. The second, finished too, still has its window.
     try testing.expect(store.target_find(first) == null);
     try testing.expectEqual(@as(u32, 1), store.target_find(second).?.ring.count);
     try testing.expectEqual(@as(u32, 300), store.target_find(third).?.pid);

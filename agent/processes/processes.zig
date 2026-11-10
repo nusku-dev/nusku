@@ -1,7 +1,4 @@
-//! The processes layer: what /proc says about every process of the machine, a frame at a time.
-//! No eBPF: files only, readable by anyone. Stands on os.
-//!   proc.zig     one look at /proc: every process's stat, status, cmdline and user
-//!   machine.zig  the whole machine's CPU, from /proc/stat
+//! The processes layer.
 
 const std = @import("std");
 const timer = @import("../os/os.zig").timer;
@@ -18,24 +15,17 @@ pub const Frame = protocol.ProcessFrame;
 pub const Machine = protocol.Machine;
 pub const MachineCpu = protocol.MachineCpu;
 
-/// The look now and the look before, swapped each look, and the frame built from them.
 pub const Processes = struct {
     procs: [2]Proc = .{ .{}, .{} },
-    /// Which of `procs` the next read fills.
     now: usize = 0,
-    /// When the look before was taken (monotonic), or null before the first.
     previous_ns: ?u64 = null,
-    /// Clock ticks per second, the unit of CPU time in /proc. 100 on every Linux today, but
-    /// the kernel says it in the auxiliary vector, so it is read, not assumed.
     ticks_per_s: u64,
-    /// When the machine booted, in Unix ns: /proc counts start times from it.
     boot_unix_ns: u64,
     infos: std.ArrayList(ProcessInfo) = .empty,
 
     pub fn init() Processes {
         const ticks = std.c.getauxval(std.elf.AT_CLKTCK);
         assert(ticks > 0);
-        // Read back to back: wall time now minus time since boot is when it booted.
         const boot_unix_ns = timer.realtime_ns() - timer.boottime_ns();
         return .{ .ticks_per_s = ticks, .boot_unix_ns = boot_unix_ns };
     }
@@ -46,7 +36,6 @@ pub const Processes = struct {
         processes.* = undefined;
     }
 
-    // Every process now. The frame points into `processes`: good until the next `take`.
     pub fn take(processes: *Processes, gpa: std.mem.Allocator) !Frame {
         const now_ns = timer.monotonic_ns();
         const now = &processes.procs[processes.now];
@@ -84,27 +73,21 @@ pub const Processes = struct {
         };
     }
 
-    /// Null on the first look, and for a process that started since the look before.
     fn cpu_of(processes: *const Processes, before: *const Proc, entry: *const Entry) ?f32 {
         const old = before.same(&entry.stat) orelse return null;
-        // Between this process's own two reads: a look takes a while, and the processes read
-        // late in one look may be read early in the next.
         const interval_ns = entry.read_ns - old.read_ns;
         if (interval_ns == 0) return null;
         const ticks_per_s = processes.ticks_per_s;
         return cpu_percent(old.stat.cpu_ticks, entry.stat.cpu_ticks, interval_ns, ticks_per_s);
     }
 
-    /// When the process started, in Unix ns.
     fn started_of(processes: *const Processes, stat: *const Stat) u64 {
         return started_unix_ns(processes.boot_unix_ns, stat.start_ticks, processes.ticks_per_s);
     }
 
-    /// CPU use between two processes, per core: a process busy on 2 cores shows 200, as in `top`.
     fn cpu_percent(ticks_before: u64, ticks_now: u64, interval_ns: u64, ticks_per_s: u64) f32 {
         assert(interval_ns > 0);
         assert(ticks_per_s > 0);
-        // The kernel never takes CPU time back from a process: `same` made sure it is one.
         assert(ticks_now >= ticks_before);
         const used_s = @as(f64, @floatFromInt(ticks_now - ticks_before)) /
             @as(f64, @floatFromInt(ticks_per_s));
@@ -112,7 +95,6 @@ pub const Processes = struct {
         return @floatCast(used_s / interval_s * 100);
     }
 
-    /// The machine's CPU between two reads of /proc/stat. Null when no tick passed.
     fn machine_cpu(before: *const MachineStat, now: *const MachineStat) ?MachineCpu {
         const delta = now.since(before);
         const total = delta.total();
@@ -129,7 +111,6 @@ pub const Processes = struct {
         };
     }
 
-    /// `ticks` of `total`, in percent.
     fn share(ticks: u64, total: u64) f32 {
         assert(total > 0);
         assert(ticks <= total);
@@ -137,7 +118,6 @@ pub const Processes = struct {
         return @floatCast(ratio * 100);
     }
 
-    /// Start ticks since boot to Unix ns. Pure, so it is tested without a process.
     fn started_unix_ns(boot_unix_ns: u64, start_ticks: u64, ticks_per_s: u64) u64 {
         assert(ticks_per_s > 0);
         return boot_unix_ns + start_ticks * std.time.ns_per_s / ticks_per_s;
@@ -163,7 +143,6 @@ test "cpu_percent is per core" {
 }
 
 test "machine_cpu: each state a share of every CPU, idle and iowait not busy" {
-    // 2 CPUs, 1 s at 100 ticks: 200 ticks in all.
     const before = MachineStat{ .cpus = 2 };
     const now = MachineStat{
         .cpus = 2,
@@ -187,7 +166,6 @@ test "machine_cpu: each state a share of every CPU, idle and iowait not busy" {
 }
 
 test "started_unix_ns counts ticks from the boot" {
-    // 250 ticks at 100 per second: 2.5 s after the boot.
     try testing.expectEqual(
         @as(u64, 1000 + 2_500_000_000),
         Processes.started_unix_ns(1000, 250, 100),

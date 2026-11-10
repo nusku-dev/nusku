@@ -1,5 +1,4 @@
-//! The server and the agent in this one process: profiles a process, or watches the processes
-//! of the machine, showing what is found so far to a live view.
+//! The server and the agent in this one process.
 
 const std = @import("std");
 const server_lib = @import("server");
@@ -10,23 +9,17 @@ const assert = std.debug.assert;
 const Server = server_lib.Server;
 const Controller = server_lib.Controller;
 
-/// Windows are reserved up front, 128 KiB each: 3600 is 450 MiB.
 const windows_max = 3600;
-/// For a run with no end: ten minutes at one report a second.
 const windows_unbounded = 600;
 
 pub const Options = struct {
     pid: u32,
     metrics: std.EnumSet(protocol.Metric),
     interval_ms: u32,
-    /// 0: until the target exits, or Ctrl-C.
     duration_s: u32,
-    /// The target was stopped (SIGSTOP) so that none of it runs unsampled: it is continued
-    /// once sampling has started.
     continue_target: bool = false,
 };
 
-/// Shown the profile so far every `every_ms`, on the thread that called `profile`.
 pub const Live = struct {
     context: *anyopaque,
     every_ms: u32,
@@ -36,11 +29,9 @@ pub const Live = struct {
 pub const Result = struct {
     reason: protocol.RunStop,
     profile: server_lib.Profile,
-    /// From the run's start to its stop.
     elapsed_ms: u64,
 };
 
-/// The profile of the whole run, in `arena`. Ctrl-C stops the run, not the program.
 pub fn profile(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -66,21 +57,19 @@ pub fn profile(
     if (options.continue_target) {
         _ = std.os.linux.kill(@intCast(options.pid), std.os.linux.SIG.CONT);
     }
-    interrupt_arm(controller);
+    active_set(controller);
     try wait(gpa, server, controller, started.job, target, started_ms, live);
-    interrupt_release(); // Before the wait frees what the handler stops.
+    active_clear();
     const done = controller.wait(started.job);
     const elapsed_ms = monotonic_ms() - started_ms;
 
     return .{
         .reason = (try done).profile,
-        // The last tables may still be building: `all_built` waits for them.
         .profile = try server.profile(arena, .{ .target = target }, .all_built),
         .elapsed_ms = elapsed_ms,
     };
 }
 
-/// One server and its controller, on the heap: they are large, and threads point into them.
 const Backend = struct {
     server: *Server,
     controller: *Controller,
@@ -107,7 +96,6 @@ const Backend = struct {
     }
 };
 
-/// The processes of this machine once, with their CPU: the second look, in `arena`.
 pub fn processes(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -119,30 +107,27 @@ pub fn processes(
     const controller = backend.controller;
 
     const started = try controller.start(.{ .processes = .{ .interval_ms = interval_ms } });
-    interrupt_arm(controller);
+    active_set(controller);
 
-    // The first frame has no CPU: it is measured against the frame before. Each look is a
-    // copy, so they go into a scratch arena, and only the one returned into `arena`.
     var scratch = std.heap.ArenaAllocator.init(gpa);
     defer scratch.deinit();
     while ((try backend.server.processes(scratch.allocator())).frames < 2) {
-        if (!controller.running(started.job)) break; // Ctrl-C, or the watch failed.
+        if (!controller.running(started.job)) break;
         sleep_ms(poll_ms);
         _ = scratch.reset(.retain_capacity);
     }
-    interrupt_release();
+    active_clear();
     const latest = try backend.server.processes(arena);
     _ = try controller.stop(started.job);
     return latest.frame orelse error.Interrupted;
 }
 
-/// Shown each new frame, on the thread that called `processes_watch`. Valid until the next.
+/// The frame is valid until the next call.
 pub const ProcessesLive = struct {
     context: *anyopaque,
     show: *const fn (context: *anyopaque, frame: *const protocol.ProcessFrame) void,
 };
 
-/// A look every `interval_ms`, shown to `live` until Ctrl-C; not the first, which has no CPU.
 pub fn processes_watch(gpa: std.mem.Allocator, interval_ms: u32, live: ProcessesLive) !void {
     assert(interval_ms > 0);
     const backend = try Backend.create(gpa, 1);
@@ -150,11 +135,11 @@ pub fn processes_watch(gpa: std.mem.Allocator, interval_ms: u32, live: Processes
     const controller = backend.controller;
 
     const started = try controller.start(.{ .processes = .{ .interval_ms = interval_ms } });
-    interrupt_arm(controller);
+    active_set(controller);
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
-    var shown: u64 = 1; // Not the first.
+    var shown: u64 = 1;
     while (controller.running(started.job)) {
         sleep_ms(poll_ms);
         _ = arena.reset(.retain_capacity);
@@ -164,7 +149,7 @@ pub fn processes_watch(gpa: std.mem.Allocator, interval_ms: u32, live: Processes
         const frame = latest.frame orelse continue;
         live.show(live.context, &frame);
     }
-    interrupt_release();
+    active_clear();
     _ = try controller.stop(started.job);
 }
 
@@ -175,7 +160,6 @@ fn monotonic_ms() u64 {
         @as(u64, @intCast(now.nsec)) / std.time.ns_per_ms;
 }
 
-/// Until the run ends, showing the profile so far to `live` every `every_ms`.
 fn wait(
     gpa: std.mem.Allocator,
     server: *Server,
@@ -197,14 +181,12 @@ fn wait(
         next_ms = now_ms + view.every_ms;
 
         _ = arena.reset(.retain_capacity);
-        // No window yet: the next view shows it.
         const query = server_lib.Query{ .target = target };
         const so_far = server.profile(arena.allocator(), query, .as_they_are) catch continue;
         view.show(view.context, &so_far, now_ms - started_ms);
     }
 }
 
-/// How late the run's end can be noticed.
 const poll_ms = 50;
 
 fn sleep_ms(ms: u64) void {
@@ -218,32 +200,26 @@ fn sleep_ms(ms: u64) void {
 fn windows_for(options: Options) u32 {
     if (options.duration_s == 0) return windows_unbounded;
     const reports = @as(u64, options.duration_s) * std.time.ms_per_s / options.interval_ms;
-    // One report at the start, one at the end.
     return @intCast(@min(reports + 2, windows_max));
 }
 
-/// What Ctrl-C stops. Written outside the handler only.
-var interrupt_controller: ?*const Controller = null;
+var active: std.atomic.Value(?*const Controller) = .init(null);
+var stop_asked: std.atomic.Value(bool) = .init(false);
 
-fn interrupt_arm(controller: *const Controller) void {
-    interrupt_controller = controller;
-    const action = std.posix.Sigaction{
-        .handler = .{ .handler = interrupt_handle },
-        .mask = std.posix.sigemptyset(),
-        .flags = 0,
-    };
-    std.posix.sigaction(.INT, &action, null);
-    std.posix.sigaction(.TERM, &action, null);
+/// Safe from any thread and from a signal handler.
+pub fn stop() void {
+    stop_asked.store(true, .release);
+    if (active.load(.acquire)) |controller| controller.interrupt();
 }
 
-/// The handler stays, so a late Ctrl-C (sudo passes one on twice) cannot end the program before
-/// it prints.
-fn interrupt_release() void {
-    interrupt_controller = null;
+fn active_set(controller: *const Controller) void {
+    active.store(controller, .release);
+    if (stop_asked.load(.acquire)) controller.interrupt();
 }
 
-fn interrupt_handle(_: std.posix.SIG) callconv(.c) void {
-    if (interrupt_controller) |controller| controller.interrupt();
+fn active_clear() void {
+    active.store(null, .release);
+    stop_asked.store(false, .release);
 }
 
 test "the windows kept cover the whole run, up to a limit" {

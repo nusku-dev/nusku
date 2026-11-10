@@ -1,4 +1,4 @@
-//! Code every module uses: the protocol between the agent and the server, and reading files.
+//! Code every module uses.
 
 pub const protocol = @import("protocol/protocol.zig");
 pub const elf = @import("elf.zig");

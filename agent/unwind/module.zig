@@ -1,5 +1,4 @@
-//! The unwind table of one binary: Go's pclntab, else .eh_frame and .debug_frame for the code
-//! .eh_frame does not cover.
+//! The unwind table of one binary.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -8,9 +7,7 @@ const elf = @import("shared").elf;
 const go_pclntab = @import("go_pclntab.zig");
 const table = @import("table.zig");
 
-/// One executable mapping of a file, as `/proc/<pid>/maps` gives it.
 pub const Mapping = struct {
-    /// The file's bytes, at their file offsets (see elf_file.zig).
     file: []const u8,
     start: u64,
     end: u64,
@@ -20,15 +17,11 @@ pub const Mapping = struct {
 pub const Source = enum { eh_frame, go_pclntab };
 
 pub const Built = struct {
-    /// Runtime address = file address + bias.
     bias: u64,
     source: Source,
-    /// Functions described by .debug_frame only: code built without unwind tables.
     fdes_debug_frame: u32 = 0,
 };
 
-/// The pclntab wins: Go code has no .eh_frame. A cgo binary's C code then has no rows, and
-/// frame pointers unwind it.
 pub fn table_build(target: *table.Table, gpa: std.mem.Allocator, mapping: Mapping) !Built {
     assert(mapping.start < mapping.end);
     const bias_found = try elf.load_bias(mapping.file, mapping.start, mapping.offset);
@@ -45,9 +38,6 @@ pub fn table_build(target: *table.Table, gpa: std.mem.Allocator, mapping: Mappin
 
     const eh = try fdes_of(gpa, mapping.file, ".eh_frame", .eh_frame);
     defer gpa.free(eh);
-    // Only an unstripped file has it, and only for its code without .eh_frame entries it adds
-    // anything. A .debug_frame that cannot be read is ignored: .eh_frame alone is what the
-    // module had before.
     const debug = fdes_of(gpa, mapping.file, ".debug_frame", .debug_frame) catch |err|
         switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -66,8 +56,6 @@ pub fn table_build(target: *table.Table, gpa: std.mem.Allocator, mapping: Mappin
     };
 }
 
-/// The FDEs of one section, sorted by `pc_begin`, without empty ranges. Empty when the file
-/// does not have the section. They point into `file`.
 fn fdes_of(
     gpa: std.mem.Allocator,
     file: []const u8,
@@ -82,14 +70,12 @@ fn fdes_of(
     const reader = eh_frame.EhFrame{ .bytes = bytes, .vaddr = section.vaddr, .format = format };
     var iterator = reader.iterator();
     while (try iterator.next()) |fde| {
-        // A function the linker dropped keeps an entry with an empty range.
         if (fde.pc_end > fde.pc_begin) try fdes.append(gpa, fde);
     }
     std.mem.sortUnstable(eh_frame.Fde, fdes.items, {}, fde_less_than);
     return fdes.toOwnedSlice(gpa);
 }
 
-/// Every FDE of `eh`, and those of `debug` that overlap nothing, sorted. Both are sorted.
 fn fdes_merge(
     gpa: std.mem.Allocator,
     eh: []const eh_frame.Fde,
@@ -100,7 +86,7 @@ fn fdes_merge(
     @memcpy(out[0..eh.len], eh);
 
     var count = eh.len;
-    var debug_end: u64 = 0; // Where the last kept .debug_frame FDE ends.
+    var debug_end: u64 = 0;
     for (debug) |fde| {
         if (fde.pc_begin < debug_end) continue;
         if (fdes_overlap(eh, fde)) continue;
@@ -112,9 +98,7 @@ fn fdes_merge(
     return gpa.realloc(out, count);
 }
 
-/// Whether `fde` shares an address with one of `sorted`, which do not overlap each other.
 fn fdes_overlap(sorted: []const eh_frame.Fde, fde: eh_frame.Fde) bool {
-    // The first one that ends after `fde` begins: the only one that can overlap it.
     var low: usize = 0;
     var high: usize = sorted.len;
     while (low < high) {
@@ -128,8 +112,6 @@ fn fde_less_than(_: void, a: eh_frame.Fde, b: eh_frame.Fde) bool {
     return a.pc_begin < b.pc_begin;
 }
 
-// ------------------------------------------------------------------------------------- tests
-
 const testing = std.testing;
 
 fn fde_test(pc_begin: u64, pc_end: u64) eh_frame.Fde {
@@ -139,12 +121,12 @@ fn fde_test(pc_begin: u64, pc_end: u64) eh_frame.Fde {
 test "a merge keeps .eh_frame, and adds .debug_frame only where nothing else is" {
     const eh = [_]eh_frame.Fde{ fde_test(0x1000, 0x1100), fde_test(0x1200, 0x1300) };
     const debug = [_]eh_frame.Fde{
-        fde_test(0x0f00, 0x1000), // Before: kept.
-        fde_test(0x1000, 0x1100), // The same function as .eh_frame: dropped.
-        fde_test(0x1100, 0x1200), // In the gap: kept.
-        fde_test(0x1150, 0x1180), // Overlaps the one before it: dropped.
-        fde_test(0x12f0, 0x1310), // Overlaps the end of an .eh_frame one: dropped.
-        fde_test(0x1300, 0x1400), // After: kept.
+        fde_test(0x0f00, 0x1000),
+        fde_test(0x1000, 0x1100),
+        fde_test(0x1100, 0x1200),
+        fde_test(0x1150, 0x1180),
+        fde_test(0x12f0, 0x1310),
+        fde_test(0x1300, 0x1400),
     };
     const merged = try fdes_merge(testing.allocator, &eh, &debug);
     defer testing.allocator.free(merged);
@@ -167,7 +149,6 @@ test "C built without unwind tables (musl's, here) gets its rows from .debug_fra
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    // Where clock_gettime is in this process, and the file mapped there.
     const address = @intFromPtr(&std.c.clock_gettime);
     var own = try target_layer.Target.init(testing.allocator, process.current_pid());
     defer own.deinit(testing.allocator);
@@ -191,12 +172,10 @@ test "C built without unwind tables (musl's, here) gets its rows from .debug_fra
     defer target.deinit(testing.allocator);
     const file_address = address - built.bias;
 
-    // A libc with .eh_frame for it (glibc) has nothing to show here.
     const eh = try fdes_of(testing.allocator, loaded.bytes, ".eh_frame", .eh_frame);
     defer testing.allocator.free(eh);
     if (fdes_overlap(eh, fde_test(file_address, file_address + 1))) return error.SkipZigTest;
 
-    // At the first instruction, the return address is right at rsp.
     try testing.expect(built.fdes_debug_frame > 0);
     const row = target.find(file_address) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@intFromEnum(table.CfaType.rsp), row.cfa_type);

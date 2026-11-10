@@ -1,4 +1,3 @@
-# What the Go app does, by design (see main.go), and so what its profile must show.
 samples   >300
 complete  >95                  # unwound with the pclntab
 self  main.hotLeaf     50
@@ -8,10 +7,7 @@ total main.cold.func1  >1      # the less closure, called from inside sort.Slice
 total main.run         >90     # the rest is the runtime's own threads: sysmon, the scheduler
 total main.main        >90
 
-# The numbers: one busy goroutine, sampled 99 times a second; the runtime's threads add a little.
 rate  99
-# The paths, callers included: each share hangs under the right function, and the recursion is
-# exactly 8 deep.
 path  main.run;main.hot;main.hotLeaf  50
 path  main.run;main.warm;main.recurse;main.recurse;main.recurse;main.recurse;main.recurse;main.recurse;main.recurse;main.recurse  30
 kernel 0 3               # the clock is read in the vDSO: no system calls
