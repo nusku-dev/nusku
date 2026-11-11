@@ -153,7 +153,7 @@ pub fn processes_watch(gpa: std.mem.Allocator, interval_ms: u32, live: Processes
     _ = try controller.stop(started.job);
 }
 
-fn monotonic_ms() u64 {
+pub fn monotonic_ms() u64 {
     var now: std.os.linux.timespec = undefined;
     _ = std.os.linux.clock_gettime(.MONOTONIC, &now);
     return @as(u64, @intCast(now.sec)) * std.time.ms_per_s +
@@ -189,7 +189,7 @@ fn wait(
 
 const poll_ms = 50;
 
-fn sleep_ms(ms: u64) void {
+pub fn sleep_ms(ms: u64) void {
     const duration = std.os.linux.timespec{
         .sec = @intCast(ms / std.time.ms_per_s),
         .nsec = @intCast(ms % std.time.ms_per_s * std.time.ns_per_ms),

@@ -7,6 +7,7 @@ const static = @import("static.zig");
 const vite_url = "http://127.0.0.1:5173/";
 
 pub fn main() !void {
+    webui.setConfig(.multi_client, true);
     const window = webui.newWindow();
     window.setSize(1280, 800);
     window.setMinimumSize(800, 500);
@@ -24,6 +25,7 @@ pub fn main() !void {
 
     webui.wait();
     webui.clean();
+    api.deinit();
 }
 
 test {

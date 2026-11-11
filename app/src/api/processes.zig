@@ -1,10 +1,11 @@
 const std = @import("std");
 const webui = @import("webui");
 const client = @import("client");
+const json = @import("json.zig");
+const session = @import("session.zig");
 
-var client_lock: std.c.pthread_mutex_t = std.c.PTHREAD_MUTEX_INITIALIZER;
-
-const interval_ms = 1000;
+const poll_ms = 20;
+const first_frame_ms = 3000;
 
 pub fn get(event: webui.Event) void {
     var e = event;
@@ -12,31 +13,29 @@ pub fn get(event: webui.Event) void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const json = processes_json(arena) catch |err| error_json(arena, err);
-    e.returnString(json);
+    const answer = processes_json(&session.current, arena) catch |err| json.from_error(arena, err);
+    e.returnString(answer);
 }
 
-fn processes_json(arena: std.mem.Allocator) ![:0]const u8 {
-    _ = std.c.pthread_mutex_lock(&client_lock);
-    defer _ = std.c.pthread_mutex_unlock(&client_lock);
-    const frame = try client.processes(std.heap.smp_allocator, arena, interval_ms);
-    return json_of(arena, frame);
+fn processes_json(s: *client.Session, arena: std.mem.Allocator) ![:0]const u8 {
+    var waited_ms: u32 = 0;
+    while (waited_ms < first_frame_ms) : (waited_ms += poll_ms) {
+        if (try s.processes(arena)) |frame| return json.of(arena, frame);
+        sleep_ms(poll_ms);
+    }
+    return error.NoFrameYet;
 }
 
-fn json_of(arena: std.mem.Allocator, value: anytype) ![:0]const u8 {
-    const text = try std.json.Stringify.valueAlloc(arena, value, .{});
-    return arena.dupeZ(u8, text);
-}
-
-fn error_json(arena: std.mem.Allocator, err: anyerror) [:0]const u8 {
-    return json_of(arena, .{ .@"error" = @errorName(err) }) catch "{\"error\":\"OutOfMemory\"}";
+fn sleep_ms(ms: u32) void {
+    const duration = std.os.linux.timespec{ .sec = 0, .nsec = @as(isize, ms) * std.time.ns_per_ms };
+    _ = std.os.linux.nanosleep(&duration, null);
 }
 
 test "an error goes to the UI as its name" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const json = error_json(arena.allocator(), error.PermissionDenied);
-    try std.testing.expectEqualStrings("{\"error\":\"PermissionDenied\"}", json);
+    const json_resp = json.from_error(arena.allocator(), error.PermissionDenied);
+    try std.testing.expectEqualStrings("{\"error\":\"PermissionDenied\"}", json_resp);
 }
 
 test "a frame of the protocol becomes JSON the UI reads" {
@@ -59,20 +58,24 @@ test "a frame of the protocol becomes JSON the UI reads" {
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const json = try json_of(arena.allocator(), frame);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"cpu_percent\":12.5") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"app\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"cpus\":8,\"cpu\":null") != null);
+    const json_resp = try json.of(arena.allocator(), frame);
+    try std.testing.expect(std.mem.indexOf(u8, json_resp, "\"cpu_percent\":12.5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_resp, "\"name\":\"app\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_resp, "\"cpus\":8,\"cpu\":null") != null);
 }
 
-test "processes answers with this machine's processes, through the client the CLI uses" {
+test "processes answers with this machine's processes, through the session" {
+    const s = try std.testing.allocator.create(client.Session);
+    defer std.testing.allocator.destroy(s);
+    try s.init(std.testing.allocator, .{ .profiles_max = 1, .processes_interval_ms = 100 });
+    defer s.deinit();
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const json = try processes_json(arena.allocator());
+    const json_resp = try processes_json(s, arena.allocator());
     const parsed = try std.json.parseFromSliceLeaky(struct {
         processes: []const struct { pid: u32 },
         machine: struct { cpus: u32 },
-    }, arena.allocator(), json, .{ .ignore_unknown_fields = true });
+    }, arena.allocator(), json_resp, .{ .ignore_unknown_fields = true });
     try std.testing.expect(parsed.processes.len >= 2);
     try std.testing.expect(parsed.machine.cpus >= 1);
     const own: u32 = @intCast(std.os.linux.getpid());
