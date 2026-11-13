@@ -69,6 +69,9 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.build_id = .fast;
+    exe.use_llvm = true;
+    exe.use_lld = true;
     exe.root_module.addImport("cli", cli_mod);
     exe.root_module.addImport("log", log_mod);
     exe.root_module.addImport("server", server_mod);

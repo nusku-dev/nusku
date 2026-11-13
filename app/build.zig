@@ -35,6 +35,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    exe.build_id = .fast;
+    exe.use_llvm = true;
+    exe.use_lld = true;
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);

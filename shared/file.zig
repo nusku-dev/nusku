@@ -26,6 +26,15 @@ pub const ReadError = error{ ProcessNotFound, InputOutput, Interrupted, Unexpect
 pub const File = struct {
     fd: c.fd_t,
 
+    pub const Stat = struct {
+        device_major: u32,
+        device_minor: u32,
+        inode: u64,
+        size: u64,
+        modified_s: i64,
+        modified_ns: u32,
+    };
+
     pub fn open(path: [:0]const u8) OpenError!File {
         assert(path.len > 0);
         assert(path.len < path_bytes_max);
@@ -47,6 +56,28 @@ pub const File = struct {
         const result = c.close(file.fd);
         if (result != 0) assert(errno() != .BADF);
         file.* = undefined;
+    }
+
+    pub fn stat(file: *const File) ReadError!Stat {
+        assert(file.fd >= 0);
+        var found: std.os.linux.Statx = undefined;
+        const mask = std.os.linux.STATX{
+            .INO = true,
+            .SIZE = true,
+            .MTIME = true,
+        };
+
+        const result = std.os.linux.statx(file.fd, "", std.os.linux.AT.EMPTY_PATH, mask, &found);
+        if (std.os.linux.errno(result) != .SUCCESS) return error.Unexpected;
+
+        return .{
+            .device_major = found.dev_major,
+            .device_minor = found.dev_minor,
+            .inode = found.ino,
+            .size = found.size,
+            .modified_s = found.mtime.sec,
+            .modified_ns = found.mtime.nsec,
+        };
     }
 
     pub fn size_bytes(file: *const File) ReadError!u64 {

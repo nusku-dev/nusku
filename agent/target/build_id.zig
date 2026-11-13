@@ -1,4 +1,4 @@
-//! The GNU build ID of an ELF file.
+//! What names an ELF file: its GNU build ID, else its Go one, else the file itself.
 
 const std = @import("std");
 const File = @import("shared").File;
@@ -7,10 +7,12 @@ const process = @import("../os/os.zig").process;
 
 pub const prefix_size = 64 * 1024;
 pub const id_bytes_max = 64;
+pub const derived_bytes = 20;
 
 const PT_NOTE = 4;
 const SHT_NOTE = 7;
 const NT_GNU_BUILD_ID = 3;
+const NT_GO_BUILD_ID = 4;
 const section_header_size = 64;
 const sections_max = 256;
 
@@ -18,22 +20,63 @@ pub fn from_file(file: *const File, prefix_buffer: []u8) ?[]const u8 {
     std.debug.assert(prefix_buffer.len >= prefix_size);
     const prefix_read = file.read_at(prefix_buffer[0..prefix_size], 0) catch return null;
     const prefix = prefix_buffer[0..prefix_read];
+    if (!elf64(prefix)) return null;
     if (from_prefix(prefix)) |id| return id;
 
-    if (prefix.len < 64) return null;
-    const offset = read(u64, prefix, 40) orelse return null;
-    const entry_size = read(u16, prefix, 58) orelse return null;
-    const count = read(u16, prefix, 60) orelse return null;
-    if (entry_size != section_header_size or count == 0 or count > sections_max) return null;
-
     var headers_buffer: [sections_max * section_header_size]u8 = undefined;
-    const headers = headers_buffer[0 .. @as(usize, count) * section_header_size];
-    const got = file.read_at(headers, offset) catch return null;
-    if (got != headers.len) return null;
-    return from_sections(prefix, headers);
+    const headers = section_headers(file, prefix, &headers_buffer);
+    if (from_sections(prefix, headers)) |id| return id;
+
+    if (notes_find(prefix, headers, .go)) |go| return derived(prefix_buffer, "go", go);
+    const found = file.stat() catch return null;
+    var source: [32]u8 = undefined;
+    put(u32, &source, 0, found.device_major);
+    put(u32, &source, 4, found.device_minor);
+    put(u64, &source, 8, found.inode);
+    put(u64, &source, 16, found.size);
+    put(i64, &source, 24, found.modified_s);
+    return derived(prefix_buffer, "file", &source);
+}
+
+fn section_headers(file: *const File, prefix: []const u8, buffer: []u8) []const u8 {
+    const offset = read(u64, prefix, 40) orelse return &.{};
+    const entry_size = read(u16, prefix, 58) orelse return &.{};
+    const count = read(u16, prefix, 60) orelse return &.{};
+    if (entry_size != section_header_size or count == 0 or count > sections_max) return &.{};
+    const headers = buffer[0 .. @as(usize, count) * section_header_size];
+    const got = file.read_at(headers, offset) catch return &.{};
+    if (got != headers.len) return &.{};
+    return headers;
+}
+
+/// Written over the start of `prefix_buffer`, once `source` is read.
+fn derived(prefix_buffer: []u8, kind: []const u8, source: []const u8) []const u8 {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update("nusku ");
+    hasher.update(kind);
+    hasher.update(source);
+    hasher.final(&digest);
+    @memcpy(prefix_buffer[0..derived_bytes], digest[0..derived_bytes]);
+    return prefix_buffer[0..derived_bytes];
+}
+
+fn elf64(prefix: []const u8) bool {
+    return prefix.len >= 64 and std.mem.eql(u8, prefix[0..4], "\x7fELF") and
+        prefix[4] == 2 and prefix[5] == 1;
+}
+
+const Note = enum { gnu, go };
+
+fn notes_find(prefix: []const u8, headers: []const u8, note: Note) ?[]const u8 {
+    return notes_in_segments(prefix, note) orelse notes_in_sections(prefix, headers, note);
 }
 
 pub fn from_sections(prefix: []const u8, headers: []const u8) ?[]const u8 {
+    return notes_in_sections(prefix, headers, .gnu);
+}
+
+fn notes_in_sections(prefix: []const u8, headers: []const u8, note: Note) ?[]const u8 {
     var at: usize = 0;
     while (at + section_header_size <= headers.len) : (at += section_header_size) {
         if (read(u32, headers, at + 4) != SHT_NOTE) continue;
@@ -41,14 +84,17 @@ pub fn from_sections(prefix: []const u8, headers: []const u8) ?[]const u8 {
         const size = read(u64, headers, at + 32) orelse continue;
         const end = std.math.add(u64, offset, size) catch continue;
         if (end > prefix.len) continue;
-        if (find_build_id(prefix[@intCast(offset)..@intCast(end)])) |id| return id;
+        if (note_find(prefix[@intCast(offset)..@intCast(end)], note)) |id| return id;
     }
     return null;
 }
 
 pub fn from_prefix(prefix: []const u8) ?[]const u8 {
-    if (prefix.len < 64 or !std.mem.eql(u8, prefix[0..4], "\x7fELF")) return null;
-    if (prefix[4] != 2 or prefix[5] != 1) return null;
+    return notes_in_segments(prefix, .gnu);
+}
+
+fn notes_in_segments(prefix: []const u8, note: Note) ?[]const u8 {
+    if (!elf64(prefix)) return null;
 
     const phoff = read(u64, prefix, 32) orelse return null;
     const phentsize = read(u16, prefix, 54) orelse return null;
@@ -65,7 +111,7 @@ pub fn from_prefix(prefix: []const u8) ?[]const u8 {
         const end = std.math.add(u64, offset, size) catch continue;
         if (end > prefix.len) continue;
 
-        if (find_build_id(prefix[@intCast(offset)..@intCast(end)])) |id| return id;
+        if (note_find(prefix[@intCast(offset)..@intCast(end)], note)) |id| return id;
     }
     return null;
 }
@@ -93,6 +139,12 @@ fn align4(n: usize) usize {
 }
 
 pub fn find_build_id(notes: []const u8) ?[]const u8 {
+    return note_find(notes, .gnu);
+}
+
+fn note_find(notes: []const u8, note: Note) ?[]const u8 {
+    const kind_wanted: u32 = if (note == .gnu) NT_GNU_BUILD_ID else NT_GO_BUILD_ID;
+    const name_wanted = if (note == .gnu) "GNU\x00" else "Go\x00\x00";
     var off: usize = 0;
     while (off + 12 <= notes.len) {
         const namesz: usize = read(u32, notes, off) orelse return null;
@@ -104,8 +156,9 @@ pub fn find_build_id(notes: []const u8) ?[]const u8 {
         const desc_end = std.math.add(usize, desc, descsz) catch return null;
         if (desc_end > notes.len) return null;
 
-        if (kind == NT_GNU_BUILD_ID and namesz == 4 and descsz > 0 and descsz <= id_bytes_max and
-            std.mem.eql(u8, notes[name..][0..4], "GNU\x00"))
+        const fits = note == .go or descsz <= id_bytes_max;
+        if (kind == kind_wanted and namesz == 4 and descsz > 0 and fits and
+            std.mem.eql(u8, notes[name..][0..4], name_wanted))
         {
             return notes[desc..][0..descsz];
         }
@@ -239,4 +292,43 @@ test "a note segment without the build ID (as Go writes it): the note section ha
     put(u64, &outside, section_header_size + 24, 250);
     try std.testing.expect(from_sections(&elf, &outside) == null);
     try std.testing.expect(from_sections(&elf, &.{}) == null);
+}
+
+test "a Go build ID is found when there is no GNU one" {
+    var elf = elf_for_test(56);
+    put(u32, &elf, 204, NT_GO_BUILD_ID);
+    @memcpy(elf[208..212], "Go\x00\x00");
+    try std.testing.expect(from_prefix(&elf) == null);
+    const go = notes_find(&elf, &.{}, .go) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 20), go.len);
+    try std.testing.expectEqual(@as(u8, 1), go[0]);
+}
+
+test "an ELF file with no ID is named by the file, the same way each time" {
+    var path_buffer: [64]u8 = undefined;
+    const me = @import("../os/os.zig").process.current_pid();
+    const path = try std.fmt.bufPrintZ(&path_buffer, "/tmp/nusku-build-id-{d}", .{me});
+    defer _ = std.c.unlink(path.ptr);
+
+    var elf = elf_for_test(56);
+    put(u32, &elf, 204, 99);
+    const out = std.c.fopen(path.ptr, "w") orelse return error.SkipZigTest;
+    _ = std.c.fwrite(&elf, 1, elf.len, out);
+    _ = std.c.fclose(out);
+
+    var file = try File.open(path);
+    defer file.deinit();
+    var first: [prefix_size]u8 = undefined;
+    var second: [prefix_size]u8 = undefined;
+    const a = from_file(&file, &first) orelse return error.TestUnexpectedResult;
+    const b = from_file(&file, &second) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, derived_bytes), a.len);
+    try std.testing.expectEqualSlices(u8, a, b);
+}
+
+test "a file that is not ELF has no ID" {
+    var file = try File.open("/proc/self/status");
+    defer file.deinit();
+    var prefix: [prefix_size]u8 = undefined;
+    try std.testing.expect(from_file(&file, &prefix) == null);
 }
