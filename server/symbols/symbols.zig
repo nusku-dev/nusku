@@ -366,6 +366,13 @@ test {
     _ = id_set;
     _ = @import("binaries.zig");
     _ = @import("symbol_table.zig");
+    _ = @import("dwarf/reader.zig");
+    _ = @import("dwarf/abbrev.zig");
+    _ = @import("dwarf/decoder.zig");
+    _ = @import("dwarf/tables.zig");
+    _ = @import("dwarf/info.zig");
+    _ = @import("dwarf/builder.zig");
+    _ = @import("dwarf/loader.zig");
 }
 
 const fixtures = @import("../testing/symbols.zig");

@@ -14,6 +14,7 @@ const page_mask: u64 = 0xfff;
 
 pub const Section = struct {
     kind: u32,
+    flags: u64 = 0,
     vaddr: u64,
     offset: u64,
     size: u64,
@@ -51,6 +52,7 @@ pub fn find(file: []const u8, wanted: []const u8) Error!?Section {
         if (!std.mem.eql(u8, rest[0..end], wanted)) continue;
         return Section{
             .kind = header.kind,
+            .flags = header.flags,
             .vaddr = header.vaddr,
             .offset = header.offset,
             .size = header.size,
@@ -58,6 +60,8 @@ pub fn find(file: []const u8, wanted: []const u8) Error!?Section {
     }
     return null;
 }
+
+pub const shf_compressed = 0x800;
 
 pub fn bytes_of(file: []const u8, section: Section) ?[]const u8 {
     if (section.kind == SHT_NOBITS) return null;
@@ -129,13 +133,14 @@ pub fn load_bias(file: []const u8, region_start: u64, region_offset: u64) Error!
     return region_start -% region_offset -% s.vaddr +% s.offset;
 }
 
-const Header = struct { name: u32, kind: u32, vaddr: u64, offset: u64, size: u64 };
+const Header = struct { name: u32, kind: u32, flags: u64, vaddr: u64, offset: u64, size: u64 };
 
 fn header_at(file: []const u8, shoff: u64, index: u64) Header {
     const base: usize = @intCast(shoff + index * shdr_size);
     return .{
         .name = u32_read(file, base),
         .kind = u32_read(file, base + 4),
+        .flags = u64_read(file, base + 8),
         .vaddr = u64_read(file, base + 16),
         .offset = u64_read(file, base + 24),
         .size = u64_read(file, base + 32),
