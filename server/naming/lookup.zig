@@ -2,7 +2,10 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Symbols = @import("../symbols/symbols.zig").Symbols;
+const symbols_layer = @import("../symbols/symbols.zig");
+const Symbols = symbols_layer.Symbols;
+
+pub const Location = symbols_layer.Location;
 
 pub const Lookup = struct {
     symbols: *Symbols,
@@ -13,24 +16,24 @@ pub const Lookup = struct {
     const Slot = struct {
         build_id: []const u8 = &.{},
         offset: u64 = 0,
-        name: ?[]const u8 = null,
+        frames: []const Location = &.{},
     };
 
-    pub fn name(
+    pub fn locate(
         lookup: *Lookup,
         arena: std.mem.Allocator,
         build_id: []const u8,
         offset: u64,
-    ) !?[]const u8 {
+    ) ![]const Location {
         assert(build_id.len > 0);
 
         var hasher = std.hash.Wyhash.init(offset);
         hasher.update(build_id);
         const slot = &lookup.cache[hasher.final() % cache_size];
-        if (slot.offset == offset and std.mem.eql(u8, slot.build_id, build_id)) return slot.name;
+        if (slot.offset == offset and std.mem.eql(u8, slot.build_id, build_id)) return slot.frames;
 
-        const found = try lookup.symbols.name(arena, build_id, offset);
-        slot.* = .{ .build_id = build_id, .offset = offset, .name = found };
+        const found = try lookup.symbols.locate(arena, build_id, offset);
+        slot.* = .{ .build_id = build_id, .offset = offset, .frames = found };
         return found;
     }
 };
@@ -53,13 +56,12 @@ test "the cache keeps binaries apart, and outlives the table" {
     const lookup = try names.create(Lookup);
     lookup.* = .{ .symbols = &symbols };
 
-    const none: ?[]const u8 = null;
-    try testing.expectEqualStrings("work", (try lookup.name(names, "aa", 0x1100)).?);
-    try testing.expectEqualStrings("rest", (try lookup.name(names, "bb", 0x1100)).?);
-    try testing.expectEqual(none, try lookup.name(names, "aa", 0x9000));
-    try testing.expectEqual(none, try lookup.name(names, "cc", 0x1100));
+    try testing.expectEqualStrings("work", (try lookup.locate(names, "aa", 0x1100))[0].function.?);
+    try testing.expectEqualStrings("rest", (try lookup.locate(names, "bb", 0x1100))[0].function.?);
+    try testing.expectEqual(@as(usize, 0), (try lookup.locate(names, "aa", 0x9000)).len);
+    try testing.expectEqual(@as(usize, 0), (try lookup.locate(names, "cc", 0x1100)).len);
 
     symbols.deinit();
     symbols_live = false;
-    try testing.expectEqualStrings("work", (try lookup.name(names, "aa", 0x1100)).?);
+    try testing.expectEqualStrings("work", (try lookup.locate(names, "aa", 0x1100))[0].function.?);
 }

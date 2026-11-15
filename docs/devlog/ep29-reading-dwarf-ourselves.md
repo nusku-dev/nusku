@@ -4,9 +4,9 @@ date: 2026-11-12
 
 # Ep29: Reading DWARF Ourselves
 
-*A function name says where the time went. A source line says what to change. This episode is
+_A function name says where the time went. A source line says what to change. This episode is
 the DWARF reader in the server: source files and lines for every frame, and the inlined calls
-that a symbol table cannot see at all.*
+that a symbol table cannot see at all._
 
 ## Why a symbol table is not enough
 
@@ -44,11 +44,11 @@ and inline tree **once**, in a compact form, and then answer millions of lookups
 many threads. That is a different data structure, so it is our own: about 1 500 lines in four
 files, tests included.
 
-| File | Does |
-|---|---|
+| File             | Does                                                       |
+| ---------------- | ---------------------------------------------------------- |
 | `dwarf_form.zig` | The byte reader, abbreviation tables, every attribute form |
-| `dwarf_line.zig` | Line programs, version 4 and 5, into sorted rows |
-| `dwarf.zig` | Units, the function and inline tree, ranges, lookups |
+| `dwarf_line.zig` | Line programs, version 4 and 5, into sorted rows           |
+| `dwarf.zig`      | Units, the function and inline tree, ranges, lookups       |
 | `dwarf_load.zig` | Finding the sections in an ELF file and decompressing them |
 
 ## 2. What it reads
@@ -95,7 +95,7 @@ table counts toward the server's symbol budget, Ep32), and fast to search.
    address is the next frame; skip whole subtrees with `end`. That gives the chain, up to 32
    deep.
 3. **Lines**: the innermost frame gets the line from the line table. Each outer frame gets the
-   `call_file` and `call_line` of the call inlined into it: that is the line in *its* source
+   `call_file` and `call_line` of the call inlined into it: that is the line in _its_ source
    where the call was written.
 4. **Name**: the outermost frame keeps the symbol table's name when there is one, since that is
    the name that matches everything else in the profile.

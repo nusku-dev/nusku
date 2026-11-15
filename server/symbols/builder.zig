@@ -4,6 +4,10 @@ const std = @import("std");
 const protocol = @import("shared").protocol;
 const elf = @import("shared").elf;
 const SymbolTable = @import("symbol_table.zig").SymbolTable;
+const dwarf_load = @import("dwarf/loader.zig");
+const dwarf_builder = @import("dwarf/builder.zig");
+
+const Debug_Info = @import("debug_files.zig").Info;
 
 const assert = std.debug.assert;
 const Section = protocol.binary.Section;
@@ -15,6 +19,9 @@ pub const Received = struct {
     data: []u8,
     starts: std.EnumArray(Section, usize),
     sizes: std.EnumArray(Section, usize),
+    compressed: std.EnumSet(Section) = .initEmpty(),
+    /// Some sections came from the binary's debug file, which the agent found and sent.
+    debug_file: bool = false,
     reserved: u64 = 0,
 
     pub fn deinit(received: *Received, gpa: std.mem.Allocator) void {
@@ -25,14 +32,53 @@ pub const Received = struct {
         received.* = undefined;
     }
 
-    pub fn build(received: *const Received, gpa: std.mem.Allocator) !SymbolTable {
+    pub fn stripped(received: *const Received) bool {
+        return received.sizes.get(.symtab) == 0 or received.sizes.get(.debug_info) == 0;
+    }
+
+    pub fn build(received: *const Received, gpa: std.mem.Allocator, debug: ?*const Debug_Info) !SymbolTable {
+        const own_symtab = received.sizes.get(.symtab) > 0;
+        const from_debug = !own_symtab and debug != null and debug.?.symtab.len > 0;
+        var own_dwarf = try received.dwarf_own(gpa);
+        defer if (own_dwarf) |*loaded| loaded.deinit(gpa);
+
+        const sections: ?dwarf_builder.Sections = if (own_dwarf) |loaded|
+            loaded.sections
+        else if (debug) |found|
+            if (found.dwarf) |loaded| loaded.sections else null
+        else
+            null;
+
         return SymbolTable.init(gpa, .{
             .segments = received.segments,
-            .symtab = received.section(.symtab),
-            .strtab = received.section(.strtab),
+            .symtab = if (from_debug) debug.?.symtab else received.section(.symtab),
+            .strtab = if (from_debug) debug.?.strtab else received.section(.strtab),
             .dynsym = received.section(.dynsym),
             .dynstr = received.section(.dynstr),
+            .dwarf = sections,
         });
+    }
+
+    fn dwarf_own(received: *const Received, gpa: std.mem.Allocator) !?dwarf_load.Loaded {
+        if (received.sizes.get(.debug_info) == 0) return null;
+        var loaded = dwarf_load.Loaded{};
+        errdefer loaded.deinit(gpa);
+        const first = @intFromEnum(Section.debug_info);
+        inline for (comptime std.enums.values(Section)) |which| {
+            if (comptime @intFromEnum(which) >= first) {
+                const compressed = received.compressed.contains(which);
+                const index = @intFromEnum(which) - first;
+                const raw = received.section(which);
+                loaded.put(gpa, index, raw, compressed) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    error.Malformed => {
+                        loaded.deinit(gpa);
+                        return null;
+                    },
+                };
+            }
+        }
+        return loaded;
     }
 
     fn section(received: *const Received, which: Section) []const u8 {

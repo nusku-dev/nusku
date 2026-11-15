@@ -8,6 +8,15 @@ pub const Section = enum {
     strtab,
     dynsym,
     dynstr,
+    debug_info,
+    debug_abbrev,
+    debug_line,
+    debug_str,
+    debug_line_str,
+    debug_addr,
+    debug_str_offsets,
+    debug_ranges,
+    debug_rnglists,
 
     pub fn name(section: Section) []const u8 {
         return switch (section) {
@@ -15,6 +24,7 @@ pub const Section = enum {
             .strtab => ".strtab",
             .dynsym => ".dynsym",
             .dynstr => ".dynstr",
+            inline else => |which| "." ++ @tagName(which),
         };
     }
 };
@@ -29,6 +39,10 @@ pub const Header = struct {
     path: []const u8,
     segments: []const Segment,
     sizes: std.EnumArray(Section, u64),
+    /// Sent as the file holds them: compressed, with their ELF compression header.
+    compressed: std.EnumSet(Section) = .initEmpty(),
+    /// Some sections came from the binary's separate debug file, on the agent's machine.
+    debug_file: bool = false,
 
     pub const Segment = elf.Segment;
 
@@ -38,6 +52,8 @@ pub const Header = struct {
             .path = try arena.dupe(u8, header.path),
             .segments = try arena.dupe(Segment, header.segments),
             .sizes = header.sizes,
+            .compressed = header.compressed,
+            .debug_file = header.debug_file,
         };
     }
 };

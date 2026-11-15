@@ -60,7 +60,7 @@ pub fn program_read(
     if (version < 2 or version > 5) return error.Malformed;
     var unit = decoder.Unit{ .version = version, .wide = wide, .address_size = address_size };
     if (version >= 5) {
-        unit.address_size = r.int(u8);
+        unit.address_size = try r.int(u8);
         _ = try r.int(u8);
     }
     const header_length = try r.offset(wide);

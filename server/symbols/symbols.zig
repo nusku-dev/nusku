@@ -8,8 +8,12 @@ const builder = @import("builder.zig");
 const upload_file = @import("upload.zig");
 const id_set = @import("id_set.zig");
 const Binaries = @import("binaries.zig").Binaries;
-const SymbolTable = @import("symbol_table.zig").SymbolTable;
+const symbol_table = @import("symbol_table.zig");
+const debug_files = @import("debug_files.zig");
 const log_file = @import("../log.zig");
+
+const SymbolTable = symbol_table.SymbolTable;
+pub const Location = symbol_table.Location;
 
 const log = log_file.server;
 const Received = builder.Received;
@@ -20,6 +24,7 @@ pub const Options = struct {
     binaries_bytes_max: u64 = 256 * 1024 * 1024,
     uploads_bytes_max: u64 = 1024 * 1024 * 1024,
     upload_bytes_max: u64 = 512 * 1024 * 1024,
+    debuginfod: bool = true,
 };
 
 pub const Stats = struct {
@@ -28,6 +33,7 @@ pub const Stats = struct {
     builds_pending: usize,
     builds_failed: u64,
     uploads_bytes: u64,
+    generation: u64,
 };
 
 const uploads_max = 64;
@@ -50,9 +56,11 @@ pub const Symbols = struct {
     builds: builder.Queue,
     building: []const u8,
     builds_failed: u64,
+    generation: u64,
     builds_changed: os.Condition,
     builds_stopping: bool,
     builder_thread: std.Thread,
+    debug: debug_files.Finder,
 
     /// Starts the builder thread: the layer must stay at its address until `deinit`.
     pub fn init(symbols: *Symbols, gpa: std.mem.Allocator, options: Options) !void {
@@ -68,9 +76,11 @@ pub const Symbols = struct {
             .builds = .{},
             .building = &.{},
             .builds_failed = 0,
+            .generation = 0,
             .builds_changed = .{},
             .builds_stopping = false,
             .builder_thread = undefined,
+            .debug = .init(options.debuginfod),
         };
         errdefer symbols.binaries.deinit(gpa);
         symbols.builder_thread = try std.Thread.spawn(.{}, builder_main, .{symbols});
@@ -94,6 +104,7 @@ pub const Symbols = struct {
             owned.deinit(symbols.gpa);
         }
         symbols.binaries.deinit(symbols.gpa);
+        symbols.debug.deinit();
         symbols.* = undefined;
     }
 
@@ -106,17 +117,28 @@ pub const Symbols = struct {
         }
     }
 
-    pub fn name(
+    /// The frames at an offset, innermost first, copied into `arena`.
+    pub fn locate(
         symbols: *Symbols,
         arena: std.mem.Allocator,
         build_id: []const u8,
         offset: u64,
-    ) !?[]const u8 {
+    ) ![]const Location {
         symbols.lock.lock();
         defer symbols.lock.unlock();
-        const table = symbols.binaries.get(build_id) orelse return null;
-        const hit = table.lookup(offset) orelse return null;
-        return try arena.dupe(u8, hit.name);
+        const table = symbols.binaries.get(build_id) orelse return &.{};
+        var buffer: [symbol_table.depth_max]Location = undefined;
+        const found = table.locate(offset, &buffer);
+        const copy = try arena.alloc(Location, found.len);
+        for (found, copy) |location, *out| {
+            out.* = .{
+                .function = if (location.function) |text| try arena.dupe(u8, text) else null,
+                .file = if (location.file) |text| try arena.dupe(u8, text) else null,
+                .line = location.line,
+                .inlined = location.inlined,
+            };
+        }
+        return copy;
     }
 
     pub fn wait(symbols: *Symbols) void {
@@ -136,6 +158,7 @@ pub const Symbols = struct {
             .builds_pending = symbols.builds.count + @intFromBool(symbols.building.len > 0),
             .builds_failed = symbols.builds_failed,
             .uploads_bytes = symbols.uploads_bytes_used,
+            .generation = symbols.generation,
         };
     }
 
@@ -227,7 +250,9 @@ pub const Symbols = struct {
             var received = symbols.builds.pop().?;
             symbols.building = received.id;
             symbols.lock.unlock();
-            const built = received.build(symbols.gpa);
+            var debug = if (received.stripped()) symbols.debug_find(&received) else null;
+            const built = received.build(symbols.gpa, if (debug) |*found| found else null);
+            if (debug) |*found| found.deinit(symbols.gpa);
             symbols.lock.lock();
 
             symbols.built_keep(&received, built);
@@ -237,7 +262,19 @@ pub const Symbols = struct {
         }
     }
 
+    fn debug_find(symbols: *Symbols, received: *const Received) ?debug_files.Info {
+        const found = symbols.debug.find(symbols.gpa, received.id) orelse return null;
+        log.debug("debug symbols found", .{
+            .path = received.path,
+            .source = found.source,
+            .symbols = found.symtab.len > 0,
+            .dwarf = found.dwarf != null,
+        });
+        return found;
+    }
+
     fn built_keep(symbols: *Symbols, received: *const Received, built: anyerror!SymbolTable) void {
+        symbols.generation += 1;
         const functions = if (built) |table| table.count else |_| 0;
         const kib = if (built) |table| log_file.kib(table.bytes()) else |_| 0;
         const kept = if (built) |table|
@@ -247,6 +284,7 @@ pub const Symbols = struct {
         if (kept) |_| {
             log.debug("symbol table ready", .{
                 .path = received.path,
+                .debug_file = received.debug_file,
                 .functions = functions,
                 .kib = kib,
             });
@@ -364,6 +402,7 @@ test {
     _ = builder;
     _ = upload_file;
     _ = id_set;
+    _ = debug_files;
     _ = @import("binaries.zig");
     _ = @import("symbol_table.zig");
     _ = @import("dwarf/reader.zig");
@@ -373,6 +412,7 @@ test {
     _ = @import("dwarf/info.zig");
     _ = @import("dwarf/builder.zig");
     _ = @import("dwarf/loader.zig");
+    _ = @import("dwarf/dwarf.zig");
 }
 
 const fixtures = @import("../testing/symbols.zig");
@@ -398,8 +438,8 @@ test "a received binary is known at once, and named once the builder is done" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const names = arena.allocator();
-    try testing.expectEqualStrings("work", (try symbols.name(names, "aa", 0x1100)).?);
-    try testing.expectEqual(@as(?[]const u8, null), try symbols.name(names, "aa", 0x9000));
+    try testing.expectEqualStrings("work", (try symbols.locate(names, "aa", 0x1100))[0].function.?);
+    try testing.expectEqual(@as(usize, 0), (try symbols.locate(names, "aa", 0x9000)).len);
     const stats = symbols.stats();
     try testing.expectEqual(@as(usize, 1), stats.binaries);
     try testing.expectEqual(@as(usize, 0), stats.builds_pending);

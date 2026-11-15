@@ -169,7 +169,7 @@ fn table_make(gpa: std.mem.Allocator, name_length: usize) !SymbolTable {
     return SymbolTable.init(gpa, .{ .segments = &segments, .symtab = &sym, .strtab = strtab });
 }
 
-const table_bytes = 16 + 100 + 1;
+const table_bytes = 24 + 100 + 1;
 
 test "a table that is put can be found, and a missing one cannot" {
     var binaries = try Binaries.init(testing.allocator, 4, 1000);

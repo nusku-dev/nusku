@@ -1,4 +1,4 @@
-//! The symbols layer.
+//! The symbols layer: which binaries to offer the server, and in what order to stream them.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -383,6 +383,7 @@ test {
     _ = kernel_symbols;
     _ = @import("transfer.zig");
     _ = @import("vdso_symbols.zig");
+    _ = @import("debug_file.zig");
 }
 const os = @import("../os/os.zig");
 const process = @import("../os/os.zig").process;

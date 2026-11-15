@@ -8,6 +8,7 @@ const Region = target.Region;
 const elf_file = @import("../elf/elf.zig").file;
 const vdso_symbols = @import("vdso_symbols.zig");
 const kernel_symbols = @import("kernel_symbols.zig");
+const debug_file = @import("debug_file.zig");
 
 const elf = shared.elf;
 const File = shared.File;
@@ -26,12 +27,15 @@ pub const Binary = struct {
         file: File,
         memory: std.EnumArray(Section, []const u8),
     },
+    debug: ?File = null,
+    from_debug: std.EnumSet(Section) = .initEmpty(),
 
     pub fn deinit(binary: *Binary) void {
         switch (binary.origin) {
             .file => |*file| file.deinit(),
             .memory => {},
         }
+        if (binary.debug) |*file| file.deinit();
         binary.* = undefined;
     }
 
@@ -47,6 +51,13 @@ pub const Binary = struct {
         if (offset >= size) return buffer[0..0];
 
         const wanted: usize = @intCast(@min(buffer.len, size - offset));
+        if (binary.from_debug.contains(section)) {
+            const start = binary.starts.get(section) + offset;
+            const got = try binary.debug.?.read_at(buffer[0..wanted], start);
+            if (got != wanted) return error.FileChanged;
+
+            return buffer[0..wanted];
+        }
         switch (binary.origin) {
             .file => |*file| {
                 const start = binary.starts.get(section) + offset;
@@ -81,7 +92,9 @@ pub fn open(
     var loaded = try elf_file.load(&file, &.{}, 0);
     defer loaded.deinit();
     const layout = try layout_read(arena, id, region.path, loaded.bytes);
-    return .{ .header = layout.header, .starts = layout.starts, .origin = .{ .file = file } };
+    var binary = Binary{ .header = layout.header, .starts = layout.starts, .origin = .{ .file = file } };
+    debug_file.attach(&binary, id);
+    return binary;
 }
 
 fn open_vdso(
@@ -164,6 +177,7 @@ fn layout_read(
         const content = elf.bytes_of(bytes, found) orelse continue;
         layout.header.sizes.set(section, content.len);
         layout.starts.set(section, found.offset);
+        if (found.flags & elf.shf_compressed != 0) layout.header.compressed.insert(section);
     }
     return layout;
 }
@@ -200,6 +214,51 @@ fn section_read_all(
     }
     try testing.expectEqual(binary.header.sizes.get(section), list.items.len);
     return list.items;
+}
+
+test "a stripped library takes its symbols and DWARF from its debug file on this machine" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var prefix: [target.build_id_prefix_size]u8 = undefined;
+    const pid = process.current_pid();
+    const libc = "/usr/lib/x86_64-linux-gnu/libc.so.6";
+
+    var file = target.file_open(pid, &region_test(libc, null), &prefix) catch return error.SkipZigTest;
+    const prefix_read = try file.read_at(&prefix, 0);
+    file.deinit();
+    const id = target.build_id_of(prefix[0..prefix_read]) orelse return error.SkipZigTest;
+    var installed = debug_file.open(id) orelse return error.SkipZigTest;
+    installed.deinit();
+
+    var binary = try open(arena.allocator(), pid, &region_test(libc, id), &prefix, null);
+    defer binary.deinit();
+    try testing.expect(binary.header.debug_file);
+    try testing.expect(binary.from_debug.contains(.symtab));
+    try testing.expect(binary.header.sizes.get(.symtab) > 1000 * 24);
+    try testing.expect(binary.header.sizes.get(.dynsym) > 0);
+    try testing.expect(!binary.from_debug.contains(.dynsym));
+
+    const strtab = try section_read_all(arena.allocator(), &binary, .strtab, 4096);
+    try testing.expect(std.mem.indexOf(u8, strtab, "malloc") != null);
+}
+
+test "a binary with its own symbols and DWARF opens no debug file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var prefix: [target.build_id_prefix_size]u8 = undefined;
+    const pid = process.current_pid();
+    var own = try target.Target.init(testing.allocator, pid);
+    defer own.deinit(testing.allocator);
+    const exe = for (own.regions) |*region| {
+        if (region.build_id != null and std.mem.indexOf(u8, region.path, "test") != null) break region;
+    } else return error.SkipZigTest;
+    var binary = try open(arena.allocator(), pid, exe, &prefix, null);
+    defer binary.deinit();
+    if (binary.header.sizes.get(.symtab) == 0) return error.SkipZigTest;
+    if (binary.header.sizes.get(.debug_info) == 0) return error.SkipZigTest;
+    try testing.expect(binary.debug == null);
+    try testing.expect(!binary.header.debug_file);
+    try testing.expectEqual(@as(usize, 0), binary.from_debug.count());
 }
 
 test "the vDSO is a binary: its header, and its dynamic symbols in small chunks" {

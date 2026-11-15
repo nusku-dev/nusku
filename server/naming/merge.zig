@@ -53,7 +53,11 @@ fn frame_order(a: Frame, b: Frame) Order {
     order = string_order(a.function, b.function);
     if (order != .eq) return order;
     if (a.function == null) return std.math.order(a.address, b.address);
-    return .eq;
+    order = std.math.order(@intFromBool(a.inlined), @intFromBool(b.inlined));
+    if (order != .eq) return order;
+    order = string_order(a.file, b.file);
+    if (order != .eq) return order;
+    return std.math.order(a.line orelse 0, b.line orelse 0);
 }
 
 fn string_order(a: ?[]const u8, b: ?[]const u8) Order {

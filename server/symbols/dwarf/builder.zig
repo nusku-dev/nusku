@@ -278,10 +278,13 @@ const Builder = struct {
         const entry = try b.abbrevs.getOrPut(b.gpa, unit.abbrev_offset);
         if (!entry.found_existing) {
             const at = unit.abbrev_offset;
-            entry.value_ptr.* = Abbrevs.init(b.gpa, b.sections.abbrev, at) catch |err| {
+            var abbrevs: Abbrevs = undefined;
+            abbrevs.init(b.gpa, b.sections.abbrev, at) catch |err| {
                 b.abbrevs.removeByPtr(entry.key_ptr);
                 return err;
             };
+
+            entry.value_ptr.* = abbrevs;
         }
         return entry.value_ptr.*;
     }
@@ -363,6 +366,15 @@ const Builder = struct {
                 else => return error.Malformed,
             }
         }
+    }
+
+    fn address_read(
+        b: *const Builder,
+        r: *Reader,
+        unit: *const Unit,
+        bases: *const Bases,
+    ) Error!u64 {
+        return b.address_index(try r.uleb(), unit, bases) orelse error.Malformed;
     }
 
     fn range_put(b: *Builder, low: u64, high: u64) Error!void {
@@ -505,15 +517,14 @@ fn entry_at(base: u64, index: u64, size: u64) ?usize {
 }
 
 pub fn build(
-    debugInfo: *DebugInfo,
     gpa: std.mem.Allocator,
     sections: Sections,
-) Error!void {
+) Error!DebugInfo {
     var builder = Builder.init(gpa, sections);
     defer builder.deinit();
 
     try builder.units_read();
-    debugInfo.* = builder.finish();
+    return try builder.finish();
 }
 
 const testing = std.testing;

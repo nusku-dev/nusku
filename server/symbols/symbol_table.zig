@@ -2,12 +2,16 @@
 
 const std = @import("std");
 const elf = @import("shared").elf;
+const dwarf = @import("dwarf/dwarf.zig");
 
 const assert = std.debug.assert;
 
 const sym_bytes = 24;
 const stt_func = 2;
 const stt_gnu_ifunc = 10;
+const stb_local = 0;
+const stb_global = 1;
+const stb_weak = 2;
 const name_bytes_max = 4096;
 
 pub const Error = error{ OutOfMemory, TooLarge };
@@ -18,7 +22,11 @@ pub const Input = struct {
     strtab: []const u8 = &.{},
     dynsym: []const u8 = &.{},
     dynstr: []const u8 = &.{},
+    dwarf: ?dwarf.Sections = null,
 };
+
+pub const Location = dwarf.Location;
+pub const depth_max = dwarf.depth_max;
 
 pub const Hit = struct {
     name: []const u8,
@@ -29,12 +37,15 @@ const Entry = struct {
     start: u64,
     name: u32,
     size: u32,
+    rank: u8,
 };
 
 pub const SymbolTable = struct {
     entries: []Entry,
     count: usize,
     names: []u8,
+    segments: []elf.Segment = &.{},
+    debug: ?dwarf.DebugInfo = null,
 
     pub fn init(gpa: std.mem.Allocator, input: Input) Error!SymbolTable {
         const syms, const strs = if (input.symtab.len > 0)
@@ -67,25 +78,56 @@ pub const SymbolTable = struct {
                 .start = raw.start,
                 .name = @intCast(names_at),
                 .size = @intCast(@min(raw.size, std.math.maxInt(u32))),
+                .rank = raw.rank,
             };
             filled += 1;
             names_at += raw.name.len + 1;
         }
         assert(filled == count and names_at == names_total);
-        std.mem.sortUnstable(Entry, entries, {}, entry_less);
+        std.mem.sortUnstable(Entry, entries, @as([]const u8, names), entry_less);
         const kept = aliases_drop(entries);
         sizes_fill(entries[0..kept]);
-        return .{ .entries = entries, .count = kept, .names = names };
+        var table = SymbolTable{ .entries = entries, .count = kept, .names = names };
+        errdefer table.deinit(gpa);
+        const sections = input.dwarf orelse return table;
+        table.segments = try gpa.dupe(elf.Segment, input.segments);
+        table.debug = dwarf.build(gpa, sections) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Malformed => null,
+        };
+        return table;
     }
 
     pub fn deinit(table: *SymbolTable, gpa: std.mem.Allocator) void {
         gpa.free(table.entries);
         gpa.free(table.names);
+        gpa.free(table.segments);
+        if (table.debug) |*debug| debug.deinit(gpa);
         table.* = undefined;
     }
 
     pub fn bytes(table: *const SymbolTable) u64 {
-        return table.entries.len * @sizeOf(Entry) + table.names.len;
+        const debug = if (table.debug) |*info| info.bytes() else 0;
+        return table.entries.len * @sizeOf(Entry) + table.names.len +
+            table.segments.len * @sizeOf(elf.Segment) + debug;
+    }
+
+    /// The frames at a file offset, innermost first; the last is the function it is compiled into.
+    pub fn locate(table: *const SymbolTable, offset: u64, out: *[depth_max]Location) []Location {
+        const hit = table.lookup(offset);
+        const debug = if (table.debug) |*info| info else null;
+        const address = if (debug != null) vaddr_of(table.segments, offset) else null;
+        if (debug != null and address != null) {
+            const found = debug.?.locate(address.?, out);
+            if (found.len > 0) {
+                const outer = &found[found.len - 1];
+                if (hit) |named| outer.function = named.name;
+                return found;
+            }
+        }
+        const named = hit orelse return out[0..0];
+        out[0] = .{ .function = named.name, .file = null, .line = 0, .inlined = false };
+        return out[0..1];
     }
 
     pub fn lookup(table: *const SymbolTable, offset: u64) ?Hit {
@@ -113,6 +155,7 @@ const Raw = struct {
     name: []const u8,
     start: u64,
     size: u64,
+    rank: u8,
 };
 
 fn sym_read(segments: []const elf.Segment, syms: []const u8, strs: []const u8, index: usize) ?Raw {
@@ -133,8 +176,14 @@ fn sym_read(segments: []const elf.Segment, syms: []const u8, strs: []const u8, i
     if (name_at >= strs.len) return null;
     const rest = strs[name_at..];
     const length = std.mem.indexOfScalar(u8, rest, 0) orelse return null;
-    if (length == 0) return null;
-    return .{ .name = rest[0..@min(length, name_bytes_max)], .start = start, .size = size };
+    const unversioned = std.mem.indexOfScalar(u8, rest[0..length], '@') orelse length;
+    if (unversioned == 0) return null;
+    return .{
+        .name = rest[0..@min(unversioned, name_bytes_max)],
+        .start = start,
+        .size = size,
+        .rank = rank_of(info >> 4),
+    };
 }
 
 fn file_offset(segments: []const elf.Segment, address: u64) ?u64 {
@@ -147,8 +196,12 @@ fn file_offset(segments: []const elf.Segment, address: u64) ?u64 {
     return null;
 }
 
-fn entry_less(_: void, a: Entry, b: Entry) bool {
+fn entry_less(names: []const u8, a: Entry, b: Entry) bool {
     if (a.start != b.start) return a.start < b.start;
+    if (a.rank != b.rank) return a.rank < b.rank;
+    const a_len = std.mem.indexOfScalar(u8, names[a.name..], 0).?;
+    const b_len = std.mem.indexOfScalar(u8, names[b.name..], 0).?;
+    if (a_len != b_len) return a_len < b_len;
     return a.name < b.name;
 }
 
@@ -168,6 +221,26 @@ fn sizes_fill(entries: []Entry) void {
         const size = if (index + 1 < entries.len) entries[index + 1].start - entry.start else 1;
         entry.size = @intCast(@min(size, std.math.maxInt(u32)));
     }
+}
+
+/// Of the names at one address, the one a person knows: exported first, then the shortest.
+fn rank_of(binding: u8) u8 {
+    return switch (binding) {
+        stb_global => 0,
+        stb_weak => 1,
+        stb_local => 2,
+        else => 3,
+    };
+}
+
+fn vaddr_of(segments: []const elf.Segment, offset: u64) ?u64 {
+    for (segments) |segment| {
+        if (offset < segment.offset) continue;
+        const inside = offset - segment.offset;
+        if (inside >= segment.filesz) continue;
+        return std.math.add(u64, segment.vaddr, inside) catch return null;
+    }
+    return null;
 }
 
 const testing = std.testing;
@@ -247,6 +320,24 @@ test "a function without a size lasts until the next one, and aliases keep one n
     try testing.expectEqualStrings("start", table.lookup(0x10ff).?.name);
     try testing.expectEqualStrings("start", table.lookup(0x1050).?.name);
     try testing.expectEqualStrings("main", table.lookup(0x1100).?.name);
+}
+
+test "of the names at one address, the exported, shortest one wins, without its version" {
+    const strs = "\x00start_impl\x00start_alias_2\x00start@@V_2.34\x00start@V_2.2\x00";
+    var syms: [4 * sym_bytes]u8 = @splat(0);
+    sym_write(&syms, 0, 1, 0x02, 1, 0x401100, 0x20);
+    sym_write(&syms, 1, 12, 0x02, 1, 0x401100, 0x20);
+    sym_write(&syms, 2, 26, 0x12, 1, 0x401100, 0x20);
+    sym_write(&syms, 3, 40, 0x12, 1, 0x401100, 0x20);
+
+    var table = try SymbolTable.init(testing.allocator, .{
+        .segments = &segments_test,
+        .symtab = &syms,
+        .strtab = strs,
+    });
+    defer table.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), table.count);
+    try testing.expectEqualStrings("start", table.lookup(0x1100).?.name);
 }
 
 test "bad symbols are skipped: bad name, address outside the segments, cut-off table" {

@@ -4,10 +4,10 @@ date: 2026-11-12
 
 # Ep28: Names You Can Trust
 
-*The first profile in the app showed `0x12e892c`, `Unnamed`, `Unnamed`. This episode is
+_The first profile in the app showed `0x12e892c`, `Unnamed`, `Unnamed`. This episode is
 everything between an address and a name a person recognizes: which file the address belongs
 to, which of several names at that address to show, and where to find names a binary does
-not carry.*
+not carry._
 
 A sample is a list of addresses. To name one, Nusku needs three things: the **file** the
 address is in, the **identity** of that file (so the server can keep its table and share it
@@ -31,14 +31,14 @@ Most distribution binaries have a GNU build ID note. Many others do not: Go bina
 their own note instead, some toolchains write none, and a binary built in a hurry may have
 neither. `agent/target/build_id.zig` now finds an identity for every ELF file, in order:
 
-| Source | ID |
-|---|---|
-| GNU build ID note (`NT_GNU_BUILD_ID`) | the note, as it is |
-| Go build ID note | SHA-256 of `"nusku go"` + the note, cut to 20 bytes |
-| Neither | SHA-256 of `"nusku file"` + device, inode, size and modification time, cut to 20 bytes |
+| Source                                | ID                                                                                     |
+| ------------------------------------- | -------------------------------------------------------------------------------------- |
+| GNU build ID note (`NT_GNU_BUILD_ID`) | the note, as it is                                                                     |
+| Go build ID note                      | SHA-256 of `"nusku go"` + the note, cut to 20 bytes                                    |
+| Neither                               | SHA-256 of `"nusku file"` + device, inode, size and modification time, cut to 20 bytes |
 
 The kind goes into the hash first, so a Go ID can never equal a file ID by accident.
-The file one is weaker, since it names *this copy* of the file rather than its contents, but a
+The file one is weaker, since it names _this copy_ of the file rather than its contents, but a
 rebuild changes its inode or time, so the server never names a new build with an old table.
 That is the property that matters: an identity that is never wrong, even if it is sometimes
 not shared.
@@ -75,17 +75,25 @@ Distributions strip their binaries. What is left is `.dynsym`, the exported func
 every internal function in libc reads as the nearest export, or as nothing. The full table
 lives in a separate **debug file**, found by build ID.
 
-When the binary that arrives is stripped, the server's builder looks for its debug file
-(`server/symbols/debug_files.zig`):
+Where to look for it is a question of **which machine**. A debug file is installed where the
+program runs: `apt install libc6-dbg` on the server you profile, not on the laptop you look
+from. Today the agent and the server share one process, but the agent is the part that will
+run on that production machine, and the server may run elsewhere. So the two places to look
+are split between them:
 
-1. **Locally**: `/usr/lib/debug/.build-id/ab/cdef….debug`, which is where `-dbgsym` and
-   `-dbg` packages put them.
-2. **Over the network**, through debuginfod (next section), when `DEBUGINFOD_URLS` is set.
+1. **The agent, on the profiled machine** (`agent/symbols/debug_file.zig`). When a binary it
+   is about to send has no `.symtab` or no `.debug_info`, it opens
+   `/usr/lib/debug/.build-id/ab/cdef….debug`, where `-dbgsym` and `-dbg` packages put them.
+   It reads only the debug file's section headers, then streams its `.symtab`, `.strtab` and
+   DWARF sections exactly like the binary's own, and sets `debug_file` in the header.
+2. **The server, over the network**, through debuginfod (next section), when `DEBUGINFOD_URLS`
+   is set and what arrived is still stripped.
 
-From the debug file it takes the full `.symtab` and, when it is there, the DWARF sections for
-source lines (Ep29). A section marked compressed (`SHF_COMPRESSED`, zlib or zstd) is
-decompressed first. The agent marks which sections it sent compressed, so the server does
-the same for sections it received from a live binary.
+The agent stays light: one more file opened, and its section headers read. It never parses
+the DWARF and never decompresses: a section marked compressed (`SHF_COMPRESSED`, zlib or zstd)
+is sent as the file holds it, and marked, and the server decompresses it. From either source
+the server takes the full `.symtab`, and the DWARF sections for source lines (Ep29). Nothing in
+`server/` reads the local disk, so it can run on another machine without losing names.
 
 ## 5. debuginfod
 
@@ -105,8 +113,8 @@ The first try used Zig's standard HTTP client. It failed on the server's TLS cer
 - The client is not thread safe, so only the builder thread uses it.
 - Downloads land in the user's debuginfod cache and are reused by every tool on the machine.
 
-The CLI is a static musl binary and cannot `dlopen`, so it uses local debug files only. The app
-uses both.
+The CLI is a static musl binary and cannot `dlopen`, so it uses only the debug files the agent
+finds installed. The app uses both.
 
 Sending a build ID to a public server tells that server which binaries you run. It is the
 same trade every debuginfod client makes, and turning it off is unsetting one variable.

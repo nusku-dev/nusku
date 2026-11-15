@@ -15,6 +15,7 @@ pub const Frame = struct {
     file: ?[]const u8 = null,
     line: ?u32 = null,
     module: ?[]const u8 = null,
+    inlined: bool = false,
 };
 
 pub const SymbolStack = struct {

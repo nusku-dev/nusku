@@ -42,6 +42,8 @@ pub const Upload = struct {
     starts: std.EnumArray(Section, usize),
     sizes: std.EnumArray(Section, usize),
     filled: std.EnumArray(Section, usize),
+    compressed: std.EnumSet(Section),
+    debug_file: bool,
 
     pub fn init(bytes_max: u64) Upload {
         return .{
@@ -54,6 +56,8 @@ pub const Upload = struct {
             .starts = .initFill(0),
             .sizes = .initFill(0),
             .filled = .initFill(0),
+            .compressed = .initEmpty(),
+            .debug_file = false,
         };
     }
 
@@ -127,6 +131,8 @@ pub const Upload = struct {
             .starts = starts,
             .sizes = sizes,
             .filled = .initFill(0),
+            .compressed = header.compressed,
+            .debug_file = header.debug_file,
         };
     }
 
@@ -178,6 +184,8 @@ pub const Upload = struct {
             .data = upload.data,
             .starts = upload.starts,
             .sizes = upload.sizes,
+            .compressed = upload.compressed,
+            .debug_file = upload.debug_file,
         };
         upload.receiving = false;
         upload.abort(gpa);
@@ -259,7 +267,7 @@ test "a binary in small chunks becomes a table that names its functions" {
     try testing.expect(!upload.receiving);
     try testing.expectEqualStrings("id-1", received.id);
 
-    var table = try received.build(testing.allocator);
+    var table = try received.build(testing.allocator, null);
     defer table.deinit(testing.allocator);
     try testing.expectEqualStrings("main", table.lookup(0x1105).?.name);
     try testing.expectEqualStrings("helper", table.lookup(0x1200).?.name);

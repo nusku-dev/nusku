@@ -12,6 +12,7 @@ const Region = protocol.Region;
 const Frame = query.Frame;
 const SymbolStack = query.SymbolStack;
 const Location = normalize.Location;
+const Named = @import("lookup.zig").Location;
 
 pub fn window_resolve(
     arena: std.mem.Allocator,
@@ -55,28 +56,44 @@ fn stack_resolve(
     stack: Message.Stack,
 ) !SymbolStack {
     assert(locations.len == stack.user.len);
-    const frames = try arena.alloc(Frame, stack.kernel.len + stack.user.len);
+    var frames: std.ArrayList(Frame) = try .initCapacity(arena, stack.kernel.len + stack.user.len);
 
-    for (stack.kernel, frames[0..stack.kernel.len], 0..) |address, *frame, index| {
-        frame.* = .{ .address = address, .kernel = true };
-        const known = kernel orelse continue;
-        frame.module = protocol.kernel.path;
-        const offset = address -% known.text_address -% @intFromBool(index > 0);
-        frame.function = try lookup.name(arena, known.id, offset);
+    for (stack.kernel, 0..) |address, index| {
+        var frame = Frame{ .address = address, .kernel = true };
+        if (kernel) |known| {
+            frame.module = protocol.kernel.path;
+            const offset = address -% known.text_address -% @intFromBool(index > 0);
+            const named = try lookup.locate(arena, known.id, offset);
+            if (named.len > 0) frame.function = named[named.len - 1].function;
+        }
+        try frames.append(arena, frame);
     }
 
     normalize.user_locate(regions, stack.user, stack.leaf_is_return, locations);
-    const user_frames = frames[stack.kernel.len..];
-    for (stack.user, locations, user_frames) |address, location, *frame| {
-        frame.* = .{ .address = address, .kernel = false };
-        if (!location.mapped()) continue;
-
+    for (stack.user, locations) |address, location| {
+        var frame = Frame{ .address = address, .kernel = false };
+        if (!location.mapped()) {
+            try frames.append(arena, frame);
+            continue;
+        }
         const region = &regions[location.region];
         if (region.path.len > 0) frame.module = region.path;
-        const build_id = region.build_id orelse continue;
-        frame.function = try lookup.name(arena, build_id, location.offset);
+        const build_id = region.build_id orelse {
+            try frames.append(arena, frame);
+            continue;
+        };
+        const named = try lookup.locate(arena, build_id, location.offset);
+        if (named.len == 0) try frames.append(arena, frame);
+        for (named) |part| {
+            var expanded = frame;
+            expanded.function = part.function;
+            expanded.file = part.file;
+            expanded.line = if (part.line > 0) part.line else null;
+            expanded.inlined = part.inlined;
+            try frames.append(arena, expanded);
+        }
     }
-    return .{ .samples = stack.samples, .frames = frames, .complete = stack.complete };
+    return .{ .samples = stack.samples, .frames = frames.items, .complete = stack.complete };
 }
 
 const testing = std.testing;
@@ -84,21 +101,29 @@ const testing = std.testing;
 const Fake = struct {
     asked: u32 = 0,
 
-    pub fn name(
+    pub fn locate(
         fake: *Fake,
         arena: std.mem.Allocator,
         build_id: []const u8,
         offset: u64,
-    ) !?[]const u8 {
+    ) ![]const Named {
         fake.asked += 1;
-        if (!std.mem.eql(u8, build_id, "aa")) return null;
+        if (!std.mem.eql(u8, build_id, "aa")) return &.{};
         return switch (offset) {
-            0x500 => try arena.dupe(u8, "leaf_fn"),
-            0x603 => try arena.dupe(u8, "caller_fn"),
-            else => null,
+            0x500 => try one(arena, "leaf_fn"),
+            0x603 => try arena.dupe(Named, &.{
+                .{ .function = "inlined_fn", .file = "a.c", .line = 7, .inlined = true },
+                .{ .function = "caller_fn", .file = "a.c", .line = 20, .inlined = false },
+            }),
+            else => &.{},
         };
     }
 };
+
+fn one(arena: std.mem.Allocator, function: []const u8) ![]const Named {
+    const named = Named{ .function = function, .file = null, .line = 0, .inlined = false };
+    return arena.dupe(Named, &.{named});
+}
 
 fn region_test(start: u64, end: u64, path: []const u8, id: ?[]const u8) Region {
     return .{
@@ -142,10 +167,15 @@ test "user frames are placed in their region and named, innermost first" {
     try testing.expectEqual(@as(u64, 7), resolved[0].samples);
     try testing.expect(resolved[0].complete);
     const frames = resolved[0].frames;
-    try testing.expectEqual(@as(usize, 2), frames.len);
+    try testing.expectEqual(@as(usize, 3), frames.len);
     try testing.expectEqualStrings("leaf_fn", frames[0].function.?);
-    try testing.expectEqualStrings("caller_fn", frames[1].function.?);
-    try testing.expectEqual(@as(u64, 0x1604), frames[1].address);
+    try testing.expectEqualStrings("inlined_fn", frames[1].function.?);
+    try testing.expect(frames[1].inlined);
+    try testing.expectEqual(@as(?u32, 7), frames[1].line);
+    try testing.expectEqualStrings("caller_fn", frames[2].function.?);
+    try testing.expect(!frames[2].inlined);
+    try testing.expectEqual(@as(?u32, 20), frames[2].line);
+    try testing.expectEqual(@as(u64, 0x1604), frames[2].address);
     try testing.expectEqualStrings("/bin/app", frames[0].module.?);
     try testing.expect(!frames[0].kernel);
 }
@@ -227,16 +257,16 @@ test "kernel frames are named at their distance from _text, with the kernel's id
         asked: [2]u64 = undefined,
         count: usize = 0,
 
-        pub fn name(
+        pub fn locate(
             fake: *@This(),
             names: std.mem.Allocator,
             build_id: []const u8,
             offset: u64,
-        ) !?[]const u8 {
+        ) ![]const Named {
             try testing.expectEqualSlices(u8, fake.id_expected, build_id);
             fake.asked[fake.count] = offset;
             fake.count += 1;
-            return try names.dupe(u8, if (offset < 0x200) "do_syscall_64" else "entry_SYSCALL_64");
+            return one(names, if (offset < 0x200) "do_syscall_64" else "entry_SYSCALL_64");
         }
     };
     var id_buffer: [protocol.kernel.id_bytes_max]u8 = undefined;
