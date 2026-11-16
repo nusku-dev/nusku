@@ -1,5 +1,5 @@
 //! The client: how a program reaches a server.
-
+const server = @import("server");
 const local = @import("local.zig");
 const session = @import("session.zig");
 
@@ -14,6 +14,10 @@ pub const ProfileState = session.ProfileState;
 pub const UserId = session.UserId;
 pub const Started = session.Started;
 pub const Stopped = session.Stopped;
+pub const Delta = session.Delta;
+pub const Profile = server.Profile;
+pub const SymbolStack = server.SymbolStack;
+pub const Frame = server.Frame;
 
 pub const profile = local.profile;
 pub const processes = local.processes;
@@ -24,4 +28,5 @@ pub const stop = local.stop;
 test {
     _ = local;
     _ = session;
+    _ = @import("profile_cache.zig");
 }

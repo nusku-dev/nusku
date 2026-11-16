@@ -4,12 +4,15 @@ const std = @import("std");
 const server_lib = @import("server");
 const protocol = @import("shared").protocol;
 const local = @import("local.zig");
+const profile_cache = @import("profile_cache.zig");
 
 const assert = std.debug.assert;
 const Server = server_lib.Server;
 const Controller = server_lib.Controller;
 const JobId = server_lib.JobId;
 const TargetId = server_lib.TargetId;
+const ProfileCache = profile_cache.ProfileCache;
+pub const Delta = profile_cache.Delta;
 
 pub const Options = struct {
     profiles_max: u32 = 8,
@@ -52,6 +55,7 @@ const Entry = struct {
     failure: ?anyerror = null,
     users: [users_max]UserId = undefined,
     users_count: u32 = 0,
+    cache: ?*ProfileCache = null,
 
     fn open(entry: *const Entry) bool {
         return entry.ended_ms == null;
@@ -111,6 +115,9 @@ pub const Session = struct {
     }
 
     pub fn deinit(session: *Session) void {
+        for (session.entries[0..session.count]) |*entry| {
+            if (entry.cache) |cache| cache.deinit(session.gpa);
+        }
         session.controller.deinit();
         session.server.deinit();
         session.gpa.free(session.entries);
@@ -188,8 +195,7 @@ pub const Session = struct {
         const now_ms = local.monotonic_ms();
         const states = try arena.alloc(ProfileState, entries.len);
         for (entries, states) |*entry, *state| {
-            const names: server_lib.Names = if (entry.open()) .as_they_are else .all_built;
-            const query = server_lib.Query{ .target = entry.target };
+            const query = server_lib.Query{ .target = entry.target, .stacks = false };
             state.* = .{
                 .job = entry.job,
                 .pid = entry.pid,
@@ -198,10 +204,27 @@ pub const Session = struct {
                 .elapsed_ms = (entry.ended_ms orelse now_ms) - entry.started_ms,
                 .reason = entry.reason,
                 .failure = if (entry.failure) |err| @errorName(err) else null,
-                .profile = session.server.profile(arena, query, names) catch null,
+                .profile = session.server.profile(arena, query, .as_they_are) catch null,
             };
         }
         return states;
+    }
+
+    pub fn profile_range(
+        session: *Session,
+        arena: std.mem.Allocator,
+        job: JobId,
+        from_unix_ns: u64,
+        to_unix_ns: u64,
+    ) !server_lib.Profile {
+        assert(from_unix_ns < to_unix_ns);
+        const found = try session.target_of(job);
+        const query = server_lib.Query{
+            .target = found.target,
+            .from_unix_ns = from_unix_ns,
+            .to_unix_ns = to_unix_ns,
+        };
+        return session.server.profile(arena, query, found.names);
     }
 
     pub fn processes(session: *Session, arena: std.mem.Allocator) !?protocol.ProcessFrame {
@@ -248,6 +271,9 @@ pub const Session = struct {
             if (oldest == null or entry.job < entries[oldest.?].job) oldest = index;
         }
         const index = oldest orelse return error.ProfilesFull;
+        if (entries[index].cache) |cache| {
+            if (cache.users == 0) cache.deinit(session.gpa) else cache.orphaned = true;
+        }
         std.mem.copyForwards(Entry, entries[index..], entries[index + 1 ..]);
         session.count -= 1;
     }
@@ -268,10 +294,75 @@ pub const Session = struct {
         const result = std.c.pthread_mutex_unlock(&session.lock);
         assert(result == .SUCCESS);
     }
+
+    /// What changed since the clock `since` (0 for all of it), or null for nothing.
+    pub fn profile_get(
+        session: *Session,
+        arena: std.mem.Allocator,
+        job: JobId,
+        since: u64,
+    ) !?Delta {
+        const found = try session.target_of(job);
+        const counts = server_lib.Query{ .target = found.target, .stacks = false };
+        const summary = try session.server.profile(arena, counts, found.names);
+        const version = version_of(&summary, found.names);
+
+        const cache = try session.cache_take(job);
+        defer session.cache_give(cache);
+        if (cache.unchanged(version, since)) return null;
+        const server = &session.server;
+        return try cache.update(session.gpa, arena, server, found.target, found.names, &summary, version, since);
+    }
+
+    fn cache_take(session: *Session, job: JobId) !*ProfileCache {
+        session.held();
+        defer session.release();
+        const entry = session.find(job) orelse return error.ProfileUnknown;
+        const cache = entry.cache orelse try ProfileCache.create(session.gpa);
+        entry.cache = cache;
+        cache.users += 1;
+        return cache;
+    }
+
+    fn cache_give(session: *Session, cache: *ProfileCache) void {
+        session.held();
+        defer session.release();
+        cache.users -= 1;
+        if (cache.orphaned and cache.users == 0) cache.deinit(session.gpa);
+    }
+
+    const Found = struct { target: TargetId, names: server_lib.Names };
+
+    fn target_of(session: *Session, job: JobId) !Found {
+        session.held();
+        defer session.release();
+        session.reap();
+        const entry = session.find(job) orelse return error.ProfileUnknown;
+        const names: server_lib.Names = if (entry.open()) .as_they_are else .all_built;
+        return .{ .target = entry.target, .names = names };
+    }
 };
 
 const testing = std.testing;
 const cpu = std.EnumSet(protocol.Metric).initOne(.cpu);
+
+fn version_of(profile: *const server_lib.Profile, names: server_lib.Names) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    const last: u64 = if (profile.windows.len > 0)
+        profile.windows[profile.windows.len - 1].start_unix_ns
+    else
+        0;
+    const parts = [_]u64{
+        profile.windows.len,
+        last,
+        profile.samples,
+        profile.samples_lost,
+        profile.names_generation,
+        @intFromEnum(names),
+    };
+    hasher.update(std.mem.sliceAsBytes(&parts));
+    return (hasher.final() & ((1 << 53) - 1)) | 1;
+}
 
 fn session_test() !*Session {
     const session = try testing.allocator.create(Session);
@@ -346,6 +437,24 @@ test "two processes profiled at once, each stopped on its own (root)" {
     try testing.expectEqual(first.job, states[0].job);
     try testing.expect(!states[0].running);
     try testing.expect(states[0].profile.?.samples > 0);
+    try testing.expectEqual(@as(usize, 0), states[0].profile.?.stacks.len);
+    const whole = (try session.profile_get(arena.allocator(), first.job, 0)).?;
+    try testing.expect(whole.full);
+    try testing.expect(whole.profile.stacks.len > 0);
+    try testing.expectEqual(states[0].profile.?.samples, whole.profile.samples);
+    const unchanged = try session.profile_get(arena.allocator(), first.job, whole.clock);
+    try testing.expect(unchanged == null);
+    const windows = states[0].profile.?.windows;
+    try testing.expect(windows.len > 0);
+    const last = windows[windows.len - 1];
+    const tail = try session.profile_range(
+        arena.allocator(),
+        first.job,
+        last.start_unix_ns + last.duration_ns / 2,
+        last.start_unix_ns + last.duration_ns / 2 + 1,
+    );
+    try testing.expectEqual(@as(usize, 1), tail.windows.len);
+    try testing.expectEqual(last.samples, tail.samples);
     try testing.expectEqual(second.job, states[1].job);
     try testing.expect(states[1].running);
 
@@ -411,6 +520,100 @@ test "a user that leaves gives up its share of every profile (root)" {
         try testing.expect(!state.running);
         try testing.expectEqual(@as(?protocol.RunStop, .cancelled), state.reason);
     }
+}
+
+test "a live profile kept one report at a time equals one built whole (root)" {
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    const session = try testing.allocator.create(Session);
+    defer testing.allocator.destroy(session);
+    try session.init(testing.allocator, .{ .profiles_max = 1, .windows_per_profile = 4 });
+    defer session.deinit();
+    const own: u32 = @intCast(std.os.linux.getpid());
+    const options = local.Options{
+        .pid = own,
+        .metrics = cpu,
+        .interval_ms = 100,
+        .duration_s = 0,
+    };
+    const started = try session.profile_start(options, 1);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var held = std.AutoHashMap(u32, server_lib.SymbolStack).init(testing.allocator);
+    defer held.deinit();
+    var clock: u64 = 0;
+    var answers: u32 = 0;
+    var partial: u32 = 0;
+    for (0..12) |_| {
+        burn_ms(150);
+        _ = arena.reset(.retain_capacity);
+        const asked = try session.profile_get(arena.allocator(), started.job, clock);
+        const got = asked orelse continue;
+        try delta_apply(&held, got);
+        clock = got.clock;
+        answers += 1;
+        partial += @intFromBool(!got.full);
+    }
+    try testing.expect(answers >= 6);
+    try testing.expect(partial >= 4);
+    _ = try session.profile_stop(started.job, 1);
+
+    _ = arena.reset(.retain_capacity);
+    const last = (try session.profile_get(arena.allocator(), started.job, clock)).?;
+    try delta_apply(&held, last);
+    var kept_list: std.ArrayList(server_lib.SymbolStack) = .empty;
+    defer kept_list.deinit(testing.allocator);
+    var values = held.valueIterator();
+    while (values.next()) |stack| try kept_list.append(testing.allocator, stack.*);
+    const kept = server_lib.Profile{
+        .sample_hz = last.profile.sample_hz,
+        .samples = last.profile.samples,
+        .samples_lost = 0,
+        .windows_rejected = 0,
+        .stacks = kept_list.items,
+    };
+    const found = try session.target_of(started.job);
+    const query = server_lib.Query{ .target = found.target };
+    const whole = try session.server.profile(arena.allocator(), query, found.names);
+    try testing.expect(whole.windows.len <= 4);
+    try testing.expectEqual(whole.samples, kept.samples);
+    try testing.expectEqual(whole.stacks.len, kept.stacks.len);
+    var sum: u64 = 0;
+    for (kept.stacks) |stack| sum += stack.samples;
+    try testing.expectEqual(whole.samples, sum);
+    for (whole.stacks) |stack| {
+        const match = for (kept.stacks) |other| {
+            if (stack_same(stack, other)) break other;
+        } else return error.StackMissing;
+        try testing.expectEqual(stack.samples, match.samples);
+    }
+}
+
+fn delta_apply(held: *std.AutoHashMap(u32, server_lib.SymbolStack), delta: Delta) !void {
+    if (delta.full) held.clearRetainingCapacity();
+    for (delta.ids, delta.profile.stacks) |id, stack| {
+        if (stack.samples == 0) {
+            _ = held.remove(id);
+        } else {
+            try held.put(id, stack);
+        }
+    }
+}
+
+fn stack_same(a: server_lib.SymbolStack, b: server_lib.SymbolStack) bool {
+    if (a.complete != b.complete or a.frames.len != b.frames.len) return false;
+    for (a.frames, b.frames) |x, y| {
+        if (x.kernel != y.kernel or x.inlined != y.inlined) return false;
+        if (!text_same(x.function, y.function) or !text_same(x.module, y.module)) return false;
+        if (!text_same(x.file, y.file) or (x.line orelse 0) != (y.line orelse 0)) return false;
+        if (x.function == null and x.address != y.address) return false;
+    }
+    return true;
+}
+
+fn text_same(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return std.mem.eql(u8, a.?, b.?);
 }
 
 fn burn_ms(ms: u64) void {

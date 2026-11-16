@@ -60,6 +60,9 @@ pub fn build(b: *std.Build) void {
     });
     const client_tests = b.addTest(.{ .root_module = client_mod });
     test_step.dependOn(&b.addRunArtifact(client_tests).step);
+    test_step.dependOn(&b.addInstallArtifact(client_tests, .{
+        .dest_sub_path = "client-tests",
+    }).step);
 
     const exe = b.addExecutable(.{
         .name = "nusku",

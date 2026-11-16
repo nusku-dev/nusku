@@ -15,6 +15,7 @@ pub const Query = struct {
     target: TargetId,
     from_unix_ns: u64 = 0,
     to_unix_ns: u64 = std.math.maxInt(u64),
+    stacks: bool = true,
 };
 
 pub const Options = struct {
@@ -97,7 +98,7 @@ pub const Windows = struct {
             age -= 1;
             const window = ring.window_get(age);
             if (!overlaps(window, query)) continue;
-            copied[filled] = try window.clone(arena);
+            copied[filled] = if (query.stacks) try window.clone(arena) else counts_of(window);
             filled += 1;
         }
         assert(filled == count);
@@ -116,6 +117,14 @@ pub const Windows = struct {
 fn overlaps(window: *const Message, query: Query) bool {
     const end_unix_ns = window.start_unix_ns +| window.duration_ns;
     return window.start_unix_ns < query.to_unix_ns and end_unix_ns > query.from_unix_ns;
+}
+
+fn counts_of(window: *const Message) Message {
+    var counts = window.*;
+    counts.regions = &.{};
+    counts.stacks = &.{};
+    counts.kernel = .{};
+    return counts;
 }
 
 const testing = std.testing;

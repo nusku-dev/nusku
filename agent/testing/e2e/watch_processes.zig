@@ -138,9 +138,6 @@ test "the watch sees what known children do, and one that ends" {
     try testing.expect(seen.threads_ok);
     try testing.expect(seen.commands_ok);
 
-    std.debug.print("watch e2e: {d} frames, burn {d:.1}%, sleep {d:.1}%\n", .{
-        seen.frames, burn.cpu_percent.?, sleep.cpu_percent.?,
-    });
     try testing.expect(burn.cpu_percent.? > 50 and burn.cpu_percent.? < 130);
     try testing.expect(sleep.cpu_percent.? < 5);
 
@@ -169,10 +166,6 @@ fn machine_check(seen: *const Seen, burn_cpu_percent: f32) !void {
     try testing.expectEqual(try std.Thread.getCpuCount(), machine.cpus);
     const cpu = machine.cpu.?;
     const cpus: f32 = @floatFromInt(machine.cpus);
-    std.debug.print("watch e2e: machine {d:.1}% of {d} CPUs ({d:.0}% of one), " ++
-        "processes sum {d:.0}%\n", .{
-        cpu.busy_percent, machine.cpus, cpu.busy_percent * cpus, seen.processes_cpu_percent,
-    });
 
     const states = cpu.user_percent + cpu.system_percent + cpu.irq_percent + cpu.steal_percent;
     try testing.expectApproxEqAbs(cpu.busy_percent, states, 0.1);

@@ -24,12 +24,21 @@ pub const SymbolStack = struct {
     complete: bool,
 };
 
+pub const Window = struct {
+    start_unix_ns: u64,
+    duration_ns: u64,
+    samples: u64,
+    samples_lost: u64,
+};
+
 pub const Profile = struct {
     sample_hz: u32,
     samples: u64,
     samples_lost: u64,
     windows_rejected: u64,
     stacks: []const SymbolStack,
+    windows: []const Window = &.{},
+    names_generation: u64 = 0,
 };
 
 pub fn profile(
@@ -39,7 +48,10 @@ pub fn profile(
 ) !Profile {
     var stacks_count: usize = 0;
     for (copied.windows) |window| stacks_count += window.stacks.len;
+    const names_generation = symbols.stats().generation;
     const stacks = try arena.alloc(SymbolStack, stacks_count);
+
+    const windows = try arena.alloc(Window, copied.windows.len);
 
     const lookup = try arena.create(Lookup);
     lookup.* = .{ .symbols = symbols };
@@ -49,9 +61,17 @@ pub fn profile(
         .samples_lost = 0,
         .windows_rejected = copied.rejected,
         .stacks = &.{},
+        .windows = windows,
+        .names_generation = names_generation,
     };
     var filled: usize = 0;
-    for (copied.windows) |*window| {
+    for (copied.windows, windows) |*window, *summary| {
+        summary.* = .{
+            .start_unix_ns = window.start_unix_ns,
+            .duration_ns = window.duration_ns,
+            .samples = window.samples,
+            .samples_lost = window.samples_lost,
+        };
         const resolved = try resolve.window_resolve(arena, lookup, window);
         @memcpy(stacks[filled..][0..resolved.len], resolved);
         filled += resolved.len;
