@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 import "./style.css";
 import App from "./App.tsx";
 import { MachineProvider } from "@/components/machine-provider";
+import { ProfilesProvider } from "@/components/profiles-provider";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -14,7 +15,9 @@ createRoot(document.getElementById("root")!).render(
       disableTransitionOnChange
     >
       <MachineProvider>
-        <App />
+        <ProfilesProvider>
+          <App />
+        </ProfilesProvider>
       </MachineProvider>
     </ThemeProvider>
   </StrictMode>,

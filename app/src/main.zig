@@ -17,15 +17,29 @@ pub fn main() !void {
 
     if (build_options.dev) {
         try window.setPort(build_options.dev_port);
-        try window.show(vite_url);
     } else {
         window.setFileHandler(static.serve);
-        try window.show("index.html");
     }
+
+    try open(window);
 
     webui.wait();
     webui.clean();
     api.deinit();
+}
+
+const show_tries = 3;
+
+fn open(window: webui) !void {
+    const content: [:0]const u8 = if (build_options.dev) vite_url else "index.html";
+    for (0..show_tries) |_| {
+        window.show(content) catch continue;
+        return;
+    }
+    const served = try window.startServer(content);
+    const url = if (build_options.dev) vite_url else served;
+    std.debug.print("nusku-app: no window opened; open {s} in a browser\n", .{url});
+    webui.setTimeout(0);
 }
 
 test {

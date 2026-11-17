@@ -9,6 +9,8 @@ pub fn bind(window: webui) !void {
     _ = try window.binding("profile_start", profile.start);
     _ = try window.binding("profile_stop", profile.stop);
     _ = try window.binding("profile_stream", profile.stream);
+    _ = try window.binding("profile_range", profile.range);
+    _ = try window.binding("profile_get", profile.get);
     _ = try window.bind("", profile.left);
 }
 
@@ -19,4 +21,6 @@ pub fn deinit() void {
 test {
     _ = processes;
     _ = profile;
+    _ = @import("json.zig");
+    _ = @import("compact.zig");
 }
