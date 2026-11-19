@@ -8,6 +8,7 @@ pub fn bind(window: webui) !void {
     _ = try window.binding("get_processes", processes.get);
     _ = try window.binding("profile_start", profile.start);
     _ = try window.binding("profile_stop", profile.stop);
+    _ = try window.binding("profile_launch", profile.launch);
     _ = try window.binding("profile_stream", profile.stream);
     _ = try window.binding("profile_range", profile.range);
     _ = try window.binding("profile_get", profile.get);

@@ -91,6 +91,15 @@ export interface StartRequest {
   duration_s: number;
 }
 
+export interface LaunchRequest {
+  exec: string;
+  args: string[];
+  metrics: string;
+  interval_ms: number;
+  duration_s: number;
+  end_program: boolean;
+}
+
 const listeners = new Set<(connected: boolean) => void>();
 let connected = false;
 let listening = false;
@@ -146,6 +155,11 @@ export const backend = {
   profileStart: (request: StartRequest) =>
     call<{ job: number; pid: number; joined: boolean }>(
       "profile_start",
+      JSON.stringify(request),
+    ),
+  profileLaunch: (request: LaunchRequest) =>
+    call<{ job: number; joined: boolean }>(
+      "profile_launch",
       JSON.stringify(request),
     ),
   profileStop: (job: number) =>

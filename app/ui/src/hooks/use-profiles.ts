@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   backend,
+  type LaunchRequest,
   type ProfileStateWire,
   type StartRequest,
 } from "@/lib/backend";
@@ -23,6 +24,7 @@ export interface ProfilesState {
   error: Error | undefined;
   loading: boolean;
   start: (request: StartRequest) => Promise<number>;
+  launch: (request: LaunchRequest) => Promise<number>;
   stop: (job: number) => Promise<void>;
 }
 
@@ -132,11 +134,27 @@ export function useProfilesPolling(): ProfilesState {
     setTick((t) => t + 1);
   };
 
+  const launch = async (request: LaunchRequest) => {
+    const started = await backend.profileLaunch(request);
+    memory.current.set(started.job, {
+      named: true,
+      name: request.exec.slice(request.exec.lastIndexOf("/") + 1),
+      command: [request.exec, ...request.args].join(" "),
+      startedAt: Date.now(),
+      built: "",
+      windows: noWindows,
+    });
+    setMine((last) => new Set(last).add(started.job));
+    setTick((t) => t + 1);
+    return started.job;
+  };
+
   return {
     sessions,
     error: polled.error,
     loading: !polled.list && !polled.error,
     start,
+    launch,
     stop,
   };
 }

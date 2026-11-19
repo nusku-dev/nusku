@@ -11,7 +11,8 @@ const term = @import("../term/term.zig");
 const view = @import("../view/view.zig").profile;
 
 const slog = log.scope("prof");
-const Metric = @import("shared").protocol.Metric;
+const protocol = @import("shared").protocol;
+const Metric = protocol.Metric;
 
 pub const cmd: cli.Command = .{
     .name = "prof",
@@ -94,24 +95,17 @@ fn run(ctx: *cli.Context) anyerror!void {
     const settings = try settings_read(ctx);
     interrupt.arm();
 
-    // SIGCONT first: a stopped process never acts on the SIGTERM of `kill`.
-    var child: ?std.process.Child = null;
-    defer if (child) |*launched| {
-        _ = std.os.linux.kill(launched.id.?, std.os.linux.SIG.CONT);
-        launched.kill(ctx.io);
-    };
-    const target: u32 = settings.pid orelse target: {
-        child = try launch(ctx, ctx.getString("exec"), ctx.args);
-        break :target @intCast(child.?.id.?);
-    };
+    const program: ?protocol.Program = if (settings.pid == null) .{
+        .argv = try argv_of(ctx, ctx.getString("exec"), ctx.args),
+    } else null;
     var name_buffer: [64]u8 = undefined;
-    const name = if (child != null)
+    const name = if (program != null)
         std.fs.path.basename(ctx.getString("exec"))
     else
-        process_name(target, &name_buffer);
+        process_name(settings.pid.?, &name_buffer);
 
     const terminal = std.Io.File.stdout().isTty(ctx.io) catch false;
-    var live = Live{ .ctx = ctx, .pid = target, .name = name, .options = settings.view };
+    var live = Live{ .ctx = ctx, .name = name, .options = settings.view };
     defer live.arena.deinit();
     const watcher: ?client.Live = if (terminal and !settings.no_live)
         live.watcher(settings.interval_ms)
@@ -119,16 +113,22 @@ fn run(ctx: *cli.Context) anyerror!void {
         null;
 
     const result = client.profile(std.heap.smp_allocator, ctx.allocator, .{
-        .pid = target,
+        .pid = settings.pid,
+        .program = program,
         .metrics = settings.metrics,
         .interval_ms = settings.interval_ms,
         .duration_s = settings.duration_s,
-        .continue_target = child != null,
     }, watcher) catch |err| {
         try term.lines_erase(ctx.stdout, live.lines);
         const advice = hint(err);
+        if (program) |launched| return ctx.fail("cannot profile {s}: {t}{s}{s}", .{
+            launched.argv[0],
+            err,
+            if (advice.len > 0) ": " else "",
+            advice,
+        });
         return ctx.fail("profiling pid {d} failed: {t}{s}{s}", .{
-            target,
+            settings.pid.?,
             err,
             if (advice.len > 0) ": " else "",
             advice,
@@ -138,7 +138,7 @@ fn run(ctx: *cli.Context) anyerror!void {
     if (settings.folded) |path| try folded_save(ctx, path, &result.profile);
     try term.lines_erase(ctx.stdout, live.lines);
     try view.write(ctx.stdout, ctx.allocator, &result.profile, .{
-        .pid = target,
+        .pid = result.pid,
         .name = name,
         .elapsed_ms = result.elapsed_ms,
         .reason = result.reason,
@@ -148,7 +148,6 @@ fn run(ctx: *cli.Context) anyerror!void {
 
 const Live = struct {
     ctx: *cli.Context,
-    pid: u32,
     name: ?[]const u8,
     options: view.Options,
     lines: usize = 0,
@@ -158,11 +157,16 @@ const Live = struct {
         return .{ .context = live, .every_ms = every_ms, .show = show };
     }
 
-    fn show(context: *anyopaque, profile: *const server.Profile, elapsed_ms: u64) void {
+    fn show(
+        context: *anyopaque,
+        profile: *const server.Profile,
+        pid: u32,
+        elapsed_ms: u64,
+    ) void {
         const live: *Live = @ptrCast(@alignCast(context));
         _ = live.arena.reset(.retain_capacity);
         const summary = view.Summary{
-            .pid = live.pid,
+            .pid = pid,
             .name = live.name,
             .elapsed_ms = elapsed_ms,
             .reason = null,
@@ -262,24 +266,20 @@ fn metrics_read(ctx: *cli.Context) error{InvalidUsage}!std.EnumSet(Metric) {
     return set;
 }
 
-fn launch(ctx: *cli.Context, exec: []const u8, args: []const []const u8) !std.process.Child {
+fn argv_of(ctx: *cli.Context, exec: []const u8, args: []const []const u8) ![]const []const u8 {
     const argv = try ctx.allocator.alloc([]const u8, args.len + 1);
     argv[0] = exec;
     @memcpy(argv[1..], args);
-
-    const child = std.process.spawn(ctx.io, .{ .argv = argv }) catch |err| {
-        return ctx.fail("cannot launch {s}: {t}", .{ exec, err });
-    };
-    const linux = std.os.linux;
-    _ = linux.kill(child.id.?, linux.SIG.STOP);
-    slog.info("process launched", .{ .exec = exec, .args = args.len, .pid = child.id.? });
-    return child;
+    return argv;
 }
 
 fn hint(err: anyerror) []const u8 {
     return switch (err) {
         error.PermissionDenied => "run as root, or grant CAP_BPF, CAP_PERFMON and CAP_SYSLOG",
         error.ProcessNotFound => "no process with that pid",
+        error.ProgramNotFound => "no such program: give its path, or a name on PATH",
+        error.NotExecutable => "the file isn't a program this machine can run",
+        error.ExitedAtOnce => "the program ended before profiling could start",
         error.NotSupported => "the kernel is too old for nusku: it needs Linux 5.3 or newer",
         error.MetricNotImplemented => "only the cpu metric exists so far",
         else => "",

@@ -19,10 +19,33 @@ const Range = struct {
     to_ms: u64,
 };
 
+const Launch = struct {
+    exec: []const u8,
+    args: []const []const u8 = &.{},
+    metrics: []const u8 = "cpu",
+    interval_ms: u32 = 1000,
+    duration_s: u32 = 0,
+    end_program: bool = true,
+};
+
 const Get = struct {
     job: u64,
     since: u64 = 0,
 };
+
+pub fn launch(event: webui.Event) void {
+    var e = event;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const text = e.getString();
+    const answer = launch_json(&session.current, arena, text, e.client_id) catch |err| {
+        e.returnString(json.from_error(arena, err));
+        return;
+    };
+    e.returnString(answer);
+}
 
 pub fn start(event: webui.Event) void {
     var e = event;
@@ -111,7 +134,7 @@ fn start_json(
 ) ![:0]const u8 {
     const options = try options_read(arena, text);
     const started = try s.profile_start(options, user);
-    return json.of(arena, .{ .job = started.job, .pid = options.pid, .joined = started.joined });
+    return json.of(arena, .{ .job = started.job, .pid = started.pid, .joined = started.joined });
 }
 
 fn stop_json(
@@ -164,7 +187,7 @@ fn metrics_read(text: []const u8) !std.EnumSet(protocol.Metric) {
     return metrics;
 }
 
-fn settings_read(pid: u32, metrics: []const u8, interval_ms: u32, duration_s: u32) !client.ProfileOptions {
+fn settings_read(pid: ?u32, metrics: []const u8, interval_ms: u32, duration_s: u32) !client.ProfileOptions {
     if (interval_ms < 10 or interval_ms > std.time.ms_per_hour) return error.InvalidInterval;
     return .{
         .pid = pid,
@@ -172,6 +195,25 @@ fn settings_read(pid: u32, metrics: []const u8, interval_ms: u32, duration_s: u3
         .interval_ms = interval_ms,
         .duration_s = duration_s,
     };
+}
+
+fn launch_json(
+    s: *client.Session,
+    arena: std.mem.Allocator,
+    text: []const u8,
+    user: client.UserId,
+) ![:0]const u8 {
+    const request = std.json.parseFromSliceLeaky(Launch, arena, text, .{}) catch {
+        return error.InvalidRequest;
+    };
+    if (request.exec.len == 0) return error.ProgramNotFound;
+    var options = try settings_read(null, request.metrics, request.interval_ms, request.duration_s);
+    const argv = try arena.alloc([]const u8, request.args.len + 1);
+    argv[0] = request.exec;
+    @memcpy(argv[1..], request.args);
+    options.program = .{ .argv = argv, .keep_running = !request.end_program };
+    const started = try s.profile_start(options, user);
+    return json.of(arena, .{ .job = started.job, .pid = started.pid, .joined = false });
 }
 
 const testing = std.testing;
@@ -188,7 +230,7 @@ test "a request becomes profile options" {
     const options = try options_read(arena.allocator(),
         \\{"pid":42,"metrics":"cpu, offcpu","interval_ms":100}
     );
-    try testing.expectEqual(@as(u32, 42), options.pid);
+    try testing.expectEqual(@as(?u32, 42), options.pid);
     try testing.expectEqual(@as(u32, 100), options.interval_ms);
     try testing.expectEqual(@as(u32, 0), options.duration_s);
     try testing.expect(options.metrics.contains(.cpu));
@@ -228,6 +270,11 @@ test "stream, stop and start answer the UI through one session" {
     const unknown = "{\"job\":9,\"from_ms\":1,\"to_ms\":5}";
     try testing.expectError(error.ProfileUnknown, range_json(s, a, unknown));
     try testing.expectError(error.InvalidRequest, range_json(s, a, "nope"));
+    const missing = "{\"exec\":\"no-such-program-nusku\"}";
+    try testing.expectError(error.ProgramNotFound, launch_json(s, a, missing, 1));
+    try testing.expectError(error.InvalidRequest, launch_json(s, a, "{}", 1));
+    const slow = "{\"exec\":\"sleep\",\"interval_ms\":1}";
+    try testing.expectError(error.InvalidInterval, launch_json(s, a, slow, 1));
     try testing.expectError(error.ProfileUnknown, get_json(s, a, "{\"job\":9}"));
     try testing.expectError(error.InvalidRequest, get_json(s, a, "{}"));
 

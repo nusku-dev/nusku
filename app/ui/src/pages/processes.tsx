@@ -1,7 +1,10 @@
 import { useMemo, useState } from "react";
 import { ArrowDown, Play, Rocket, Search } from "lucide-react";
 import { cn } from "cn";
-import { StartProfileDialog } from "@/components/start-profile-dialog";
+import {
+  StartProfileDialog,
+  type Target,
+} from "@/components/start-profile-dialog";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { MachinePanel } from "@/components/machine-panel";
 import { Button } from "@/components/ui/button";
@@ -22,7 +25,7 @@ export function ProcessesPage() {
   const now = useNow(5000);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("cpuPercent");
-  const [picked, setPicked] = useState<ProcessInfo | null>(null);
+  const [picked, setPicked] = useState<Target | null>(null);
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -76,20 +79,18 @@ export function ProcessesPage() {
                 className="h-8 pl-8 text-xs"
               />
             </div>
-            <Button>
+            <Button onClick={() => setPicked({ kind: "exec" })}>
               <Rocket /> Launch program
             </Button>
           </>
         }
       />
-
       {machine && <MachinePanel machine={machine} />}
       {error && (
         <p className="border-b px-6 py-2 text-sm text-destructive">
           Cannot reach the backend: {error.message}
         </p>
       )}
-
       <div ref={scroller} className="min-h-0 flex-1 overflow-auto">
         <table className="w-full table-fixed border-collapse text-sm">
           <thead className="sticky top-0 z-10 bg-background text-xs text-muted-foreground">
@@ -127,7 +128,7 @@ export function ProcessesPage() {
                 key={p.pid}
                 process={p}
                 now={now}
-                onProfile={setPicked}
+                onProfile={(process) => setPicked({ kind: "pid", process })}
               />
             ))}
             {visible.after > 0 && <tr style={{ height: visible.after }} />}
@@ -139,7 +140,7 @@ export function ProcessesPage() {
           </p>
         )}
       </div>
-      <StartProfileDialog process={picked} onClose={() => setPicked(null)} />
+      <StartProfileDialog target={picked} onClose={() => setPicked(null)} />
     </>
   );
 }

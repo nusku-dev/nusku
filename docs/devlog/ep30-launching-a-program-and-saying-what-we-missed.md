@@ -1,12 +1,12 @@
 ---
-date: 2026-11-12
+date: 2026-11-19
 ---
 
 # Ep30: Launching a Program, and Saying What We Missed
 
-*Two features that make a profile something you can act on. Launching: profile a program from
+_Two features that make a profile something you can act on. Launching: profile a program from
 its first instruction instead of racing to attach. Quality: a profile that tells you where it
-is blind, instead of letting you trust a picture with holes in it.*
+is blind, instead of letting you trust a picture with holes in it._
 
 1. [Attaching is too late](#1-attaching-is-too-late)
 2. [Starting a program stopped](#2-starting-a-program-stopped)
@@ -24,15 +24,40 @@ The answer is to start it ourselves, stopped, attach, and only then let it run.
 
 ## 2. Starting a program stopped
 
-`client/launch.zig` starts a program in five steps:
+Launching belongs to the **agent**, next to attaching: it is the agent that has to be ready
+before the program runs, and the agent is what runs on the machine being profiled. A run
+takes a pid to attach to, or a program to start, never both:
+
+```zig
+pub const Options = struct {
+    pid: ?u32 = null,
+    program: ?protocol.Program = null, // argv, and keep_running
+    ...
+};
+```
+
+`Run.init` with a program does it in this order:
+
+1. `os.launch.launch` starts the program, held stopped before its first instruction;
+2. the target, the BPF programs and the symbols are set up on its pid, exactly as for an
+   attached process;
+3. `os.launch.release` lets it run, as the very last step of `init`.
+
+So nothing it does is missed, and nothing outside the agent ever signals it. The pid is then
+`run.pid`: the server's controller feeds the server under it, and hands it back to the
+client in `Started`, which is how the CLI and the app know which process they're showing.
+
+`agent/os/launch.zig` starts a program in five steps:
 
 ```
 parent                                   child
 ──────                                   ─────
 pipe2(CLOEXEC)
 fork() ───────────────────────────────▶  setsid()
+                                         every signal back to its default
                                          clear the signal mask
                                          stdin, stdout, stderr → /dev/null
+                                         every other file: close on exec
                                          execve(path, argv, environ)
                                            ├─ ok: the pipe closes by itself (CLOEXEC)
                                            └─ fails: write errno to the pipe, exit(127)
@@ -47,40 +72,50 @@ Things worth knowing about it:
 
 - **The close-on-exec pipe** is the standard trick to tell "exec failed" from "the program
   started": a successful `execve` closes the write end, a failed one writes `errno` through
-  it. That is how `nusku prof --exec no-such-program` can say *no such program* instead of a
+  it. That is how `nusku prof --exec no-such-program` can say _no such program_ instead of a
   profile of a process that died at once.
 - **Only async-signal-safe calls after `fork`.** The child runs raw syscalls and nothing that
   allocates or locks: the parent has threads, and a lock held by one of them at the moment of
   `fork` would never be released in the child.
+- **The program holds none of the profiler's files.** The agent has BPF maps, perf events
+  and, in `nusku-web`, sockets open. `close_range(3, ~0, CLOSE_RANGE_CLOEXEC)` marks them all
+  close-on-exec, so the program starts with only its three standard files. Marked rather than
+  closed, so a failed `execve` can still report through the pipe.
+- **Every signal starts at its default.** A signal ignored by the profiler (SIGPIPE, for one)
+  would otherwise stay ignored across `execve`, and the program would behave differently than
+  from a shell.
 - **`setsid`** puts the program in its own session, so a Ctrl-C in your terminal goes to Nusku,
   not to a program you asked to keep running.
 - **The program reads nothing and writes nowhere.** A profiled program printing into the app's
   terminal, or the CLI's live view, would garble it.
-- `PATH` is searched for a name without a slash, as a shell would.
-
-Then the profile starts on that pid with `continue_target`: once the agent is attached, the
-session sends `SIGCONT`, and the very first instructions of the program are sampled.
+- **Limits on what comes in:** at most 4096 arguments of 128 KiB each, and a path under
+  4096 bytes. `PATH` is searched for a name without a slash, as a shell would.
+- **Nothing is left behind on failure.** If anything after the launch fails (no rights to
+  load BPF, say), the program, which never ran, is killed and reaped before the error is
+  returned.
 
 ## 3. Ending it, or not
 
 When its profiling ends, a launched program is either **ended** or **kept running**, the
-caller's choice (`end_program` in the session, "Stop the program" / "Leave it running" in the
-app, `--keep-running` in the CLI).
+caller's choice (`keep_running` in the program, "Stop the program" / "Leave it running" in
+the app).
 
-Ending is `SIGCONT` then `SIGTERM`: a stopped process acts on no signal but `SIGKILL`, so it
-has to be woken first to receive the polite one.
+The run ends it when it stops, unless the program exited first. Ending is `SIGCONT` then
+`SIGTERM`: a stopped process acts on no signal but `SIGKILL`, so it has to be woken first to
+receive the polite one.
 
-The session is the parent of every program it launched, so it must **reap** them or they stay
-as zombies. It keeps their pids and collects the ones that ended with a non-blocking
-`waitpid` whenever it looks at its profiles, and once more when it shuts down.
+The process the agent runs in is the parent of every program it launched, so they must be
+**reaped** or they stay as zombies. A run can't do it: a kept program outlives it. So the
+server's controller, which lives as long as the process, keeps their pids and collects the
+ones that ended with a non-blocking `waitpid` whenever it starts a job or is asked about one,
+and once more when it shuts down.
 
 ## 4. Never touching an attached process
 
 A process you attached to by pid is never signalled, never stopped, never ended. Stopping a
-profile detaches the eBPF programs and nothing else. This was a bug at first: the first
-version of stop in the session killed what it had started, and attached and launched
-processes went through the same path. They are now told apart by `launched`, and the session
-test checks both.
+profile detaches the eBPF programs and nothing else. A run only ever signals the pid it got
+back from its own launch, and only when it was given a program: an attached pid goes down a
+path with no signal in it at all. The agent's tests check both.
 
 ## 5. In the app
 
@@ -101,11 +136,11 @@ copied into a script.
 A flame graph looks equally sure of itself whether it saw everything or half. Three things
 make a profile wrong without making it look wrong:
 
-| Problem | What you would see | What it really means |
-|---|---|---|
+| Problem              | What you would see                               | What it really means                                         |
+| -------------------- | ------------------------------------------------ | ------------------------------------------------------------ |
 | **Cut-short stacks** | A function with no callers, floating at the root | The unwinder stopped: the time is real, the call path is not |
-| **Unnamed code** | Gray `[libfoo.so]` boxes | The time is real, but you cannot tell where |
-| **Lost samples** | Nothing | The kernel dropped samples: everything is a bit off |
+| **Unnamed code**     | Gray `[libfoo.so]` boxes                         | The time is real, but you cannot tell where                  |
+| **Lost samples**     | Nothing                                          | The kernel dropped samples: everything is a bit off          |
 
 So every profile now carries a **quality** summary, computed alongside it (in the page's
 engine it is updated incrementally, like everything else, Ep27):
@@ -137,7 +172,7 @@ there is no debug package to install for it.
 ## 7. What is left
 
 - **The program's output.** It goes to `/dev/null` today. Keeping the last few kilobytes and
-  showing them when a program exits at once would explain *why* it exited.
+  showing them when a program exits at once would explain _why_ it exited.
 - **An environment and a working directory** for the launched program, in the dialog.
 - **Running as another user.** Under `sudo`, a launched program runs as root. Dropping to the
   invoking user would be safer.

@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -31,6 +32,13 @@ const intervals = [
   { value: "2000", label: "Every 2 seconds" },
 ];
 
+const endings = [
+  { value: "stop", label: "Stop the program" },
+  { value: "keep", label: "Leave it running" },
+];
+
+export type Target = { kind: "pid"; process: ProcessInfo } | { kind: "exec" };
+
 const durations = [
   { value: "0", label: "Until I stop it" },
   { value: "10", label: "10 seconds" },
@@ -40,17 +48,21 @@ const durations = [
 ];
 
 export function StartProfileDialog({
-  process,
+  target,
   onClose,
 }: {
-  process: ProcessInfo | null;
+  target: Target | null;
   onClose: () => void;
 }) {
   return (
-    <Dialog open={process !== null} onOpenChange={(open) => !open && onClose()}>
+    <Dialog open={target !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="gap-5 sm:max-w-xl">
-        {process && (
-          <StartForm key={process.pid} process={process} onClose={onClose} />
+        {target && (
+          <StartForm
+            key={target.kind === "pid" ? target.process.pid : "exec"}
+            target={target}
+            onClose={onClose}
+          />
         )}
       </DialogContent>
     </Dialog>
@@ -58,21 +70,27 @@ export function StartProfileDialog({
 }
 
 function StartForm({
-  process,
+  target,
   onClose,
 }: {
-  process: ProcessInfo;
+  target: Target;
   onClose: () => void;
 }) {
-  const { start, sessions } = useProfiles();
+  const { start, launch, sessions } = useProfiles();
   const route = useRoute();
   const [chosen, setChosen] = useState<string[]>(["cpu"]);
   const [interval, setIntervalMs] = useState("1000");
   const [duration, setDuration] = useState("0");
+  const [exec, setExec] = useState("");
+  const [args, setArgs] = useState("");
+  const [ending, setEnding] = useState("stop");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const running = sessions.find((s) => s.pid === process.pid && s.running);
-  const ready = chosen.length > 0;
+  const process = target.kind === "pid" ? target.process : null;
+  const running = process
+    ? sessions.find((s) => s.pid === process.pid && s.running)
+    : undefined;
+  const ready = chosen.length > 0 && (process !== null || exec.trim() !== "");
 
   const toggle = (id: string) =>
     setChosen((prev) =>
@@ -87,7 +105,15 @@ function StartForm({
       interval_ms: Number(interval),
       duration_s: Number(duration),
     };
-    start({ pid: process.pid, ...settings })
+    const started = process
+      ? start({ pid: process.pid, ...settings })
+      : launch({
+          exec: exec.trim(),
+          args: splitArgs(args),
+          end_program: ending === "stop",
+          ...settings,
+        });
+    started
       .then((job) => {
         onClose();
         route.nav(Routes.sessions, { params: { 0: String(job) } }).go();
@@ -101,25 +127,55 @@ function StartForm({
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Profile {process.name}</DialogTitle>
+        <DialogTitle>
+          {process ? `Profile ${process.name}` : "Launch and profile"}
+        </DialogTitle>
         <DialogDescription>
-          Attach to the running process. It keeps running when profiling ends.
+          {process
+            ? "Attach to the running process. It keeps running when profiling ends."
+            : "Start a program and profile it from its start. It reads no input and its output is discarded."}
         </DialogDescription>
       </DialogHeader>
 
-      <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 border bg-muted/40 p-3 text-xs">
-        <span className="text-muted-foreground">Process</span>
-        <span className="font-medium">
-          {process.name}{" "}
-          <span className="text-muted-foreground tabular-nums">
-            · pid {process.pid}
+      {process ? (
+        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 border bg-muted/40 p-3 text-xs">
+          <span className="text-muted-foreground">Process</span>
+          <span className="font-medium">
+            {process.name}{" "}
+            <span className="text-muted-foreground tabular-nums">
+              · pid {process.pid}
+            </span>
           </span>
-        </span>
-        <span className="text-muted-foreground">Command</span>
-        <span className="truncate font-mono" title={process.command}>
-          {process.command}
-        </span>
-      </div>
+          <span className="text-muted-foreground">Command</span>
+          <span className="truncate font-mono" title={process.command}>
+            {process.command}
+          </span>
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          <div className="grid gap-1.5">
+            <Label htmlFor="launch-exec">Program</Label>
+            <Input
+              id="launch-exec"
+              autoFocus
+              placeholder="/usr/bin/sha256sum or a name on PATH"
+              value={exec}
+              onChange={(e) => setExec(e.target.value)}
+              className="font-mono"
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="launch-args">Arguments</Label>
+            <Input
+              id="launch-args"
+              placeholder="/dev/zero"
+              value={args}
+              onChange={(e) => setArgs(e.target.value)}
+              className="font-mono"
+            />
+          </div>
+        </div>
+      )}
 
       {running ? (
         <p className="border border-primary/40 bg-primary/10 p-3 text-xs">
@@ -178,7 +234,12 @@ function StartForm({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div
+            className={cn(
+              "grid gap-3",
+              process ? "grid-cols-2" : "grid-cols-3",
+            )}
+          >
             <Choice
               label="Report"
               value={interval}
@@ -191,13 +252,34 @@ function StartForm({
               onChange={setDuration}
               options={durations}
             />
+            {!process && (
+              <Choice
+                label="When it ends"
+                value={ending}
+                onChange={setEnding}
+                options={endings}
+              />
+            )}
           </div>
 
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">Same as</p>
             <pre className="overflow-x-auto border bg-muted/40 px-3 py-2 font-mono text-xs">
-              {cliCommand(process.pid, chosen, interval, duration)}
+              {cliCommand(
+                process
+                  ? `--pid ${process.pid}`
+                  : `--exec ${exec.trim() || "<program>"}`,
+                chosen,
+                interval,
+                duration,
+                process ? "" : args.trim(),
+              )}
             </pre>
+            {!process && ending === "keep" && (
+              <p className="text-xs text-muted-foreground">
+                The CLI always stops a program it launched.
+              </p>
+            )}
           </div>
         </>
       )}
@@ -218,7 +300,9 @@ function StartForm({
             ? "Starting…"
             : running
               ? "Join profiling"
-              : "Start profiling"}
+              : process
+                ? "Start profiling"
+                : "Launch and profile"}
         </Button>
       </DialogFooter>
     </>
@@ -260,14 +344,41 @@ function Choice({
 }
 
 function cliCommand(
-  pid: number,
+  target: string,
   chosen: string[],
   interval: string,
   duration: string,
+  args: string,
 ): string {
-  const parts = [`sudo nusku prof --pid ${pid}`];
+  const parts = [`sudo nusku prof ${target}`];
   if (chosen.join(",") !== "cpu") parts.push(`--metrics ${chosen.join(",")}`);
   if (interval !== "1000") parts.push(`--interval ${interval}`);
   if (duration !== "0") parts.push(`--duration ${duration}`);
+  if (args) parts.push(`-- ${args}`);
   return parts.join(" ");
+}
+
+function splitArgs(text: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let started = false;
+  for (const char of text) {
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      started = true;
+    } else if (/\s/.test(char)) {
+      if (started) out.push(current);
+      current = "";
+      started = false;
+    } else {
+      current += char;
+      started = true;
+    }
+  }
+  if (started) out.push(current);
+  return out;
 }
