@@ -10,6 +10,7 @@ const message_file = @import("message.zig");
 const log = @import("log.zig").agent;
 
 const timer = os.timer;
+const launch = os.launch;
 const Timer = timer.Timer;
 const PidFd = os.pidfd.PidFd;
 const Cancel = os.cancel.Cancel;
@@ -18,13 +19,13 @@ const Metrics = metrics_layer.Metrics;
 const Symbols = symbols_layer.Symbols;
 
 pub const Options = struct {
-    pid: u32,
+    pid: ?u32 = null,
+    program: ?protocol.Program = null,
     metrics: std.EnumSet(protocol.Metric) = .initOne(.cpu),
     interval_ms: u32 = 1000,
     duration_s: u32 = 0,
     binaries: bool = true,
 };
-
 /// Each is valid until the next `next`.
 pub const Event = protocol.RunEvent;
 
@@ -41,10 +42,10 @@ const Layers = struct {
     metrics: Metrics,
     symbols: Symbols,
 
-    fn create(gpa: std.mem.Allocator, options: Options) !*Layers {
+    fn create(gpa: std.mem.Allocator, options: Options, pid: u32) !*Layers {
         const layers = try gpa.create(Layers);
         errdefer gpa.destroy(layers);
-        layers.target = try Target.init(gpa, options.pid);
+        layers.target = try Target.init(gpa, pid);
         errdefer layers.target.deinit(gpa);
         const target = &layers.target;
         try layers.metrics.init(gpa, target, .{ .metrics = options.metrics });
@@ -63,9 +64,15 @@ const Layers = struct {
     }
 };
 
+const Program = struct {
+    keep_running: bool,
+    ended: bool = false,
+};
+
 pub const Run = struct {
     gpa: std.mem.Allocator,
     pid: u32,
+    program: ?Program,
     interval_ms: u32,
     layers: *Layers,
     pidfd: PidFd,
@@ -84,14 +91,21 @@ pub const Run = struct {
     started_ns: u64,
 
     pub fn init(gpa: std.mem.Allocator, options: Options) !Run {
-        errdefer |err| log.err("profiling failed", .{ .pid = options.pid, .cause = err });
+        errdefer |err| log.err("profiling failed", .{ .pid = if (options.pid != null) options.pid else 0, .cause = err });
+
         if (options.interval_ms == 0) return error.InvalidInterval;
         if (options.metrics.count() == 0) return error.NoMetrics;
-        if (!os.process.pid_valid(options.pid)) return error.InvalidPid;
+        if ((options.pid == null) == (options.program == null)) return error.NoTarget;
+        if (options.pid) |pid| if (!os.process.pid_valid(pid)) return error.InvalidPid;
+        if (options.program) |program| if (program.argv.len == 0) return error.NoTarget;
 
-        const layers = try Layers.create(gpa, options);
+        const pid = options.pid orelse try program_launch(gpa, options.program.?);
+
+        errdefer if (options.program != null) launch.discard(pid);
+
+        const layers = try Layers.create(gpa, options, pid);
         errdefer layers.destroy(gpa);
-        var pidfd = try PidFd.init(options.pid);
+        var pidfd = try PidFd.init(pid);
         errdefer pidfd.deinit();
         var cancel = try Cancel.init();
         errdefer cancel.deinit();
@@ -101,13 +115,19 @@ pub const Run = struct {
         errdefer tick_timer.deinit();
 
         log.info("profiling started", .{
-            .pid = options.pid,
+            .pid = pid,
+            .launched = options.program != null,
             .interval_ms = options.interval_ms,
             .duration_s = options.duration_s,
         });
+        if (options.program != null) launch.release(pid);
+
         return .{
             .gpa = gpa,
-            .pid = options.pid,
+            .pid = pid,
+            .program = if (options.program) |program| .{
+                .keep_running = program.keep_running,
+            } else null,
             .interval_ms = options.interval_ms,
             .layers = layers,
             .pidfd = pidfd,
@@ -133,6 +153,7 @@ pub const Run = struct {
     }
 
     pub fn deinit(run: *Run) void {
+        run.program_end();
         run.tick_timer.deinit();
         run.report_timer.deinit();
         run.layers.destroy(run.gpa);
@@ -213,6 +234,11 @@ pub const Run = struct {
         symbols.stop();
         if (symbols.step()) |event| return event_of(event);
         run.phase = .ended;
+
+        if (run.stop_reason == .target_exited) {
+            if (run.program) |*program| program.ended = true;
+        }
+        run.program_end();
         log.info("profiling stopped", .{
             .pid = run.pid,
             .reason = run.stop_reason,
@@ -221,7 +247,23 @@ pub const Run = struct {
         });
         return .{ .stopped = run.stop_reason };
     }
+
+    fn program_end(run: *Run) void {
+        if (run.program) |*program| {
+            if (program.keep_running or program.ended) return;
+            launch.end(run.pid);
+            program.ended = true;
+        }
+    }
 };
+
+fn program_launch(gpa: std.mem.Allocator, program: protocol.Program) !u32 {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const pid = try launch.launch(arena.allocator(), program.argv);
+    log.info("program launched", .{ .program = program.argv[0], .pid = pid });
+    return pid;
+}
 
 fn event_of(event: symbols_layer.Event) Event {
     return switch (event) {
@@ -288,6 +330,48 @@ test "a bad option is refused before anything is loaded" {
     try testing.expectError(error.InvalidInterval, no_interval);
     const no_metrics = Run.init(testing.allocator, .{ .pid = 1, .metrics = .initEmpty() });
     try testing.expectError(error.NoMetrics, no_metrics);
+    try testing.expectError(error.NoTarget, Run.init(testing.allocator, .{}));
+    const both = Run.init(testing.allocator, .{ .pid = 1, .program = .{ .argv = &.{"true"} } });
+    try testing.expectError(error.NoTarget, both);
+    const missing = Run.init(testing.allocator, .{ .program = .{ .argv = &.{"no-such-nusku"} } });
+    try testing.expectError(error.ProgramNotFound, missing);
+}
+
+test "a launched program is profiled from its start, then ended or kept running (root)" {
+    const busy = [_][]const u8{ "sh", "-c", "while :; do :; done" };
+    for ([_]bool{ false, true }) |keep_running| {
+        var run = Run.init(testing.allocator, .{
+            .program = .{ .argv = &busy, .keep_running = keep_running },
+            .interval_ms = 200,
+            .duration_s = 1,
+            .binaries = false,
+        }) catch |err| switch (err) {
+            error.PermissionDenied => return error.SkipZigTest,
+            else => return err,
+        };
+        const pid = run.pid;
+        var samples: u64 = 0;
+        var stopped: ?protocol.RunStop = null;
+        while (try run.next()) |event| switch (event) {
+            .report => |message| samples += message.samples,
+            .stopped => |reason| stopped = reason,
+            else => {},
+        };
+        run.deinit();
+        try testing.expectEqual(@as(?protocol.RunStop, .duration), stopped);
+        try testing.expect(samples >= 40);
+
+        var waited: u32 = 0;
+        while (!launch.reaped(pid)) : (waited += 1) {
+            if (keep_running and waited == 20) break;
+            if (waited > 200) return error.NotEnded;
+            timer.sleep_ms(10);
+        }
+        if (keep_running) {
+            try testing.expect(!launch.reaped(pid));
+            launch.discard(pid);
+        }
+    }
 }
 
 test "a run stops at its duration, with its reports and the binaries (root)" {

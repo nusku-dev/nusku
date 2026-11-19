@@ -13,7 +13,8 @@ const windows_max = 3600;
 const windows_unbounded = 600;
 
 pub const Options = struct {
-    pid: u32,
+    pid: ?u32 = null,
+    program: ?protocol.Program = null,
     metrics: std.EnumSet(protocol.Metric),
     interval_ms: u32,
     duration_s: u32,
@@ -23,10 +24,16 @@ pub const Options = struct {
 pub const Live = struct {
     context: *anyopaque,
     every_ms: u32,
-    show: *const fn (context: *anyopaque, profile: *const server_lib.Profile, elapsed_ms: u64) void,
+    show: *const fn (
+        context: *anyopaque,
+        profile: *const server_lib.Profile,
+        pid: u32,
+        elapsed_ms: u64,
+    ) void,
 };
 
 pub const Result = struct {
+    pid: u32,
     reason: protocol.RunStop,
     profile: server_lib.Profile,
     elapsed_ms: u64,
@@ -38,7 +45,7 @@ pub fn profile(
     options: Options,
     live: ?Live,
 ) !Result {
-    assert(options.pid > 0);
+    assert((options.pid == null) != (options.program == null));
     assert(options.interval_ms > 0);
 
     const backend = try Backend.create(gpa, windows_for(options));
@@ -49,21 +56,21 @@ pub fn profile(
     const started_ms = monotonic_ms();
     const started = try controller.start(.{ .profile = .{
         .pid = options.pid,
+        .program = options.program,
         .metrics = options.metrics,
         .interval_ms = options.interval_ms,
         .duration_s = options.duration_s,
     } });
     const target = started.target.?;
-    if (options.continue_target) {
-        _ = std.os.linux.kill(@intCast(options.pid), std.os.linux.SIG.CONT);
-    }
+    const pid = started.pid.?;
     active_set(controller);
-    try wait(gpa, server, controller, started.job, target, started_ms, live);
+    try wait(gpa, server, controller, started.job, target, pid, started_ms, live);
     active_clear();
     const done = controller.wait(started.job);
     const elapsed_ms = monotonic_ms() - started_ms;
 
     return .{
+        .pid = pid,
         .reason = (try done).profile,
         .profile = try server.profile(arena, .{ .target = target }, .all_built),
         .elapsed_ms = elapsed_ms,
@@ -166,6 +173,7 @@ fn wait(
     controller: *Controller,
     job: server_lib.JobId,
     target: server_lib.TargetId,
+    pid: u32,
     started_ms: u64,
     live: ?Live,
 ) !void {
@@ -183,7 +191,7 @@ fn wait(
         _ = arena.reset(.retain_capacity);
         const query = server_lib.Query{ .target = target };
         const so_far = server.profile(arena.allocator(), query, .as_they_are) catch continue;
-        view.show(view.context, &so_far, now_ms - started_ms);
+        view.show(view.context, &so_far, pid, now_ms - started_ms);
     }
 }
 

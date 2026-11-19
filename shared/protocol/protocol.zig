@@ -29,6 +29,13 @@ pub const RunEvent = union(enum) {
     stopped: RunStop,
 };
 
+/// A program a run starts itself, so profiling sees it from its first instruction.
+pub const Program = struct {
+    argv: []const []const u8,
+    /// Ended when its profiling ends, unless this is set.
+    keep_running: bool = false,
+};
+
 pub const Answer = enum { none, wanted, unwanted };
 
 pub const WatchEvent = union(enum) {

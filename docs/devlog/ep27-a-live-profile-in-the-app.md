@@ -4,9 +4,9 @@ date: 2026-11-12
 
 # Ep27: A Live Profile in the App
 
-*Ep26 ended with the app able to list processes but not profile them. This episode is the
+_Ep26 ended with the app able to list processes but not profile them. This episode is the
 profile itself in the app: the views, and the work it took to keep a profile live once a
-second without burning the CPU it is measuring.*
+second without burning the CPU it is measuring._
 
 The first version was the obvious one: once a second, ask the session for the whole profile,
 send it to the page as JSON, rebuild the flame graph from scratch. It worked, and on a real
@@ -27,12 +27,12 @@ The fix came in three layers, one per place the work was being done again:
 
 A profile page (`pages/session.tsx`) has a timeline on top and a workspace below it:
 
-| View | What it answers |
-|---|---|
-| **Flame graph** | Where the time goes, callers below, callees above. Click to zoom; the path back is a breadcrumb. Search highlights every match. |
-| **Top functions** | Self and total time per function, sortable, searchable. |
-| **Call tree** | The same tree as the flame graph, as rows you can open. |
-| **Function details** | For the selected function: self vs total, its hottest source lines, and whether it was inlined (Ep29). |
+| View                 | What it answers                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Flame graph**      | Where the time goes, callers below, callees above. Click to zoom; the path back is a breadcrumb. Search highlights every match. |
+| **Top functions**    | Self and total time per function, sortable, searchable.                                                                         |
+| **Call tree**        | The same tree as the flame graph, as rows you can open.                                                                         |
+| **Function details** | For the selected function: self vs total, its hottest source lines, and whether it was inlined (Ep29).                          |
 
 The views share one selection: picking a function in the table selects it in the flame graph.
 "Both" shows the flame graph and the table side by side.
@@ -128,12 +128,12 @@ profile, until the selection is cleared. `hooks/use-range-profile.ts` does the a
 
 On the same program, with about 18 000 distinct stacks:
 
-| | Before | After |
-|---|---|---|
-| App CPU with a live profile open | 65% | 9% |
-| One answer | 435 KB, every second | 141 KB full; unchanged in 44 ms; ~3 KB/s streaming |
-| Redraw on a new second | 0.8 – 1.7 s | 35 – 57 ms |
-| First load of the whole profile | — | 1.1 – 1.4 s |
+|                                  | Before               | After                                              |
+| -------------------------------- | -------------------- | -------------------------------------------------- |
+| App CPU with a live profile open | 65%                  | 9%                                                 |
+| One answer                       | 435 KB, every second | 141 KB full; unchanged in 44 ms; ~3 KB/s streaming |
+| Redraw on a new second           | 0.8 – 1.7 s          | 35 – 57 ms                                         |
+| First load of the whole profile  | —                    | 1.1 – 1.4 s                                        |
 
 The first load is still the slowest thing on the page, and the next thing to look at if it
 starts to hurt.

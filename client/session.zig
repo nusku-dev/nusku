@@ -24,6 +24,7 @@ pub const UserId = u64;
 
 pub const Started = struct {
     job: JobId,
+    pid: u32,
     joined: bool,
 };
 
@@ -131,31 +132,30 @@ pub const Session = struct {
         session.reap();
 
         for (session.entries[0..session.count]) |*entry| {
-            if (entry.pid != options.pid or !entry.open()) continue;
+            const pid = options.pid orelse break;
+            if (entry.pid != pid or !entry.open()) continue;
             try entry.user_add(user);
-            return .{ .job = entry.job, .joined = true };
+            return .{ .job = entry.job, .pid = pid, .joined = true };
         }
         if (session.count == session.entries.len) try session.drop_oldest_ended();
 
         const started = try session.controller.start(.{ .profile = .{
             .pid = options.pid,
+            .program = options.program,
             .metrics = options.metrics,
             .interval_ms = options.interval_ms,
             .duration_s = options.duration_s,
         } });
-        if (options.continue_target) {
-            _ = std.os.linux.kill(@intCast(options.pid), std.os.linux.SIG.CONT);
-        }
         const entry = &session.entries[session.count];
         entry.* = .{
             .job = started.job,
             .target = started.target.?,
-            .pid = options.pid,
+            .pid = started.pid.?,
             .started_ms = local.monotonic_ms(),
         };
         entry.user_add(user) catch unreachable;
         session.count += 1;
-        return .{ .job = started.job, .joined = false };
+        return .{ .job = started.job, .pid = entry.pid, .joined = false };
     }
 
     /// Only the profiling ends, never the process; it ends once no user is left.
@@ -587,6 +587,53 @@ test "a live profile kept one report at a time equals one built whole (root)" {
         } else return error.StackMissing;
         try testing.expectEqual(stack.samples, match.samples);
     }
+}
+
+test "a launched program is profiled from its start, and ended with it or not (root)" {
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    const session = try session_test();
+    defer session_destroy(session);
+    const busy = [_][]const u8{ "sh", "-c", "while :; do :; done" };
+    var options = local.Options{ .metrics = cpu, .interval_ms = 100, .duration_s = 1 };
+    options.program = .{ .argv = &busy };
+    const ended = try session.profile_start(options, 1);
+    options.program = .{ .argv = &busy, .keep_running = true };
+    const kept = try session.profile_start(options, 1);
+    try testing.expect(!kept.joined);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var waited: u32 = 0;
+    var states = try session.profiles(arena.allocator());
+    while (states[0].running or states[1].running) : (waited += 1) {
+        if (waited > 100) return error.NotEnded;
+        local.sleep_ms(50);
+        _ = arena.reset(.retain_capacity);
+        states = try session.profiles(arena.allocator());
+    }
+    for (states) |state| {
+        try testing.expectEqual(@as(?protocol.RunStop, .duration), state.reason);
+        try testing.expect(state.profile.?.samples > 0);
+    }
+    const ended_pid = states[0].pid;
+    const kept_pid = states[1].pid;
+    try testing.expectEqual(ended.job, states[0].job);
+    try testing.expectEqual(kept.job, states[1].job);
+    try testing.expectEqual(ended.pid, ended_pid);
+    try testing.expectEqual(kept.pid, kept_pid);
+
+    waited = 0;
+    while (alive(ended_pid)) : (waited += 1) {
+        if (waited > 100) return error.NotEnded;
+        local.sleep_ms(20);
+        _ = arena.reset(.retain_capacity);
+        _ = try session.profiles(arena.allocator());
+    }
+    try testing.expect(alive(kept_pid));
+    _ = std.os.linux.kill(@intCast(kept_pid), .KILL);
+}
+
+fn alive(pid: u32) bool {
+    return std.os.linux.errno(std.os.linux.kill(@intCast(pid), @enumFromInt(0))) == .SUCCESS;
 }
 
 fn delta_apply(held: *std.AutoHashMap(u32, server_lib.SymbolStack), delta: Delta) !void {

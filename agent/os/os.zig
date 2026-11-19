@@ -9,6 +9,7 @@ pub const perf_event = @import("perf_event.zig");
 pub const cpus = @import("cpus.zig");
 pub const directory = @import("shared").directory;
 pub const anonymous_memory = @import("anonymous_memory.zig");
+pub const launch = @import("launch.zig");
 
 test {
     _ = process;
@@ -16,6 +17,7 @@ test {
     _ = poll;
     _ = cancel;
     _ = pidfd;
+    _ = launch;
     _ = perf_event;
     _ = cpus;
     _ = directory;

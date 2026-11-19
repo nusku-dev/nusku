@@ -19,7 +19,8 @@ pub const Spec = union(enum) {
     processes: Processes,
 
     pub const Profile = struct {
-        pid: u32,
+        pid: ?u32 = null,
+        program: ?protocol.Program = null,
         metrics: std.EnumSet(protocol.Metric) = .initOne(.cpu),
         interval_ms: u32 = 1000,
         duration_s: u32 = 0,
@@ -33,6 +34,7 @@ pub const Spec = union(enum) {
 
 pub const Started = struct {
     job: JobId,
+    pid: ?u32 = null,
     target: ?server_layer.TargetId,
 };
 
@@ -40,11 +42,14 @@ pub const Options = struct {
     jobs_max: u32 = 16,
 };
 
+const children_max = 64;
+
 pub const Controller = struct {
     gpa: std.mem.Allocator,
     server: *Server,
     jobs: []Job,
     next_id: JobId,
+    children: std.ArrayList(u32),
 
     pub fn init(
         controller: *Controller,
@@ -55,7 +60,13 @@ pub const Controller = struct {
         assert(options.jobs_max > 0);
         const jobs = try gpa.alloc(Job, options.jobs_max);
         for (jobs) |*job| job.active = false;
-        controller.* = .{ .gpa = gpa, .server = server, .jobs = jobs, .next_id = 1 };
+        controller.* = .{
+            .gpa = gpa,
+            .server = server,
+            .jobs = jobs,
+            .next_id = 1,
+            .children = .empty,
+        };
     }
 
     pub fn deinit(controller: *Controller) void {
@@ -63,6 +74,8 @@ pub const Controller = struct {
         for (controller.jobs) |*job| {
             if (job.active) _ = controller.finish(job) catch {};
         }
+        controller.children_reap();
+        controller.children.deinit(controller.gpa);
         controller.gpa.free(controller.jobs);
         controller.* = undefined;
     }
@@ -70,6 +83,7 @@ pub const Controller = struct {
     pub fn start(controller: *Controller, spec: Spec) !Started {
         const kind = std.meta.activeTag(spec);
         errdefer |err| log.err("job not started", .{ .kind = kind, .cause = err });
+        controller.children_reap();
         const job = controller.free() orelse return error.JobsFull;
         job.* = .{
             .id = controller.next_id,
@@ -80,20 +94,27 @@ pub const Controller = struct {
             .finished = .init(false),
         };
         var target: ?server_layer.TargetId = null;
+        var pid: ?u32 = null;
         switch (spec) {
             .profile => |profile| {
                 job.work = .{ .profile = .{
                     .run = try agent.Run.init(controller.gpa, .{
                         .pid = profile.pid,
+                        .program = profile.program,
                         .metrics = profile.metrics,
                         .interval_ms = profile.interval_ms,
                         .duration_s = profile.duration_s,
                     }),
                     .feed = undefined,
                 } };
-                errdefer job.work.profile.run.deinit();
-                job.work.profile.feed = try controller.server.feed(profile.pid);
+                const run = &job.work.profile.run;
+                errdefer run.deinit();
+                const launched = profile.program != null;
+                if (launched) try controller.children.ensureUnusedCapacity(controller.gpa, 1);
+                job.work.profile.feed = try controller.server.feed(run.pid);
                 target = job.work.profile.feed.target;
+                pid = run.pid;
+                if (launched) controller.children.appendAssumeCapacity(run.pid);
             },
             .processes => |processes| {
                 if (controller.watching()) return error.AlreadyWatching;
@@ -108,7 +129,7 @@ pub const Controller = struct {
         job.active = true;
         controller.next_id += 1;
         log.info("job started", .{ .job = job.id, .kind = std.meta.activeTag(spec) });
-        return .{ .job = job.id, .target = target };
+        return .{ .job = job.id, .pid = pid, .target = target };
     }
 
     pub fn stop(controller: *Controller, id: JobId) !Done {
@@ -123,6 +144,7 @@ pub const Controller = struct {
     }
 
     pub fn running(controller: *Controller, id: JobId) bool {
+        controller.children_reap();
         const job = controller.find(id) orelse return false;
         return !job.finished.load(.acquire);
     }
@@ -157,6 +179,21 @@ pub const Controller = struct {
         return result;
     }
 
+    fn children_reap(controller: *Controller) void {
+        var index: usize = 0;
+        while (index < controller.children.items.len) {
+            if (agent.program_reaped(controller.children.items[index])) {
+                _ = controller.children.swapRemove(index);
+            } else {
+                index += 1;
+            }
+        }
+        if (controller.children.items.len > children_max) {
+            log.warn("launched programs not reaped yet", .{
+                .count = controller.children.items.len,
+            });
+        }
+    }
     fn free(controller: *Controller) ?*Job {
         for (controller.jobs) |*job| {
             if (!job.active) return job;
@@ -223,6 +260,9 @@ test "a bad spec and an unknown job are refused before anything starts" {
     try testing.expectError(error.InvalidInterval, controller.start(no_interval));
     const no_metrics = Spec{ .profile = .{ .pid = 1, .metrics = .initEmpty() } };
     try testing.expectError(error.NoMetrics, controller.start(no_metrics));
+    try testing.expectError(error.NoTarget, controller.start(.{ .profile = .{} }));
+    const missing = Spec{ .profile = .{ .program = .{ .argv = &.{"no-such-program-nusku"} } } };
+    try testing.expectError(error.ProgramNotFound, controller.start(missing));
     try testing.expectError(error.JobUnknown, controller.stop(42));
     try testing.expect(!controller.running(42));
 }
@@ -245,6 +285,36 @@ test "a profile of this process feeds the server until it is stopped (root)" {
     try testing.expectEqual(Done{ .profile = .cancelled }, done);
     try testing.expect(!fixture.controller.running(started.job));
     std.debug.print("controller: {d} samples\n", .{try fixture.samples(started.target.?)});
+}
+
+test "a launched program feeds the server under its pid, and is reaped once it ends (root)" {
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    const fixture = try Fixture.create();
+    defer fixture.destroy();
+    const controller = &fixture.controller;
+
+    const busy = [_][]const u8{ "sh", "-c", "while :; do :; done" };
+    const spec = Spec{ .profile = .{ .program = .{ .argv = &busy }, .interval_ms = 100 } };
+    const started = try controller.start(spec);
+    const pid = started.pid.?;
+    try testing.expect(alive(pid));
+    var waited: u32 = 0;
+    while (try fixture.samples(started.target.?) < 10) : (waited += 1) {
+        if (waited > 200) return error.NoSamples;
+        burn(50);
+    }
+    try testing.expectEqual(Done{ .profile = .cancelled }, try controller.stop(started.job));
+    waited = 0;
+    while (alive(pid)) : (waited += 1) {
+        if (waited > 200) return error.NotReaped;
+        burn(10);
+        _ = controller.running(started.job);
+    }
+    try testing.expectEqual(@as(usize, 0), controller.children.items.len);
+}
+
+fn alive(pid: u32) bool {
+    return std.os.linux.errno(std.os.linux.kill(@intCast(pid), @enumFromInt(0))) == .SUCCESS;
 }
 
 test "the processes watch starts, refuses a second, and stops when asked" {

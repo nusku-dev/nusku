@@ -2,6 +2,7 @@
 
 const run_file = @import("run.zig");
 const watch_file = @import("watch.zig");
+const os = @import("os/os.zig");
 
 pub const Run = run_file.Run;
 pub const RunOptions = run_file.Options;
@@ -11,8 +12,11 @@ pub const Watch = watch_file.Watch;
 pub const WatchOptions = watch_file.Options;
 pub const WatchEvent = watch_file.Event;
 
+/// Collects a program a run launched, once it has ended; false while it still runs.
+pub const program_reaped = os.launch.reaped;
+
 test {
-    _ = @import("os/os.zig");
+    _ = os;
     _ = @import("elf/elf.zig");
     _ = @import("target/target.zig");
     _ = @import("unwind/unwind.zig");
