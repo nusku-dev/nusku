@@ -1,5 +1,5 @@
 ---
-date: 2026-11-12
+date: 2026-11-20
 ---
 
 # Ep31: The CLI Catches Up
