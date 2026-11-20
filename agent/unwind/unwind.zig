@@ -349,7 +349,7 @@ test "a file that cannot be opened gives a mapping without a table, and is not r
         .start = 0x1000,
         .end = 0x2000,
         .offset = 0,
-        .inode = 1,
+        .inode = 0,
         .path = "/nonexistent/file",
         .build_id = null,
     }};

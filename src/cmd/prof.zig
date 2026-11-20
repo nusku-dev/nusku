@@ -323,7 +323,8 @@ fn launch_failure(err: anyerror) ?[]const u8 {
 
 fn hint(err: anyerror) []const u8 {
     return switch (err) {
-        error.PermissionDenied => "run as root, or grant CAP_BPF, CAP_PERFMON and CAP_SYSLOG",
+        error.PermissionDenied => "run as root, or grant CAP_BPF, CAP_PERFMON, CAP_SYSLOG" ++
+            " and CAP_CHECKPOINT_RESTORE",
         error.ProcessNotFound => "no process with that pid",
         error.NotSupported => "the kernel is too old for nusku: it needs Linux 5.3 or newer",
         error.MetricNotImplemented => "only the cpu metric exists so far",

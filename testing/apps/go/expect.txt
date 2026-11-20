@@ -7,7 +7,8 @@ total main.cold.func1  >1      # the less closure, called from inside sort.Slice
 total main.run         >90     # the rest is the runtime's own threads: sysmon, the scheduler
 total main.main        >90
 
-rate  99
+rate  99 8                # +-8%: the runtime's own threads (GC, sysmon) add samples on a busy machine
 path  main.run;main.hot;main.hotLeaf  50
 path  main.run;main.warm;main.recurse;main.recurse;main.recurse;main.recurse;main.recurse;main.recurse;main.recurse;main.recurse  30
-kernel 0 3               # the clock is read in the vDSO: no system calls
+kernel 0 6               # the clock is read in the vDSO; the runtime's threads make the futex and
+                         # nanosleep calls seen here, up to 4% on a busy machine

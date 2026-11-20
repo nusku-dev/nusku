@@ -480,7 +480,7 @@ fn region_test(path: []const u8, id: ?[]const u8) Region {
         .start = 0x1000,
         .end = 0x2000,
         .offset = 0,
-        .inode = 1,
+        .inode = 0,
         .path = path,
         .build_id = id,
     };

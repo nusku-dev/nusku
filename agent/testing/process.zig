@@ -134,6 +134,53 @@ pub fn child_reap(pid: u32) void {
     _ = linux.wait4(@intCast(pid), &status, 0, null);
 }
 
+/// Copies `source` to `copy` and runs the copy with `argv`, until it has replaced the child.
+pub fn copy_spawn(
+    source: [:0]const u8,
+    copy: [:0]const u8,
+    argv: [*:null]const ?[*:0]const u8,
+) !u32 {
+    try file_copy(source, copy);
+    const pid = std.c.fork();
+    if (pid < 0) return error.ForkFailed;
+    if (pid == 0) {
+        _ = linux.execve(copy, argv, @ptrCast(std.c.environ));
+        std.c._exit(127);
+    }
+    const process_maps = @import("../target/process_maps.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tries: u32 = 0;
+    while (tries < 200) : (tries += 1) {
+        _ = arena.reset(.retain_capacity);
+        const mappings = process_maps.read(arena.allocator(), @intCast(pid)) catch &.{};
+        for (mappings) |mapping| {
+            if (std.mem.eql(u8, mapping.path, copy)) return @intCast(pid);
+        }
+        timer.sleep_ms(5);
+    }
+    child_reap(@intCast(pid));
+    return error.ExecTimeout;
+}
+
+fn file_copy(source: [:0]const u8, copy: [:0]const u8) !void {
+    const from = std.c.open(source.ptr, .{ .ACCMODE = .RDONLY, .CLOEXEC = true });
+    if (from < 0) return error.CopyFailed;
+    defer _ = std.c.close(from);
+    const flags = linux.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true };
+    const to = std.c.open(copy.ptr, flags, @as(std.c.mode_t, 0o755));
+    if (to < 0) return error.CopyFailed;
+    defer _ = std.c.close(to);
+    var buffer: [64 * 1024]u8 = undefined;
+    while (true) {
+        const got = std.c.read(from, &buffer, buffer.len);
+        if (got < 0) return error.CopyFailed;
+        if (got == 0) return;
+        const bytes: usize = @intCast(got);
+        if (std.c.write(to, &buffer, bytes) != got) return error.CopyFailed;
+    }
+}
+
 test "the vDSO's clock_gettime, called directly, tells the same time as the system call" {
     const clock_gettime = (try vdso_clock_gettime(std.testing.allocator)) orelse
         return error.SkipZigTest;

@@ -23,8 +23,13 @@ pub fn file_open(pid: u32, path: []const u8) error{Unreadable}!File {
     return File.open(full) catch error.Unreadable;
 }
 
-pub fn mapping_open(pid: u32, path: []const u8, start: u64, end: u64) error{Unreadable}!File {
-    if (file_open(pid, path)) |file| return file else |_| {}
+pub fn mapping_open(pid: u32, path: []const u8, start: u64, end: u64, inode: u64) error{Unreadable}!File {
+    if (file_open(pid, path)) |file| {
+        var f = file;
+        const same = if (file.stat()) |found| inode == 0 or found.inode == inode else |_| true;
+        if (same) return f;
+        f.deinit();
+    } else |_| {}
     if (start >= end) return error.Unreadable;
 
     var path_buffer: [64]u8 = undefined;

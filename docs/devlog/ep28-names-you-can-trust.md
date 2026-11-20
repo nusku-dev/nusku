@@ -130,9 +130,11 @@ but colors: kernel frames are their own family (purple) in the flame graph, so t
 
 ## 7. What is left
 
-- **Deleted binaries have no identity.** A process whose binary was replaced on disk (every
-  rebuild during development) maps a file marked `(deleted)`, and the agent skips it,
-  because the file at that path is no longer the code that runs. Reading it through
-  `/proc/<pid>/map_files/` would still work.
+- **Deleted binaries** (fixed since, see Ep32's last lesson). A process whose binary was
+  replaced on disk, which is every rebuild during development, maps a file marked
+  `(deleted)`, and its path now names the new build. The agent opens a mapping by its path
+  only while the inode still matches; otherwise it reads the original through
+  `/proc/<pid>/map_files/`, which needs root or `CAP_CHECKPOINT_RESTORE`. Without either, it
+  says so once and leaves that binary unnamed.
 - **JIT code** (JavaScript, Java, .NET) has no file at all. That needs perf maps, and is for
   later.

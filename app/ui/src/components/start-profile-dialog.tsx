@@ -273,6 +273,7 @@ function StartForm({
                 interval,
                 duration,
                 process ? "" : args.trim(),
+                !process && ending === "keep",
               )}
             </pre>
             {!process && ending === "keep" && (
@@ -349,11 +350,13 @@ function cliCommand(
   interval: string,
   duration: string,
   args: string,
+  keep: boolean,
 ): string {
   const parts = [`sudo nusku prof ${target}`];
   if (chosen.join(",") !== "cpu") parts.push(`--metrics ${chosen.join(",")}`);
   if (interval !== "1000") parts.push(`--interval ${interval}`);
   if (duration !== "0") parts.push(`--duration ${duration}`);
+  if (keep) parts.push("--keep-running");
   if (args) parts.push(`-- ${args}`);
   return parts.join(" ");
 }

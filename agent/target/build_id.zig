@@ -4,6 +4,7 @@ const std = @import("std");
 const File = @import("shared").File;
 const process_maps = @import("process_maps.zig");
 const process = @import("../os/os.zig").process;
+const log = @import("../log.zig").agent;
 
 pub const prefix_size = 64 * 1024;
 pub const id_bytes_max = 64;
@@ -117,10 +118,13 @@ fn notes_in_segments(prefix: []const u8, note: Note) ?[]const u8 {
 }
 
 pub fn for_mapping(arena: std.mem.Allocator, pid: u32, mapping: process_maps.Mapping) !?[]const u8 {
-    if (mapping.deleted or mapping.path.len == 0 or mapping.path[0] != '/') return null;
+    if (mapping.path.len == 0 or mapping.path[0] != '/') return null;
 
-    var file = process.mapping_open(pid, mapping.path, mapping.start, mapping.end) catch
+    var file = process.mapping_open(pid, mapping.path, mapping.start, mapping.end, mapping.inode) catch {
+        if (mapping.deleted) log.warn("a binary replaced on disk since it started stays unnamed:" ++
+            " run as root, or grant CAP_CHECKPOINT_RESTORE", .{ .pid = pid, .path = mapping.path });
         return null;
+    };
     defer file.deinit();
 
     var prefix_buffer: [prefix_size]u8 = undefined;
@@ -240,10 +244,11 @@ test "mappings that are not regular files have no build ID" {
     vdso.path = "[vdso]";
     try std.testing.expect(try for_mapping(arena.allocator(), me, vdso) == null);
 
-    var deleted = base;
-    deleted.path = "/bin/ls";
-    deleted.deleted = true;
-    try std.testing.expect(try for_mapping(arena.allocator(), me, deleted) == null);
+    var replaced = base;
+    replaced.path = "/bin/ls";
+    replaced.inode = 1;
+    replaced.deleted = true;
+    try std.testing.expect(try for_mapping(arena.allocator(), me, replaced) == null);
 
     var missing = base;
     missing.path = "/no/such/file";

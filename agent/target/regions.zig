@@ -178,3 +178,43 @@ test "this process: the [vdso] region of the real maps gets an ID" {
     }
     return error.SkipZigTest;
 }
+
+test "a binary deleted while it runs keeps its build ID, and still opens (root)" {
+    const child_process = @import("../testing/process.zig");
+    const mapped_file = @import("mapped_file.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var path_buffer: [64]u8 = undefined;
+    const own = process.current_pid();
+    const copy = try std.fmt.bufPrintZ(&path_buffer, "/tmp/nusku-deleted-test-{d}", .{own});
+    const argv = [_:null]?[*:0]const u8{ "sleep", "30" };
+    const pid = try child_process.copy_spawn("/bin/sleep", copy, &argv);
+    defer child_process.child_reap(pid);
+
+    const before = try region_of(a, pid, copy, false);
+    const id = before.build_id orelse return error.SkipZigTest;
+    _ = std.c.unlink(copy.ptr);
+
+    const after = try region_of(a, pid, copy, true);
+    const id_after = after.build_id orelse {
+        if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+        return error.NoBuildId;
+    };
+    try std.testing.expectEqualSlices(u8, id, id_after);
+    var prefix: [build_id.prefix_size]u8 = undefined;
+    var file = try mapped_file.open(pid, &after, &prefix);
+    file.deinit();
+}
+
+fn region_of(arena: std.mem.Allocator, pid: u32, path: []const u8, deleted: bool) !Region {
+    const mappings = try read(arena, pid);
+    for (mappings) |mapping| {
+        if (!std.mem.eql(u8, mapping.path, path)) continue;
+        try std.testing.expectEqual(deleted, mapping.deleted);
+        const regions = try build(arena, &.{mapping}, pid, &.{});
+        return regions[0];
+    }
+    return error.NotMapped;
+}

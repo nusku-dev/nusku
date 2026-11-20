@@ -26,7 +26,8 @@ pub const cmd: cli.Command = .{
     \\  quit                                end the session
     \\
     \\A launched program is stopped when its profiling ends, unless --keep is
-    \\given. Profiling needs root, or CAP_BPF, CAP_PERFMON and CAP_SYSLOG.
+    \\given. Profiling needs root, or CAP_BPF, CAP_PERFMON, CAP_SYSLOG and
+    \\CAP_CHECKPOINT_RESTORE (the last names programs rebuilt while they run).
     ,
     .flags = &.{
         .{
@@ -275,7 +276,8 @@ fn options_of(pid: ?u32, seconds: u32) client.ProfileOptions {
 
 fn failed(w: *Writer, err: anyerror) !void {
     const why: []const u8 = switch (err) {
-        error.PermissionDenied => "run as root, or grant CAP_BPF, CAP_PERFMON and CAP_SYSLOG",
+        error.PermissionDenied => "run as root, or grant CAP_BPF, CAP_PERFMON, CAP_SYSLOG" ++
+            " and CAP_CHECKPOINT_RESTORE",
         error.ProcessNotFound, error.InvalidPid => "no process with that pid",
         error.ProfileUnknown => "no profile with that id: watch lists them",
         error.ProfilesFull => "too many profiles running: stop one first",

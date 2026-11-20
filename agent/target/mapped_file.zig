@@ -15,8 +15,7 @@ pub const Error = error{
 pub fn open(pid: u32, region: *const Region, prefix_buffer: []u8) Error!File {
     assert(prefix_buffer.len >= build_id.prefix_size);
 
-    var file = process.mapping_open(pid, region.path, region.start, region.end) catch
-        return error.Unreadable;
+    var file = process.mapping_open(pid, region.path, region.start, region.end, region.inode) catch return error.Unreadable;
     errdefer file.deinit();
 
     if (region.build_id) |expected| {
@@ -33,7 +32,7 @@ fn region_test(path: []const u8, id: ?[]const u8) Region {
         .start = 0x1000,
         .end = 0x2000,
         .offset = 0,
-        .inode = 1,
+        .inode = 0,
         .path = path,
         .build_id = id,
     };

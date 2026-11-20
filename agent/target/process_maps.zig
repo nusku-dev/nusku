@@ -185,10 +185,11 @@ test "mapping_open finds a mapping by its addresses when its path does not open"
         if (mapping.path.len > 0 and mapping.path[0] == '/') break mapping;
     } else return error.SkipZigTest;
 
-    var file = try process.mapping_open(process.current_pid(), own.path, own.start, own.end);
+    const pid = process.current_pid();
+    var file = try process.mapping_open(pid, own.path, own.start, own.end, own.inode);
     file.deinit();
 
-    const hidden = process.mapping_open(process.current_pid(), "/no/such/file", own.start, own.end);
+    const hidden = process.mapping_open(pid, "/no/such/file", own.start, own.end, own.inode);
     if (std.os.linux.geteuid() != 0) {
         try testing.expectError(error.Unreadable, hidden);
         return;
