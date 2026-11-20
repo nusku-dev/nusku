@@ -381,7 +381,7 @@ test "a launched program is profiled from its start, then ended or kept running 
     }
 }
 
-test "a run stops at its duration, with its reports and the binaries (root)" {
+test "a run stops at its duration, then sends the binaries it sampled (root)" {
     const child = try child_process.burner_spawn(5000);
     defer child_process.child_reap(child);
     const seen = (try Seen.of(.{ .pid = child, .interval_ms = 300, .duration_s = 1 })) orelse
@@ -393,7 +393,8 @@ test "a run stops at its duration, with its reports and the binaries (root)" {
         seen.begins,  seen.chunks,  seen.ends,       seen.aborts,
     });
     try testing.expectEqual(@as(?protocol.RunStop, .duration), seen.stopped);
-    try testing.expect(seen.elapsed_ms >= 1000 and seen.elapsed_ms < 2500);
+    const kernel_wait_ms = 3000;
+    try testing.expect(seen.elapsed_ms >= 1000 and seen.elapsed_ms < 2500 + kernel_wait_ms);
     try testing.expect(seen.reports >= 3 and seen.reports <= 5);
     try testing.expect(seen.samples >= 40);
     try testing.expect(seen.begins >= 1);

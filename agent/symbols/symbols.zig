@@ -15,6 +15,7 @@ pub const binaries_max = 256;
 pub const pending_max = 16;
 pub const path_bytes_max = 4096;
 pub const chunk_bytes = 256 * 1024;
+const kernel_wait_ms_max = 3000;
 
 const Id = struct {
     len: u8,
@@ -219,10 +220,7 @@ pub const Symbols = struct {
 
     pub fn step(symbols: *Symbols) ?Event {
         if (!symbols.enabled) return null;
-        if (symbols.stopping) {
-            const transfer = &(symbols.current orelse return null);
-            return symbols.transfer_step(transfer);
-        }
+
         if (symbols.asked != null) symbols.asked_take();
         if (symbols.current) |*transfer| return symbols.transfer_step(transfer);
         if (!symbols.kernel_offered) {
@@ -231,7 +229,11 @@ pub const Symbols = struct {
         }
         if (symbols.pending_count > 0) return symbols.region_ask();
         const reading = symbols.kernel_reading orelse return null;
-        if (!reading.finished()) return null;
+        if (symbols.stopping) kernel_wait(reading);
+        if (!reading.finished()) {
+            if (symbols.stopping) symbols.kernel_drop();
+            return null;
+        }
         symbols.kernel_finish();
         const transfer = &(symbols.current orelse return null);
         return symbols.transfer_step(transfer);
@@ -247,14 +249,6 @@ pub const Symbols = struct {
 
     pub fn stop(symbols: *Symbols) void {
         symbols.stopping = true;
-        if (symbols.kernel_reading) |reading| {
-            reading.deinit();
-            symbols.kernel_reading = null;
-        }
-        symbols.pending_count = 0;
-        symbols.asked = null;
-        const transfer = &(symbols.current orelse return);
-        if (!transfer.begun()) symbols.current_end();
     }
 
     fn transfer_step(symbols: *Symbols, transfer: *Transfer) ?Event {
@@ -367,6 +361,19 @@ pub const Symbols = struct {
             symbols.seen[index] = symbols.seen[symbols.seen_count];
             return;
         }
+    }
+
+    fn kernel_wait(reading: *kernel_symbols.Background) void {
+        var waited_ms: u32 = 0;
+        while (!reading.finished() and waited_ms < kernel_wait_ms_max) : (waited_ms += 5) {
+            os.timer.sleep_ms(5);
+        }
+    }
+
+    fn kernel_drop(symbols: *Symbols) void {
+        log.debug("kernel symbols not sent: the run ended before they were read", .{});
+        symbols.kernel_reading.?.deinit();
+        symbols.kernel_reading = null;
     }
 
     fn kernel_finish(symbols: *Symbols) void {
@@ -746,7 +753,7 @@ test "an offer not answered is not sent, and a transfer dropped midway stops" {
     try testing.expectEqual(@as(u32, 0), consumer.aborts);
 }
 
-test "a run that stops during a transfer finishes it, and starts nothing new" {
+test "a run that stops finishes its transfer, then offers what its last report sampled" {
     var prefix: [target.build_id_prefix_size]u8 = undefined;
     const shell = (try sh_id(&prefix)) orelse return error.SkipZigTest;
 
@@ -757,12 +764,12 @@ test "a run that stops during a transfer finishes it, and starts nothing new" {
     symbols.want(.yes);
     try testing.expect(symbols.step().? == .begin);
 
-    symbols.regions_see(&.{region_test("/bin/ls", "\x01\x02")});
+    symbols.regions_see(&.{region_test("/no/such/file", "\x01\x02")});
     symbols.stop();
     var consumer = Consumer{ .begins = 1 };
     while (symbols.step()) |event| consumer.take(&symbols, event);
     try testing.expectEqual(@as(u32, 1), consumer.ends);
-    try testing.expectEqual(@as(u32, 0), consumer.offers);
+    try testing.expectEqual(@as(u32, 1), consumer.offers);
     try testing.expect(symbols.current == null);
     symbols.stop();
     try testing.expectEqual(@as(?Event, null), symbols.step());
@@ -817,7 +824,7 @@ test "the kernel is offered first and read on its thread, while a binary is sent
     try testing.expectEqual(@as(u32, if (root) 2 else 1), consumer.ends);
 }
 
-test "a run that stops while the kernel is read stops the reading" {
+test "a run that stops while the kernel is read waits for it a little, never long" {
     var symbols: Symbols = undefined;
     const kernel = KernelIdentity{ .build_id = "kk", .text_address = 0xffffffff81000000 };
     try symbols.init(testing.allocator, true, process.current_pid(), null, kernel);
@@ -829,6 +836,9 @@ test "a run that stops while the kernel is read stops the reading" {
     try testing.expect(symbols.kernel_reading != null);
     const started_ns = os.timer.monotonic_ns();
     symbols.stop();
+    var consumer = Consumer{};
+    while (symbols.step()) |event| consumer.take(&symbols, event);
     try testing.expect(symbols.kernel_reading == null);
-    try testing.expect(os.timer.monotonic_ns() - started_ns < 300 * std.time.ns_per_ms);
+    const waited_ms = (os.timer.monotonic_ns() - started_ns) / std.time.ns_per_ms;
+    try testing.expect(waited_ms < kernel_wait_ms_max + 500);
 }
