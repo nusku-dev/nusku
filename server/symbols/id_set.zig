@@ -49,6 +49,12 @@ pub fn IdSet(comptime slots_max: usize) type {
             set.lengths[slot] = 0;
         }
 
+        pub fn take(set: *Set, id: []const u8) bool {
+            const slot = set.find(id) orelse return false;
+            set.remove(slot);
+            return true;
+        }
+
         fn find(set: *const Set, id: []const u8) ?Slot {
             for (set.lengths, 0..) |length, slot| {
                 if (length == id.len and std.mem.eql(u8, set.ids[slot][0..length], id)) {

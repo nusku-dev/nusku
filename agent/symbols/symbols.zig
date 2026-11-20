@@ -9,6 +9,7 @@ const kernel_symbols = @import("kernel_symbols.zig");
 const KernelIdentity = target.KernelIdentity;
 const Transfer = @import("transfer.zig").Transfer;
 const log = @import("../log.zig").agent;
+const Stack = @import("shared").protocol.Message.Stack;
 
 pub const binaries_max = 256;
 pub const pending_max = 16;
@@ -61,9 +62,12 @@ pub const Event = union(enum) {
     abort,
 };
 
+pub const Answer = enum { no, yes, later };
+
 pub const Offered = @import("shared").protocol.binary.Offer;
 
 pub const Symbols = struct {
+    gpa: std.mem.Allocator,
     enabled: bool,
     pid: u32,
     seen: []Id,
@@ -72,6 +76,7 @@ pub const Symbols = struct {
     pending_head: u32,
     pending_count: u32,
     seen_full_logged: bool,
+    hit: std.DynamicBitSetUnmanaged,
     vdso_image: ?*const target.VdsoImage,
     kernel: KernelIdentity,
     kernel_offered: bool,
@@ -84,7 +89,7 @@ pub const Symbols = struct {
     stopping: bool,
     asked: ?enum { region, kernel },
     asked_region: Candidate,
-    answer: bool,
+    answer: Answer,
 
     current: ?Transfer,
     arena: std.heap.ArenaAllocator,
@@ -101,6 +106,7 @@ pub const Symbols = struct {
         kernel: KernelIdentity,
     ) !void {
         symbols.* = .{
+            .gpa = gpa,
             .enabled = enabled,
             .pid = pid,
             .seen = &.{},
@@ -109,6 +115,7 @@ pub const Symbols = struct {
             .pending_head = 0,
             .pending_count = 0,
             .seen_full_logged = false,
+            .hit = .{},
             .vdso_image = vdso_image,
             .kernel = kernel,
             .kernel_offered = false,
@@ -120,7 +127,7 @@ pub const Symbols = struct {
             .stopping = false,
             .asked = null,
             .asked_region = undefined,
-            .answer = false,
+            .answer = .no,
             .current = null,
             .arena = .init(gpa),
             .chunk_buffer = &.{},
@@ -142,6 +149,7 @@ pub const Symbols = struct {
         if (symbols.kernel_reading) |reading| reading.deinit();
         symbols.kernel_arena.deinit();
         symbols.arena.deinit();
+        symbols.hit.deinit(gpa);
         gpa.free(symbols.prefix);
         gpa.free(symbols.chunk_buffer);
         gpa.free(symbols.pending);
@@ -149,30 +157,64 @@ pub const Symbols = struct {
         symbols.* = undefined;
     }
 
-    pub fn regions_see(symbols: *Symbols, regions: []const Region) void {
+    pub fn stacks_see(symbols: *Symbols, regions: []const Region, stacks: []const Stack) !void {
+        if (!symbols.enabled) return;
+        try symbols.hit.resize(symbols.gpa, regions.len, false);
+        symbols.hit.unsetAll();
+        for (stacks) |stack| {
+            for (stack.user, 0..) |address, index| {
+                const is_return = index > 0 or stack.leaf_is_return;
+                if (is_return and address == 0) continue;
+                const lookup = if (is_return) address - 1 else address;
+                const found = region_find(regions, lookup) orelse continue;
+                symbols.hit.set(found);
+            }
+        }
+        var hits = symbols.hit.iterator(.{});
+        while (hits.next()) |index| symbols.region_see(&regions[index]);
+    }
+
+    fn regions_see(symbols: *Symbols, regions: []const Region) void {
         if (!symbols.enabled) return;
         assert(symbols.seen_count <= binaries_max);
         assert(symbols.pending_count <= pending_max);
 
-        for (regions) |*region| {
-            const id = region.build_id orelse continue;
-            if (id.len == 0 or id.len > target.build_id_bytes_max) continue;
-            if (region.path.len == 0 or region.path.len > path_bytes_max) continue;
-            if (region.path[0] != '/' and !std.mem.eql(u8, region.path, target.vdso_path)) continue;
-            if (symbols.seen_has(id)) continue;
-            if (symbols.pending_count == pending_max) continue;
-            if (symbols.seen_count == binaries_max) {
-                if (!symbols.seen_full_logged) {
-                    symbols.seen_full_logged = true;
-                    log.warn("too many binaries to offer to the server", .{ .max = binaries_max });
-                }
-                continue;
-            }
+        for (regions) |*region| symbols.region_see(region);
+    }
 
-            symbols.seen[symbols.seen_count] = Id.from(id);
-            symbols.seen_count += 1;
-            symbols.pending_push(region);
+    fn region_see(symbols: *Symbols, region: *const Region) void {
+        const id = region.build_id orelse return;
+        if (id.len == 0 or id.len > target.build_id_bytes_max) return;
+        if (region.path.len == 0 or region.path.len > path_bytes_max) return;
+        if (region.path[0] != '/' and !std.mem.eql(u8, region.path, target.vdso_path)) return;
+        if (symbols.seen_has(id)) return;
+        if (symbols.pending_count == pending_max) return;
+        if (symbols.seen_count == binaries_max) {
+            if (!symbols.seen_full_logged) {
+                symbols.seen_full_logged = true;
+                log.warn("too many binaries to offer to the server", .{ .max = binaries_max });
+            }
+            return;
         }
+
+        symbols.seen[symbols.seen_count] = Id.from(id);
+        symbols.seen_count += 1;
+        symbols.pending_push(region);
+    }
+
+    pub fn resend(symbols: *Symbols) void {
+        if (!symbols.enabled) return;
+        symbols.seen_count = 0;
+        for (0..symbols.pending_count) |index| {
+            symbols.seen[symbols.seen_count] = symbols.pending_at(@intCast(index)).id;
+            symbols.seen_count += 1;
+        }
+        if (symbols.asked == .region) {
+            symbols.seen[symbols.seen_count] = symbols.asked_region.id;
+            symbols.seen_count += 1;
+        }
+        if (!symbols.kernel_offered_done()) return;
+        symbols.kernel_offered = false;
     }
 
     pub fn step(symbols: *Symbols) ?Event {
@@ -195,12 +237,12 @@ pub const Symbols = struct {
         return symbols.transfer_step(transfer);
     }
 
-    pub fn want(symbols: *Symbols, wanted: bool) void {
+    pub fn want(symbols: *Symbols, answer: Answer) void {
         if (symbols.asked != null) {
-            symbols.answer = wanted;
+            symbols.answer = answer;
             return;
         }
-        if (!wanted and symbols.current != null) symbols.current_end();
+        if (answer != .yes and symbols.current != null) symbols.current_end();
     }
 
     pub fn stop(symbols: *Symbols) void {
@@ -270,10 +312,17 @@ pub const Symbols = struct {
 
     fn asked_take(symbols: *Symbols) void {
         const asked = symbols.asked.?;
-        const wanted = symbols.answer;
+        const answer = symbols.answer;
         symbols.asked = null;
-        symbols.answer = false;
-        if (!wanted) return;
+        symbols.answer = .no;
+        if (answer == .later) {
+            switch (asked) {
+                .region => symbols.seen_forget(symbols.asked_region.id.slice()),
+                .kernel => symbols.kernel_offered = false,
+            }
+            return;
+        }
+        if (answer == .no) return;
         switch (asked) {
             .region => symbols.region_open(),
             .kernel => symbols.kernel_start(),
@@ -304,6 +353,20 @@ pub const Symbols = struct {
             log.debug("kernel symbols not sent: kallsyms cannot be read", .{});
             return;
         };
+    }
+
+    fn kernel_offered_done(symbols: *const Symbols) bool {
+        return symbols.kernel_offered and symbols.asked != .kernel and
+            symbols.kernel_reading == null and !symbols.current_is_kernel;
+    }
+
+    fn seen_forget(symbols: *Symbols, id: []const u8) void {
+        for (symbols.seen[0..symbols.seen_count], 0..) |*known, index| {
+            if (!std.mem.eql(u8, known.slice(), id)) continue;
+            symbols.seen_count -= 1;
+            symbols.seen[index] = symbols.seen[symbols.seen_count];
+            return;
+        }
     }
 
     fn kernel_finish(symbols: *Symbols) void {
@@ -373,6 +436,23 @@ pub const Symbols = struct {
         assert(symbols.pending_count > 0);
         symbols.pending_head = (symbols.pending_head + 1) % pending_max;
         symbols.pending_count -= 1;
+    }
+
+    /// Regions are sorted and do not overlap.
+    fn region_find(regions: []const Region, address: u64) ?usize {
+        var low: usize = 0;
+        var high: usize = regions.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (address < regions[middle].start) {
+                high = middle;
+            } else if (address >= regions[middle].end) {
+                low = middle + 1;
+            } else {
+                return middle;
+            }
+        }
+        return null;
     }
 };
 
@@ -474,6 +554,93 @@ test "more build IDs than the table holds are not offered, and the run goes on" 
     try testing.expectEqual(@as(u32, binaries_max), symbols.seen_count);
 }
 
+fn region_at(start: u64, path: []const u8, id: []const u8) Region {
+    var region = region_test(path, id);
+    region.start = start;
+    region.end = start + 0x1000;
+    return region;
+}
+
+test "only binaries that code was sampled in are queued, the leaf counted as it is" {
+    var symbols = try symbols_test(true, null);
+    defer symbols.deinit(testing.allocator);
+    const regions = [_]Region{
+        region_at(0x1000, "/bin/app", "\x0a"),
+        region_at(0x3000, "/lib/never.so", "\x0b"),
+        region_at(0x5000, "/lib/libc.so", "\x0c"),
+        region_at(0x7000, "/lib/edge.so", "\x0d"),
+    };
+    const stacks = [_]Stack{
+        .{ .samples = 3, .user = &.{ 0x5010, 0x1020 }, .kernel = &.{}, .complete = true },
+        .{ .samples = 1, .user = &.{ 0x9000, 0x8000 }, .kernel = &.{}, .complete = true },
+        .{ .samples = 1, .user = &.{0x7000}, .kernel = &.{}, .complete = true },
+    };
+    try symbols.stacks_see(&regions, &stacks);
+    try testing.expectEqual(@as(u32, 3), symbols.pending_count);
+    try testing.expectEqualStrings("/bin/app", symbols.pending_at(0).region().path);
+    try testing.expectEqualStrings("/lib/libc.so", symbols.pending_at(1).region().path);
+    try testing.expectEqualStrings("/lib/edge.so", symbols.pending_at(2).region().path);
+
+    const returned = [_]Stack{.{
+        .samples = 1,
+        .user = &.{0x3000},
+        .kernel = &.{},
+        .complete = true,
+        .leaf_is_return = true,
+    }};
+    try symbols.stacks_see(&regions, &returned);
+    try testing.expectEqual(@as(u32, 3), symbols.pending_count);
+}
+
+test "a binary the server takes later is offered again with the next report" {
+    var symbols = try symbols_test(true, null);
+    defer symbols.deinit(testing.allocator);
+    const regions = [_]Region{region_at(0x1000, "/no/such/app", "\x0a")};
+    const user = [_]u64{0x1010};
+    const stacks = [_]Stack{.{ .samples = 1, .user = &user, .kernel = &.{}, .complete = true }};
+    try symbols.stacks_see(&regions, &stacks);
+    try testing.expect(symbols.step().? == .offer);
+    symbols.want(.later);
+    try testing.expectEqual(@as(?Event, null), symbols.step());
+    try testing.expectEqual(@as(u32, 0), symbols.seen_count);
+
+    try symbols.stacks_see(&regions, &stacks);
+    try testing.expect(symbols.step().? == .offer);
+    symbols.want(.no);
+    try testing.expectEqual(@as(?Event, null), symbols.step());
+    try symbols.stacks_see(&regions, &stacks);
+    try testing.expectEqual(@as(?Event, null), symbols.step());
+}
+
+test "when the server lost a binary, the sampled ones are offered again, once each" {
+    var symbols = try symbols_test(true, null);
+    defer symbols.deinit(testing.allocator);
+    const regions = [_]Region{
+        region_at(0x1000, "/no/such/app", "\x0a"),
+        region_at(0x3000, "/no/such/lib.so", "\x0b"),
+    };
+    const stacks = [_]Stack{.{
+        .samples = 1,
+        .user = &.{ 0x3010, 0x1010 },
+        .kernel = &.{},
+        .complete = true,
+    }};
+    try symbols.stacks_see(&regions, &stacks);
+    var consumer = Consumer{};
+    _ = try consumer.drain(&symbols);
+    try testing.expectEqual(@as(u32, 2), consumer.offers);
+
+    try symbols.stacks_see(&regions, &stacks);
+    _ = try consumer.drain(&symbols);
+    try testing.expectEqual(@as(u32, 2), consumer.offers);
+
+    symbols.resend();
+    try symbols.stacks_see(&regions, &stacks);
+    try symbols.stacks_see(&regions, &stacks);
+    _ = try consumer.drain(&symbols);
+    try testing.expectEqual(@as(u32, 4), consumer.offers);
+}
+
 const Consumer = struct {
     known: []const []const u8 = &.{},
     drop_at_chunk: bool = false,
@@ -489,7 +656,7 @@ const Consumer = struct {
         switch (event) {
             .offer => |offered| {
                 consumer.offers += 1;
-                symbols.want(!consumer.knows(offered.build_id));
+                symbols.want(if (consumer.knows(offered.build_id)) .no else .yes);
             },
             .begin => |header| {
                 consumer.begins += 1;
@@ -500,7 +667,7 @@ const Consumer = struct {
             .chunk => |chunk| {
                 consumer.chunks += 1;
                 consumer.bytes += chunk.bytes.len;
-                if (consumer.drop_at_chunk) symbols.want(false);
+                if (consumer.drop_at_chunk) symbols.want(.no);
             },
             .end => consumer.ends += 1,
             .abort => consumer.aborts += 1,
@@ -587,7 +754,7 @@ test "a run that stops during a transfer finishes it, and starts nothing new" {
     defer symbols.deinit(testing.allocator);
     symbols.regions_see(&.{region_test("/bin/sh", shell)});
     try testing.expect(symbols.step().? == .offer);
-    symbols.want(true);
+    symbols.want(.yes);
     try testing.expect(symbols.step().? == .begin);
 
     symbols.regions_see(&.{region_test("/bin/ls", "\x01\x02")});
@@ -627,11 +794,11 @@ test "the kernel is offered first and read on its thread, while a binary is sent
 
     const kernel_offer = symbols.step().?;
     try testing.expectEqualStrings(kernel_symbols.path, kernel_offer.offer.path);
-    symbols.want(true);
+    symbols.want(.yes);
     const binary_offer = symbols.step().?;
     try testing.expectEqualStrings("/bin/sh", binary_offer.offer.path);
     try testing.expect(symbols.kernel_reading != null);
-    symbols.want(true);
+    symbols.want(.yes);
 
     var consumer = Consumer{};
     var steps: u32 = 0;
@@ -657,7 +824,7 @@ test "a run that stops while the kernel is read stops the reading" {
     defer symbols.deinit(testing.allocator);
 
     try testing.expect(symbols.step().? == .offer);
-    symbols.want(true);
+    symbols.want(.yes);
     try testing.expectEqual(@as(?Event, null), symbols.step());
     try testing.expect(symbols.kernel_reading != null);
     const started_ns = os.timer.monotonic_ns();

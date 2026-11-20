@@ -104,8 +104,8 @@ pub const Feed = struct {
                     error.WindowTooLarge => {},
                     else => return err,
                 };
-                feed.server.symbols.used(message.regions);
-                return .none;
+                const resend = feed.server.symbols.used(message.regions);
+                return if (resend) .resend else .none;
             },
             .stopped => return .none,
             else => return feed.receiver.take(event),

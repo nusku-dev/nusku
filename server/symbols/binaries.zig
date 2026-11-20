@@ -4,6 +4,9 @@ const std = @import("std");
 const SymbolTable = @import("symbol_table.zig").SymbolTable;
 const log_file = @import("../log.zig");
 const log = log_file.server;
+const IdSet = @import("id_set.zig").IdSet;
+
+pub const evicted_max = 64;
 
 const assert = std.debug.assert;
 
@@ -26,6 +29,7 @@ pub const Binaries = struct {
     bytes_used: u64,
     clock: u64,
     last: usize,
+    evicted: IdSet(evicted_max),
 
     pub fn init(gpa: std.mem.Allocator, entries_max: usize, bytes_max: u64) !Binaries {
         assert(entries_max > 0);
@@ -36,6 +40,7 @@ pub const Binaries = struct {
             .bytes_used = 0,
             .clock = 0,
             .last = 0,
+            .evicted = .{},
         };
     }
 
@@ -136,6 +141,7 @@ pub const Binaries = struct {
             .binaries = binaries.count,
             .binaries_max = binaries.entries.len,
         });
+        binaries.evicted.add_over_oldest(binaries.entries[oldest].id);
         binaries.bytes_used -= binaries.entries[oldest].bytes;
         entry_free(gpa, &binaries.entries[oldest]);
         binaries.count -= 1;

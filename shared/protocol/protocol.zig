@@ -36,7 +36,7 @@ pub const Program = struct {
     keep_running: bool = false,
 };
 
-pub const Answer = enum { none, wanted, unwanted };
+pub const Answer = enum { none, wanted, unwanted, later, resend };
 
 pub const WatchEvent = union(enum) {
     frame: *const ProcessFrame,

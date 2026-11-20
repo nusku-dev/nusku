@@ -60,6 +60,8 @@ fn profile_take(run: *agent.Run, feed: *Feed) !Done {
             .none => {},
             .wanted => run.binary_want(true),
             .unwanted => run.binary_want(false),
+            .later => run.binary_later(),
+            .resend => run.binaries_resend(),
         }
         if (event == .stopped) return .{ .profile = event.stopped };
     }

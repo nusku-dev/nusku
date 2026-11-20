@@ -38,6 +38,7 @@ pub const Stats = struct {
 
 const uploads_max = 64;
 const refused_max = 64;
+const lost_max = 64;
 
 const Ticket = struct {
     slot: id_set.IdSet(uploads_max).Slot,
@@ -50,6 +51,7 @@ pub const Symbols = struct {
     binaries: Binaries,
     claims: id_set.IdSet(uploads_max),
     refused: id_set.IdSet(refused_max),
+    lost: id_set.IdSet(lost_max),
     uploads_bytes_max: u64,
     uploads_bytes_used: u64,
     upload_bytes_max: u64,
@@ -70,6 +72,7 @@ pub const Symbols = struct {
             .binaries = try Binaries.init(gpa, options.binaries_max, options.binaries_bytes_max),
             .claims = .{},
             .refused = .{},
+            .lost = .{},
             .uploads_bytes_max = options.uploads_bytes_max,
             .uploads_bytes_used = 0,
             .upload_bytes_max = options.upload_bytes_max,
@@ -108,15 +111,26 @@ pub const Symbols = struct {
         symbols.* = undefined;
     }
 
-    pub fn used(symbols: *Symbols, regions: []const protocol.Region) void {
+    pub fn used(symbols: *Symbols, regions: []const protocol.Region) bool {
         symbols.lock.lock();
         defer symbols.lock.unlock();
+        var resend = false;
         for (regions) |region| {
             const build_id = region.build_id orelse continue;
-            _ = symbols.binaries.get(build_id);
+            if (symbols.binaries.get(build_id) != null) continue;
+            const lost = symbols.lost.take(build_id) or symbols.binaries.evicted.take(build_id);
+            if (lost and !symbols.known_locked(build_id)) resend = true;
         }
+        return resend;
     }
 
+    fn offer_answer(symbols: *Symbols, build_id: []const u8) protocol.Answer {
+        symbols.lock.lock();
+        defer symbols.lock.unlock();
+        if (symbols.known_locked(build_id)) return .unwanted;
+        const waiting = symbols.builds.count + symbols.claims.count();
+        return if (waiting >= builder.Queue.items_max) .later else .wanted;
+    }
     /// The frames at an offset, innermost first, copied into `arena`.
     pub fn locate(
         symbols: *Symbols,
@@ -194,6 +208,7 @@ pub const Symbols = struct {
                 .uploads = symbols.claims.count(),
                 .uploads_max = uploads_max,
             });
+            symbols.lost.add_over_oldest(build_id);
             return error.UploadsFull;
         };
         symbols.uploads_bytes_used += bytes;
@@ -218,10 +233,11 @@ pub const Symbols = struct {
             return;
         }
         symbols.builds.push(owned) catch |err| {
-            log.warn("binary dropped: too many waiting for their symbol table", .{
+            log.debug("binary dropped for now: too many waiting for their symbol table", .{
                 .path = owned.path,
                 .waiting_max = builder.Queue.items_max,
             });
+            symbols.lost.add_over_oldest(owned.id);
             symbols.received_free(&owned);
             return err;
         };
@@ -322,7 +338,7 @@ pub const Receiver = struct {
     pub fn take(receiver: *Receiver, event: protocol.RunEvent) protocol.Answer {
         switch (event) {
             .binary_offer => |offer| {
-                return if (receiver.symbols.known(offer.build_id)) .unwanted else .wanted;
+                return receiver.symbols.offer_answer(offer.build_id);
             },
             .binary_begin => |header| receiver.begin(header) catch |err| return receiver.drop(err),
             .binary_chunk => |*part| receiver.chunk(part) catch |err| return receiver.drop(err),
@@ -503,10 +519,63 @@ test "a table the windows use outlives one that nothing uses" {
         .path = "/bin/app",
         .build_id = "aa",
     }};
-    symbols.used(&regions);
+    _ = symbols.used(&regions);
     try symbols.binaries.put(gpa, "cc", try table_one(gpa, "more"));
     try testing.expect(symbols.known("aa"));
     try testing.expect(!symbols.known("bb"));
+}
+
+fn region_of(build_id: []const u8) protocol.Region {
+    return .{
+        .start = 0x7000,
+        .end = 0x8000,
+        .offset = 0,
+        .inode = 1,
+        .path = "/bin/app",
+        .build_id = build_id,
+    };
+}
+
+test "an offer while the builder is behind is taken later, not dropped" {
+    var symbols: Symbols = undefined;
+    try symbols.init(testing.allocator, .{});
+    defer symbols.deinit();
+
+    var tickets: [builder.Queue.items_max]Ticket = undefined;
+    for (&tickets, 0..) |*ticket, index| {
+        const id = [_]u8{ 'b', @intCast(index) };
+        ticket.* = try symbols.claim(&id, "/b", 1);
+    }
+    try testing.expectEqual(protocol.Answer.later, symbols.offer_answer("aa"));
+    try testing.expectEqual(protocol.Answer.unwanted, symbols.offer_answer(&.{ 'b', 0 }));
+    symbols.claim_drop(tickets[0]);
+    try testing.expectEqual(protocol.Answer.wanted, symbols.offer_answer("aa"));
+    for (tickets[1..]) |ticket| symbols.claim_drop(ticket);
+}
+
+test "a binary lost while the server was busy is asked for again, once" {
+    var symbols: Symbols = undefined;
+    try symbols.init(testing.allocator, .{ .uploads_bytes_max = 10 });
+    defer symbols.deinit();
+
+    try testing.expectError(error.UploadsFull, symbols.claim("aa", "/a", 11));
+    const regions = [_]protocol.Region{ region_of("aa"), region_of("zz") };
+    try testing.expect(symbols.used(&regions));
+    try testing.expect(!symbols.used(&regions));
+}
+
+test "an evicted table that is still running is asked for again" {
+    var symbols: Symbols = undefined;
+    try symbols.init(testing.allocator, .{ .binaries_max = 1 });
+    defer symbols.deinit();
+    const gpa = testing.allocator;
+    try symbols.binaries.put(gpa, "aa", try table_one(gpa, "work"));
+    try symbols.binaries.put(gpa, "bb", try table_one(gpa, "rest"));
+    try testing.expect(!symbols.known("aa"));
+
+    try testing.expect(!symbols.used(&.{region_of("bb")}));
+    try testing.expect(symbols.used(&.{region_of("aa")}));
+    try testing.expect(!symbols.used(&.{region_of("aa")}));
 }
 
 test "a receiver answers offers, and turns a binary that arrives into a known one" {

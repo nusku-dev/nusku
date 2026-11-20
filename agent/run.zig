@@ -52,7 +52,6 @@ const Layers = struct {
         errdefer layers.metrics.deinit(gpa);
         const binaries = options.binaries;
         try layers.symbols.init(gpa, binaries, target.pid, target.vdso_image(), target.kernel);
-        layers.symbols.regions_see(target.regions);
         return layers;
     }
 
@@ -180,7 +179,15 @@ pub const Run = struct {
     }
 
     pub fn binary_want(run: *Run, wanted: bool) void {
-        run.layers.symbols.want(wanted);
+        run.layers.symbols.want(if (wanted) .yes else .no);
+    }
+
+    pub fn binary_later(run: *Run) void {
+        run.layers.symbols.want(.later);
+    }
+
+    pub fn binaries_resend(run: *Run) void {
+        run.layers.symbols.resend();
     }
 
     /// Safe from any thread, and from a signal handler.
@@ -217,7 +224,6 @@ pub const Run = struct {
     fn report(run: *Run) !Event {
         const layers = run.layers;
         const windows = try layers.metrics.collect(run.gpa, &layers.target);
-        layers.symbols.regions_see(layers.target.regions);
         _ = run.message_arena.reset(.retain_capacity);
         run.message = try message_file.build(run.message_arena.allocator(), .{
             .pid = run.pid,
@@ -225,6 +231,7 @@ pub const Run = struct {
             .kernel = layers.target.kernel,
             .windows = &windows,
         });
+        try layers.symbols.stacks_see(layers.target.regions, run.message.stacks);
         run.reports += 1;
         return .{ .report = &run.message };
     }
