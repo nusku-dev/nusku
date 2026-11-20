@@ -16,6 +16,10 @@ pub const Summary = struct {
     name: ?[]const u8 = null,
     elapsed_ms: u64 = 0,
     reason: ?protocol.RunStop,
+    part: ?Part = null,
+    live_hint: []const u8 = "Ctrl-C to stop",
+
+    pub const Part = struct { from_s: u64, to_s: ?u64 };
 };
 
 pub const Options = struct {
@@ -39,11 +43,12 @@ pub fn write(
         return;
     }
     var names = Names{ .arena = arena };
-    const functions = try functions_rank(arena, &names, profile.stacks);
+    const functions = try functions_rank(arena, &names, profile.stacks, true);
     _ = try functions_write(w, style, functions, profile.samples, options.top);
 
     var tree = try Tree.build(arena, &names, profile.stacks);
     try tree.write(w, style, profile.samples, options.cutoff_tenths);
+    try quality_write(w, style, arena, profile);
 }
 
 pub fn live_write(
@@ -66,7 +71,7 @@ pub fn live_write(
         return lines + 2;
     }
     var names = Names{ .arena = arena };
-    const functions = try functions_rank(arena, &names, profile.stacks);
+    const functions = try functions_rank(arena, &names, profile.stacks, false);
     lines += try functions_write(w, style, functions, profile.samples, options.top);
     try w.flush();
     return lines;
@@ -98,10 +103,17 @@ fn header_write(w: *Writer, style: Style, profile: *const Profile, summary: Summ
     try w.print("{d}.{d} s", .{ summary.elapsed_ms / 1000, summary.elapsed_ms % 1000 / 100 });
     try w.print("{s}{s}{s}", .{ style.on(term.dim), separator, style.off() });
     try w.print("{d} samples at {d} Hz", .{ profile.samples, profile.sample_hz });
+    if (summary.part) |part| {
+        try w.print("{s}{s}seconds {d} to ", .{ style.on(term.dim), separator, part.from_s });
+        if (part.to_s) |to_s| try w.print("{d}{s}", .{ to_s, style.off() }) else {
+            try w.print("the end{s}", .{style.off()});
+        }
+    }
     const reason = summary.reason orelse {
-        try w.print("{s}{s}live \u{00b7} Ctrl-C to stop{s}\n", .{
+        try w.print("{s}{s}live \u{00b7} {s}{s}\n", .{
             style.on(term.dim),
             separator,
+            summary.live_hint,
             style.off(),
         });
         return lines + try losses_write(w, style, profile);
@@ -145,12 +157,19 @@ const Function = struct {
     module: ?[]const u8,
     self: u64,
     total: u64,
+    inlined: u64 = 0,
+    lines: std.StringHashMapUnmanaged(LineCount) = .empty,
+    hot: ?[]const u8 = null,
 };
 
+const LineCount = struct { self: u64 = 0, total: u64 = 0 };
+
+/// With `with_lines`, each function also gets the source line it spent the most time on.
 fn functions_rank(
     arena: std.mem.Allocator,
     names: *Names,
     stacks: []const server.SymbolStack,
+    with_lines: bool,
 ) ![]Function {
     var index: std.StringHashMapUnmanaged(usize) = .empty;
     var functions: std.ArrayList(Function) = .empty;
@@ -171,14 +190,52 @@ fn functions_rank(
                 });
             }
             const function = &functions.items[entry.value_ptr.*];
-            if (position == 0) function.self += stack.samples;
-            if (name_seen(seen.items, name)) continue;
+            const self = if (position == 0) stack.samples else 0;
+            function.self += self;
+            const first = !name_seen(seen.items, name);
+            const total = if (first) stack.samples else 0;
+            if (with_lines) try line_count(arena, function, frame, self, total);
+            if (!first) continue;
             try seen.append(arena, name);
             function.total += stack.samples;
+            if (frame.inlined) function.inlined += stack.samples;
         }
     }
+    if (with_lines) for (functions.items) |*function| hot_line_pick(function);
     std.mem.sortUnstable(Function, functions.items, {}, function_more);
     return functions.items;
+}
+
+fn line_count(
+    arena: std.mem.Allocator,
+    function: *Function,
+    frame: Frame,
+    self: u64,
+    total: u64,
+) !void {
+    const file = frame.file orelse return;
+    const line = frame.line orelse return;
+    const key = try std.fmt.allocPrint(arena, "{s}:{d}", .{ std.fs.path.basename(file), line });
+    const entry = try function.lines.getOrPut(arena, key);
+    if (!entry.found_existing) entry.value_ptr.* = .{};
+    entry.value_ptr.self += self;
+    entry.value_ptr.total += total;
+}
+
+fn hot_line_pick(function: *Function) void {
+    var best: ?LineCount = null;
+    var entries = function.lines.iterator();
+    while (entries.next()) |entry| {
+        const count = entry.value_ptr.*;
+        const better = if (best) |old|
+            count.self > old.self or (count.self == old.self and count.total > old.total)
+        else
+            true;
+        if (better) {
+            best = count;
+            function.hot = entry.key_ptr.*;
+        }
+    }
 }
 
 fn name_seen(seen: []const []const u8, name: []const u8) bool {
@@ -232,6 +289,12 @@ fn functions_write(
         if (function.module) |module| {
             try w.print("  {s}{s}{s}", .{ style.on(term.dim), module, style.off() });
         }
+        if (function.hot) |hot| {
+            try w.print("  {s}{s}{s}", .{ style.on(term.dim), hot, style.off() });
+        }
+        if (function.inlined * 2 >= function.total and function.inlined > 0) {
+            try w.print("  {s}inlined{s}", .{ style.on(term.cyan), style.off() });
+        }
         try w.writeByte('\n');
     }
     return 3 + shown.len;
@@ -247,6 +310,7 @@ const Tree = struct {
         total: u64 = 0,
         self: u64 = 0,
         recursive: bool = false,
+        inlined: bool = false,
         children: std.ArrayList(u32) = .empty,
     };
 
@@ -277,6 +341,7 @@ const Tree = struct {
                 continue;
             }
             current = try tree.step(current, name, module_of(frame), stack.samples);
+            if (frame.inlined) tree.nodes.items[current].inlined = true;
         }
         tree.nodes.items[current].self += stack.samples;
     }
@@ -377,6 +442,7 @@ const Tree = struct {
         }
         try term.text_cut_write(w, node.name, name_width_max);
         if (node.recursive) try w.print(" {s}\u{21bb}{s}", .{ style.on(term.cyan), style.off() });
+        if (node.inlined) try w.print(" {s}inlined{s}", .{ style.on(term.cyan), style.off() });
         if (node.self > 0 and node.children.items.len > 0) {
             const share = tenths(node.self, context.samples);
             try w.print("  {s}self {d}.{d}%{s}", .{
@@ -394,6 +460,129 @@ const Tree = struct {
         try w.writeByte('\n');
     }
 };
+
+const Gap = struct { module: []const u8, unnamed: u64 = 0, no_lines: u64 = 0 };
+
+/// What the profile cannot show: stacks cut short, code with no name or no line.
+fn quality_write(
+    w: *Writer,
+    style: Style,
+    arena: std.mem.Allocator,
+    profile: *const Profile,
+) !void {
+    var incomplete: u64 = 0;
+    var unnamed: u64 = 0;
+    var gaps: std.StringArrayHashMapUnmanaged(Gap) = .empty;
+    for (profile.stacks) |stack| {
+        if (!stack.complete) incomplete += stack.samples;
+        if (stack.frames.len > 0 and stack.frames[0].function == null) unnamed += stack.samples;
+        try gaps_count(arena, &gaps, stack);
+    }
+    const samples = profile.samples;
+    try w.print("\n  {s}Quality{s}\n", .{ style.on(term.bold), style.off() });
+    if (incomplete == 0) {
+        try quality_line(w, style, true, "every stack is whole, out to the program's start", .{});
+    } else {
+        const share = tenths(@min(incomplete, samples), samples);
+        const text = "{d}.{d}% of samples have a stack cut short: " ++
+            "the unwinder could not go further, their callers are missing";
+        try quality_line(w, style, false, text, .{ share / 10, share % 10 });
+    }
+    if (unnamed == 0) {
+        try quality_line(w, style, true, "every sample ran in code with a name", .{});
+    } else {
+        const share = tenths(@min(unnamed, samples), samples);
+        try quality_line(w, style, false, "{d}.{d}% of samples ran in code with no name", .{
+            share / 10,
+            share % 10,
+        });
+    }
+    if (profile.samples_lost == 0) try quality_line(w, style, true, "no samples lost", .{});
+    try gaps_write(w, style, gaps.values(), samples);
+}
+
+fn gaps_count(
+    arena: std.mem.Allocator,
+    gaps: *std.StringArrayHashMapUnmanaged(Gap),
+    stack: server.SymbolStack,
+) !void {
+    var counted_names: [8][]const u8 = undefined;
+    var counted_lines: [8][]const u8 = undefined;
+    var names_count: usize = 0;
+    var lines_count: usize = 0;
+    for (stack.frames) |frame| {
+        if (frame.kernel) continue;
+        const module = frame.module orelse continue;
+        if (std.mem.eql(u8, module, "[vdso]")) continue;
+        const no_name = frame.function == null;
+        if (!no_name and frame.file != null) continue;
+        const counted = if (no_name)
+            counted_names[0..names_count]
+        else
+            counted_lines[0..lines_count];
+        if (seen_in(counted, module)) continue;
+        if (no_name and names_count < counted_names.len) {
+            counted_names[names_count] = module;
+            names_count += 1;
+        } else if (!no_name and lines_count < counted_lines.len) {
+            counted_lines[lines_count] = module;
+            lines_count += 1;
+        }
+        const entry = try gaps.getOrPut(arena, module);
+        if (!entry.found_existing) entry.value_ptr.* = .{ .module = module };
+        if (no_name) {
+            entry.value_ptr.unnamed += stack.samples;
+        } else {
+            entry.value_ptr.no_lines += stack.samples;
+        }
+    }
+}
+
+fn seen_in(list: []const []const u8, module: []const u8) bool {
+    for (list) |other| if (std.mem.eql(u8, other, module)) return true;
+    return false;
+}
+
+fn gaps_write(w: *Writer, style: Style, gaps: []Gap, samples: u64) !void {
+    std.mem.sortUnstable(Gap, gaps, {}, gap_more);
+    var shown: usize = 0;
+    for (gaps) |gap| {
+        const names = gap.unnamed > 0;
+        const count = if (names) gap.unnamed else gap.no_lines;
+        if (tenths(@min(count, samples), samples) < 5 or shown == 8) continue;
+        shown += 1;
+        const share = tenths(@min(count, samples), samples);
+        try w.print("    {s}{s}{s}  no {s} on {d}.{d}% of samples: {s}\n", .{
+            style.on(term.bold),
+            std.fs.path.basename(gap.module),
+            style.off(),
+            if (names) "names" else "line info",
+            share / 10,
+            share % 10,
+            if (names)
+                "install its debug package (-dbgsym), set DEBUGINFOD_URLS, or build it with symbols"
+            else
+                "install its debug package, or build it with -g",
+        });
+    }
+}
+
+fn gap_more(_: void, a: Gap, b: Gap) bool {
+    if (a.unnamed != b.unnamed) return a.unnamed > b.unnamed;
+    return a.no_lines > b.no_lines;
+}
+
+fn quality_line(
+    w: *Writer,
+    style: Style,
+    ok: bool,
+    comptime text: []const u8,
+    args: anytype,
+) !void {
+    const mark = if (ok) "\u{2713}" else "!";
+    const color = if (ok) term.cyan else term.yellow;
+    try w.print("    {s}{s}{s} " ++ text ++ "\n", .{ style.on(color), mark, style.off() } ++ args);
+}
 
 fn tenths(part: u64, whole: u64) u64 {
     assert(whole > 0);

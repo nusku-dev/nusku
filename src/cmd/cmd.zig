@@ -3,6 +3,7 @@
 const cli = @import("cli");
 const prof = @import("prof.zig");
 const ps = @import("ps.zig");
+const watch = @import("watch.zig");
 
 const flags: []const cli.Flag = &.{
     .{ .name = "verbose", .short = 'v', .kind = .bool, .help = "Same as --log-level=debug" },
@@ -23,12 +24,17 @@ pub const root: cli.Command = .{
     \\from a graph of CPU percentage that goes up and down with no explanation.
     ,
     .persistent_flags = flags,
-    .subcommands = &.{ &prof.cmd, &ps.cmd },
+    .subcommands = &.{
+        &prof.cmd,
+        &ps.cmd,
+        &watch.cmd,
+    },
 };
 
 test {
     _ = prof;
     _ = ps;
+    _ = watch;
     _ = @import("flags.zig");
     _ = @import("interrupt.zig");
 }

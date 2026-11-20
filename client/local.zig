@@ -18,7 +18,8 @@ pub const Options = struct {
     metrics: std.EnumSet(protocol.Metric),
     interval_ms: u32,
     duration_s: u32,
-    continue_target: bool = false,
+    from_ms: ?u64 = null,
+    to_ms: ?u64 = null,
 };
 
 pub const Live = struct {
@@ -68,13 +69,42 @@ pub fn profile(
     active_clear();
     const done = controller.wait(started.job);
     const elapsed_ms = monotonic_ms() - started_ms;
-
+    const whole = try server.profile(arena, .{ .target = target }, .all_built);
     return .{
         .pid = pid,
         .reason = (try done).profile,
-        .profile = try server.profile(arena, .{ .target = target }, .all_built),
+        .profile = try part_of(arena, server, target, whole, options),
         .elapsed_ms = elapsed_ms,
     };
+}
+
+fn part_of(
+    arena: std.mem.Allocator,
+    server: *Server,
+    target: server_lib.TargetId,
+    whole: server_lib.Profile,
+    options: Options,
+) !server_lib.Profile {
+    if (options.from_ms == null and options.to_ms == null) return whole;
+    if (whole.windows.len == 0) return whole;
+    const start = whole.windows[0].start_unix_ns;
+    const ns_per_ms = std.time.ns_per_ms;
+    const from = start +| (options.from_ms orelse 0) *| ns_per_ms;
+    const to = if (options.to_ms) |to_ms| start +| to_ms *| ns_per_ms else std.math.maxInt(u64);
+    var first: ?u64 = null;
+    var last: u64 = 0;
+    for (whole.windows) |window| {
+        const middle = window.start_unix_ns +| window.duration_ns / 2;
+        if (middle < from or middle >= to) continue;
+        if (first == null) first = middle;
+        last = middle;
+    }
+    const query = server_lib.Query{
+        .target = target,
+        .from_unix_ns = first orelse return error.EmptyRange,
+        .to_unix_ns = last + 1,
+    };
+    return server.profile(arena, query, .all_built);
 }
 
 const Backend = struct {

@@ -27,8 +27,9 @@ pub const cmd: cli.Command = .{
     \\Profiling runs until --duration ends, the process exits, or Ctrl-C.
     \\On a terminal, the top functions are shown live while it runs. Then
     \\the profile is printed: the functions that took the most time on the
-    \\CPU, and the call tree. A launched process that is still running then
-    \\is stopped.
+    \\CPU, the call tree, and what the profile could not see. A launched process
+    \\that is still running then is stopped, unless --keep-running is given. Its
+    \\input is empty and its output is discarded.
     ,
     .flags = &.{
         .{
@@ -80,6 +81,21 @@ pub const cmd: cli.Command = .{
             .help = "Do not show the profile while it runs, only at the end",
         },
         .{
+            .name = "keep-running",
+            .kind = .bool,
+            .help = "Leave a launched program running when profiling ends",
+        },
+        .{
+            .name = "from",
+            .kind = .int,
+            .help = "Show only the run from this many seconds after its start",
+        },
+        .{
+            .name = "to",
+            .kind = .int,
+            .help = "Show only the run up to this many seconds after its start",
+        },
+        .{
             .name = "folded",
             .kind = .string,
             .help = "Also write the stacks to this file, in the folded format of flame graph tools",
@@ -97,6 +113,7 @@ fn run(ctx: *cli.Context) anyerror!void {
 
     const program: ?protocol.Program = if (settings.pid == null) .{
         .argv = try argv_of(ctx, ctx.getString("exec"), ctx.args),
+        .keep_running = settings.keep_running,
     } else null;
     var name_buffer: [64]u8 = undefined;
     const name = if (program != null)
@@ -118,21 +135,24 @@ fn run(ctx: *cli.Context) anyerror!void {
         .metrics = settings.metrics,
         .interval_ms = settings.interval_ms,
         .duration_s = settings.duration_s,
+        .from_ms = settings.from_ms,
+        .to_ms = settings.to_ms,
     }, watcher) catch |err| {
         try term.lines_erase(ctx.stdout, live.lines);
+        if (err == error.EmptyRange) {
+            return ctx.fail("no report of the run falls between --from and --to", .{});
+        }
         const advice = hint(err);
-        if (program) |launched| return ctx.fail("cannot profile {s}: {t}{s}{s}", .{
-            launched.argv[0],
-            err,
-            if (advice.len > 0) ": " else "",
-            advice,
-        });
-        return ctx.fail("profiling pid {d} failed: {t}{s}{s}", .{
+        const separator = if (advice.len > 0) ": " else "";
+        const launched = program orelse return ctx.fail("profiling pid {d} failed: {t}{s}{s}", .{
             settings.pid.?,
             err,
-            if (advice.len > 0) ": " else "",
+            separator,
             advice,
         });
+        const exec = launched.argv[0];
+        if (launch_failure(err)) |reason| return ctx.fail("cannot launch {s}: {s}", .{ exec, reason });
+        return ctx.fail("profiling {s} failed: {t}{s}{s}", .{ exec, err, separator, advice });
     };
 
     if (settings.folded) |path| try folded_save(ctx, path, &result.profile);
@@ -142,6 +162,7 @@ fn run(ctx: *cli.Context) anyerror!void {
         .name = name,
         .elapsed_ms = result.elapsed_ms,
         .reason = result.reason,
+        .part = part_of(settings),
     }, settings.view);
     try ctx.stdout.flush();
 }
@@ -197,6 +218,9 @@ const Settings = struct {
     duration_s: u32,
     folded: ?[]const u8,
     no_live: bool,
+    keep_running: bool,
+    from_ms: ?u64,
+    to_ms: ?u64,
     view: view.Options,
 };
 
@@ -223,6 +247,16 @@ fn settings_read(ctx: *cli.Context) error{InvalidUsage}!Settings {
     if (duration < 0 or duration > std.math.maxInt(u32)) {
         return ctx.usageFail("--duration must be 0 or more seconds (got {d})", .{duration});
     }
+    if (ctx.getBool("keep-running") and !has_exec) {
+        return ctx.usageFail("--keep-running only applies to --exec", .{});
+    }
+    const from = if (ctx.isSet("from")) ctx.getInt("from") else 0;
+    const to = if (ctx.isSet("to")) ctx.getInt("to") else std.math.maxInt(u32);
+    if (from < 0 or to <= from) {
+        const text = "--from and --to need 0 <= from < to (got {d} and {d})";
+        return ctx.usageFail(text, .{ from, to });
+    }
+
     const top = ctx.getInt("top");
     if (top < 1) return ctx.usageFail("--top must be at least 1 (got {d})", .{top});
     const cutoff = ctx.getInt("cutoff");
@@ -237,6 +271,9 @@ fn settings_read(ctx: *cli.Context) error{InvalidUsage}!Settings {
         .duration_s = @intCast(duration),
         .folded = if (ctx.isSet("folded")) ctx.getString("folded") else null,
         .no_live = ctx.getBool("no-live"),
+        .keep_running = ctx.getBool("keep-running"),
+        .from_ms = if (ctx.isSet("from")) @as(u64, @intCast(from)) * std.time.ms_per_s else null,
+        .to_ms = if (ctx.isSet("to")) @as(u64, @intCast(to)) * std.time.ms_per_s else null,
         .view = .{
             .top = @intCast(top),
             .cutoff_tenths = @intCast(cutoff * 10),
@@ -273,20 +310,37 @@ fn argv_of(ctx: *cli.Context, exec: []const u8, args: []const []const u8) ![]con
     return argv;
 }
 
+fn launch_failure(err: anyerror) ?[]const u8 {
+    return switch (err) {
+        error.ProgramNotFound => "no such program (give a path, or a name on PATH)",
+        error.NotExecutable => "the file cannot be run",
+        error.TooManyArguments => "too many arguments, or one too long",
+        error.ExitedAtOnce => "it ended before it could be profiled",
+        error.LaunchFailed => "the system refused to start it",
+        else => null,
+    };
+}
+
 fn hint(err: anyerror) []const u8 {
     return switch (err) {
         error.PermissionDenied => "run as root, or grant CAP_BPF, CAP_PERFMON and CAP_SYSLOG",
         error.ProcessNotFound => "no process with that pid",
-        error.ProgramNotFound => "no such program: give its path, or a name on PATH",
-        error.NotExecutable => "the file isn't a program this machine can run",
-        error.ExitedAtOnce => "the program ended before profiling could start",
         error.NotSupported => "the kernel is too old for nusku: it needs Linux 5.3 or newer",
         error.MetricNotImplemented => "only the cpu metric exists so far",
         else => "",
     };
 }
 
-fn process_name(pid: u32, buffer: *[64]u8) ?[]const u8 {
+fn part_of(settings: Settings) ?view.Summary.Part {
+    if (settings.from_ms == null and settings.to_ms == null) return null;
+    const ms_per_s = std.time.ms_per_s;
+    return .{
+        .from_s = (settings.from_ms orelse 0) / ms_per_s,
+        .to_s = if (settings.to_ms) |to_ms| to_ms / ms_per_s else null,
+    };
+}
+
+pub fn process_name(pid: u32, buffer: *[64]u8) ?[]const u8 {
     const linux = std.os.linux;
     var path_buffer: [32]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/comm", .{pid}) catch unreachable;
