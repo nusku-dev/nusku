@@ -16,8 +16,11 @@ import type { ViewProps } from "./analysis";
 import {
   frameColor,
   frameKind,
+  heatColor,
+  idleColor,
   kindColor,
   kindLabels,
+  type ColorBy,
   type FrameKind,
 } from "./colors";
 
@@ -39,6 +42,7 @@ export function FlameGraph({
   onSelect,
 }: ViewProps) {
   const [zoomId, setZoomId] = useState("");
+  const [colorBy, setColorBy] = useState<ColorBy>("kind");
   const [hover, setHover] = useState<{
     node: TreeNode;
     x: number;
@@ -79,6 +83,15 @@ export function FlameGraph({
       .filter((stack) => stack.frames.some((frame) => matches(frame, search)))
       .reduce((sum, stack) => sum + stack.value, 0);
   }, [analysis.profile, search]);
+
+  const hottest = useMemo(
+    () => analysis.functions.reduce((max, f) => Math.max(max, f.self), 0),
+    [analysis.functions],
+  );
+  const colorOf = (node: TreeNode, kind: FrameKind, name: string) => {
+    if (colorBy === "kind") return frameColor(kind, name);
+    return heatColor(analysis.byKey.get(node.key)?.self ?? 0, hottest);
+  };
 
   const total = root.total;
   const onMove = (event: MouseEvent<HTMLDivElement>) => {
@@ -134,7 +147,8 @@ export function FlameGraph({
             </span>
           </span>
         )}
-        <Legend />
+        <ColorSwitch value={colorBy} onChange={setColorBy} />
+        {colorBy === "kind" ? <Legend /> : <HeatLegend />}
         {zoom.id !== "" && (
           <Button variant="ghost" size="xs" onClick={() => zoomTo(root)}>
             <ZoomOut /> Reset zoom
@@ -172,7 +186,7 @@ export function FlameGraph({
                   width: Math.max(w - 1, 0.5),
                   height: rowHeight - 1,
                   background:
-                    node.id === "" ? "var(--muted)" : frameColor(kind, name),
+                    node.id === "" ? "var(--muted)" : colorOf(node, kind, name),
                   color: node.id === "" ? "var(--muted-foreground)" : undefined,
                 }}
               >
@@ -248,6 +262,76 @@ function Tooltip({
           </span>
         </dd>
       </dl>
+    </div>
+  );
+}
+
+function ColorSwitch({
+  value,
+  onChange,
+}: {
+  value: ColorBy;
+  onChange: (value: ColorBy) => void;
+}) {
+  const options: { id: ColorBy; label: string; hint: string }[] = [
+    {
+      id: "kind",
+      label: "Kind",
+      hint: "Colour by the kind of code: program, library, kernel",
+    },
+    {
+      id: "self",
+      label: "Self time",
+      hint: "Colour by the time each function spends in its own code",
+    },
+  ];
+  return (
+    <div
+      className="flex shrink-0 items-center gap-0.5 border p-0.5"
+      role="radiogroup"
+      aria-label="Colour by"
+    >
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="radio"
+          aria-checked={value === o.id}
+          title={o.hint}
+          onClick={() => onChange(o.id)}
+          className={cn(
+            "px-2 py-0.5 text-muted-foreground transition-colors hover:text-foreground",
+            value === o.id && "bg-muted text-foreground",
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function HeatLegend() {
+  const steps = [0.02, 0.1, 0.3, 0.6, 1];
+  return (
+    <div className="hidden shrink-0 items-center gap-2 text-muted-foreground lg:flex">
+      <span className="flex items-center gap-1">
+        <span className="size-2" style={{ background: idleColor }} />
+        None
+      </span>
+      <span className="flex items-center gap-1">
+        Low
+        <span className="flex">
+          {steps.map((s) => (
+            <span
+              key={s}
+              className="h-2 w-3"
+              style={{ background: heatColor(s, 1) }}
+            />
+          ))}
+        </span>
+        High
+      </span>
     </div>
   );
 }

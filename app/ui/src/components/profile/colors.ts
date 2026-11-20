@@ -36,6 +36,18 @@ function hash(text: string): number {
   return Math.abs(h);
 }
 
+export type ColorBy = "kind" | "self";
+
+export const idleColor = "oklch(0.93 0.005 250)";
+
+export function heatColor(self: number, hottest: number): string {
+  if (self <= 0 || hottest <= 0) return idleColor;
+  const share = Math.sqrt(Math.min(1, self / hottest));
+  const lightness = 0.94 - 0.3 * share;
+  const chroma = 0.03 + 0.16 * share;
+  return `oklch(${lightness.toFixed(3)} ${chroma.toFixed(3)} 35)`;
+}
+
 export function frameColor(kind: FrameKind, name: string): string {
   const family = families[kind];
   const offset = family.spread
