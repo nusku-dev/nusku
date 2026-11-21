@@ -3,7 +3,7 @@ const server = @import("server");
 const local = @import("local.zig");
 const session = @import("session.zig");
 
-pub const store_runs = @import("store_runs.zig");
+pub const store = @import("store_runs.zig");
 
 pub const ProfileOptions = local.Options;
 pub const Live = local.Live;
@@ -28,7 +28,7 @@ pub const processes_watch = local.processes_watch;
 pub const stop = local.stop;
 
 test {
-    _ = store_runs;
+    _ = store;
     _ = local;
     _ = session;
     _ = @import("profile_cache.zig");

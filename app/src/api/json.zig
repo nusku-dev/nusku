@@ -1,12 +1,11 @@
 const std = @import("std");
 
 pub fn of(arena: std.mem.Allocator, value: anytype) ![:0]const u8 {
-    const text = try std.json.Stringify.valueAlloc(arena, value, .{});
-    return arena.dupeZ(u8, text);
+    return with(arena, value, .{});
 }
 
 pub fn exact(arena: std.mem.Allocator, value: anytype) ![:0]const u8 {
-    return with(arena, value, .{});
+    return with(arena, value, .{ .emit_nonportable_numbers_as_strings = true });
 }
 
 fn with(arena: std.mem.Allocator, value: anytype, ops: std.json.Stringify.Options) ![:0]const u8 {

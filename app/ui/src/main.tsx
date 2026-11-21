@@ -5,6 +5,7 @@ import "./style.css";
 import App from "./App.tsx";
 import { MachineProvider } from "@/components/machine-provider";
 import { ProfilesProvider } from "@/components/profiles-provider";
+import { StoreRunsProvider } from "./components/store_runs_provider.tsx";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -16,7 +17,9 @@ createRoot(document.getElementById("root")!).render(
     >
       <MachineProvider>
         <ProfilesProvider>
-          <App />
+          <StoreRunsProvider>
+            <App />
+          </StoreRunsProvider>
         </ProfilesProvider>
       </MachineProvider>
     </ThemeProvider>

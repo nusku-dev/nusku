@@ -5,6 +5,7 @@ import { useWidth } from "@/hooks/use-width";
 import { formatClock, formatInt } from "@/lib/format";
 import { inRange } from "@/lib/profile/range";
 import type { Range, Window } from "@/lib/profile/types";
+import { cn } from "cn";
 
 const height = 64;
 
@@ -17,7 +18,7 @@ export function Timeline({
   windows: Window[];
   running: boolean;
   range: Range | null;
-  onRangeChange: (range: Range | null) => void;
+  onRangeChange?: (range: Range | null) => void;
 }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [drag, setDrag] = useState<{ start: number; end: number } | null>(null);
@@ -79,11 +80,13 @@ export function Timeline({
                 samples
               </span>
             </>
-          ) : (
+          ) : onRangeChange ? (
             "Samples per report. Drag across to look at part of the run."
+          ) : (
+            "Samples per report."
           )}
         </span>
-        {range && !drag && (
+        {range && !drag && onRangeChange && (
           <Button variant="ghost" size="xs" onClick={() => onRangeChange(null)}>
             <X /> Whole run
           </Button>
@@ -91,10 +94,13 @@ export function Timeline({
       </div>
       <div
         ref={ref}
-        className="relative cursor-crosshair touch-none bg-muted/40 select-none"
+        className={cn(
+          "relative touch-none bg-muted/40 select-none",
+          onRangeChange && "cursor-crosshair",
+        )}
         style={{ height }}
         onPointerDown={(e) => {
-          if (windows.length === 0) return;
+          if (windows.length === 0 || !onRangeChange) return;
           e.currentTarget.setPointerCapture(e.pointerId);
           const i = indexAt(e);
           setDrag({ start: i, end: i });
@@ -110,7 +116,7 @@ export function Timeline({
           const from = Math.min(drag.start, drag.end);
           const to = Math.max(drag.start, drag.end);
           setDrag(null);
-          onRangeChange(
+          onRangeChange?.(
             from === to ? null : { fromMs: middle(from), toMs: middle(to) },
           );
         }}

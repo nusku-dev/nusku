@@ -57,14 +57,18 @@ const views: Record<
   },
 };
 
+type Source = Pick<Session, "job" | "windows" | "running" | "failure">;
+
 export function ProfileWorkspace({
   session,
   live,
   loading,
+  rangeable = true,
 }: {
-  session: Session;
+  session: Source;
   live: Analysis;
   loading: boolean;
+  rangeable?: boolean;
 }) {
   const [view, setView] = useState<ViewId>("both");
   const [range, setRange] = useState<Range | null>(null);
@@ -100,7 +104,7 @@ export function ProfileWorkspace({
           windows={session.windows}
           running={session.running}
           range={range}
-          onRangeChange={setRange}
+          onRangeChange={rangeable ? setRange : undefined}
         />
       </div>
 

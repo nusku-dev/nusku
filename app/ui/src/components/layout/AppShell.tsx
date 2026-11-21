@@ -1,6 +1,13 @@
 import { Routes, useRoute } from "@/lib/router";
 import { useEffect, useState, type ReactNode } from "react";
-import { Activity, Monitor, Moon, Sun, TerminalSquare } from "lucide-react";
+import {
+  Activity,
+  Bookmark,
+  Monitor,
+  Moon,
+  Sun,
+  TerminalSquare,
+} from "lucide-react";
 import { cn } from "cn";
 import { useTheme } from "next-themes";
 import { onConnection } from "@/lib/backend";
@@ -22,6 +29,7 @@ function Sidebar() {
   const route = useRoute();
   const process = route.nav(Routes.processes).href;
   const sessions = route.nav(Routes.sessions).href;
+  const runs = route.nav(Routes.runs).href;
   const live = useProfiles().sessions.filter((s) => s.running);
   const openJob =
     route.current === "sessions" ? route.params?.["0"] : undefined;
@@ -50,6 +58,9 @@ function Sidebar() {
           active={route.current === "sessions"}
         >
           Sessions
+        </NavLink>
+        <NavLink to={runs} icon={Bookmark} active={route.current === "runs"}>
+          Saved runs
         </NavLink>
       </nav>
 

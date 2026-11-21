@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 export const Routes = {
   processes: "processes",
   sessions: "sessions",
+  runs: "runs",
 } as const;
 
 export type Routes = (typeof Routes)[keyof typeof Routes];
@@ -24,9 +25,7 @@ function parse(hash: string): Route {
   const [path, search = ""] = hash.replace(/^#\/?/, "").split("?");
   const [name, ...segments] = path.split("/").filter(Boolean);
 
-  const current = routeNames.has(name)
-    ? (name as Routes)
-    : Routes.processes;
+  const current = routeNames.has(name) ? (name as Routes) : Routes.processes;
 
   const query = Object.fromEntries(new URLSearchParams(search));
 
@@ -67,11 +66,7 @@ function nav(name: Routes, details?: RouteDetails) {
 }
 
 export function useRoute() {
-  const hash = useSyncExternalStore(
-    subscribe,
-    getSnapshot,
-    () => "",
-  );
+  const hash = useSyncExternalStore(subscribe, getSnapshot, () => "");
 
   const route = parse(hash);
 

@@ -100,6 +100,28 @@ export interface LaunchRequest {
   end_program: boolean;
 }
 
+export interface RunMeta {
+  id: number;
+  label: string;
+  note: string;
+  program: string;
+  command: string;
+  pid: number;
+  started_unix_ms: number;
+  elapsed_ms: number;
+  saved_unix_ms: number;
+  samples: number;
+  sample_hz: number;
+}
+
+export interface SaveRequest {
+  job: number;
+  label: string;
+  note: string;
+  program: string;
+  command: string;
+}
+
 const listeners = new Set<(connected: boolean) => void>();
 let connected = false;
 let listening = false;
@@ -182,4 +204,13 @@ export const backend = {
         to_ms: Math.ceil(toMs),
       }),
     ),
+
+  runsList: () => call<RunMeta[]>("store_runs_list"),
+  runsSave: (request: SaveRequest) =>
+    call<RunMeta>("store_runs_save", JSON.stringify(request)),
+  runsGet: (id: number) =>
+    call<{ meta: RunMeta; profile: CompactWire }>("store_runs_get", id),
+  runsRelabel: (id: number, label: string, note: string) =>
+    call<RunMeta>("stor_runs_relabel", JSON.stringify({ id, label, note })),
+  runsDelete: (id: number) => call<{ id: number }>("store_runs_delete", id),
 };
