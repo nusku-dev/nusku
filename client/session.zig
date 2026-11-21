@@ -158,6 +158,12 @@ pub const Session = struct {
         return .{ .job = started.job, .pid = entry.pid, .joined = false };
     }
 
+    /// All of a run so far with every name built, waiting for them if needed: what is worth keeping
+    pub fn profile_whole(session: *Session, arena: std.mem.Allocator, job: JobId) !server_lib.Profile {
+        const found = try session.target_of(job);
+        return session.server.profile(arena, .{ .target = found.target }, .all_built);
+    }
+
     /// Only the profiling ends, never the process; it ends once no user is left.
     pub fn profile_stop(session: *Session, job: JobId, user: UserId) !Stopped {
         session.held();
