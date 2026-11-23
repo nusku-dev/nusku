@@ -4,6 +4,7 @@ export const Routes = {
   processes: "processes",
   sessions: "sessions",
   runs: "runs",
+  compare: "compare",
 } as const;
 
 export type Routes = (typeof Routes)[keyof typeof Routes];

@@ -48,6 +48,19 @@ export function heatColor(self: number, hottest: number): string {
   return `oklch(${lightness.toFixed(3)} ${chroma.toFixed(3)} 35)`;
 }
 
+export function diffColor(
+  delta: number,
+  noise: boolean,
+  largest: number,
+): string {
+  if (noise || delta === 0 || largest <= 0) return idleColor;
+  const share = Math.sqrt(Math.min(1, Math.abs(delta) / largest));
+  const lightness = 0.93 - 0.25 * share;
+  const chroma = 0.04 + 0.14 * share;
+  const hue = delta < 0 ? 150 : 25;
+  return `oklch(${lightness.toFixed(3)} ${chroma.toFixed(3)} ${hue})`;
+}
+
 export function frameColor(kind: FrameKind, name: string): string {
   const family = families[kind];
   const offset = family.spread

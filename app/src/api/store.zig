@@ -29,7 +29,7 @@ const Live = *client.Session;
 const Arena = std.mem.Allocator;
 
 pub fn init() !void {
-    store.init(std.heap.smp_allocator, null);
+    try store.init(std.heap.smp_allocator, null);
     is_store_init = true;
 }
 
@@ -55,7 +55,7 @@ pub fn save(event: webui.Event) void {
     }
     const input = e.getString();
 
-    const resp = save_json(store, &session.current, arena, input) catch |err| {
+    const resp = save_json(&store, &session.current, arena, input) catch |err| {
         e.returnString(json.from_error(arena, err));
         return;
     };
@@ -121,7 +121,7 @@ pub fn relabel(event: webui.Event) void {
     }
     const input = e.getString();
 
-    const resp = relabel_json(store, arena, input) catch |err| {
+    const resp = relabel_json(&store, arena, input) catch |err| {
         e.returnString(json.from_error(arena, err));
         return;
     };

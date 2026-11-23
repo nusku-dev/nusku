@@ -10,6 +10,13 @@ import { folded } from "@/lib/profile/analyze";
 import { profileOf, windowsOf } from "@/lib/profile/wire";
 import { Routes, useRoute } from "@/lib/router";
 import { useRuns } from "@/hooks/use_runs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export function RunPage({ id }: { id: number }) {
   const { runs, relabel, remove } = useRuns();
@@ -123,6 +130,36 @@ export function RunPage({ id }: { id: number }) {
             {meta.note || <span className="font-mono">{meta.command}</span>}
           </p>
         </div>
+        {runs.length > 1 && (
+          <Select
+            value=""
+            onValueChange={(other) => {
+              if (!other) return;
+              const ids = [Number(other), id].sort((x, y) => x - y);
+              route
+                .nav(Routes.compare, {
+                  params: { 0: String(ids[0]), 1: String(ids[1]) },
+                })
+                .go();
+            }}
+            items={runs
+              .filter((r) => r.id !== id)
+              .map((r) => ({ value: String(r.id), label: r.label }))}
+          >
+            <SelectTrigger className="w-48">
+              <SelectValue placeholder="Compare with…" />
+            </SelectTrigger>
+            <SelectContent>
+              {runs
+                .filter((r) => r.id !== id)
+                .map((r) => (
+                  <SelectItem key={r.id} value={String(r.id)}>
+                    {r.label}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
+        )}
         <Button variant="outline" onClick={() => setEditing(true)}>
           <Pencil /> Rename
         </Button>

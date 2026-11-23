@@ -6,6 +6,7 @@ import { SessionPage } from "./pages/session";
 import { SessionsPage } from "./pages/sessions";
 import { RunsPage } from "./pages/runs";
 import { RunPage } from "./pages/run";
+import { ComparePage } from "./pages/compare";
 
 export default function App() {
   const route = useRoute();
@@ -29,6 +30,13 @@ export default function App() {
       </Activity>
       {!Number.isNaN(job) && <SessionPage key={job} job={job} />}
       {!Number.isNaN(run) && <RunPage key={run} id={run} />}
+      {route.current === "compare" && (
+        <ComparePage
+          key={`${route.params?.["0"]}-${route.params?.["1"]}`}
+          a={Number(route.params?.["0"])}
+          b={Number(route.params?.["1"])}
+        />
+      )}
     </AppShell>
   );
 }

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   ArrowLeft,
+  Bookmark,
+  BookmarkCheck,
   CircleCheck,
   Download,
   Eye,
@@ -19,6 +21,8 @@ import { analyze, type Analysis } from "@/components/profile/analysis";
 import type { Profile, Session } from "@/lib/profile/types";
 import { share, trusted, type Quality } from "@/lib/profile/quality";
 import { Routes, useRoute } from "@/lib/router";
+import { useRuns } from "@/hooks/use_runs";
+import { RunLabelDialog } from "@/components/run-label-dialog";
 
 const empty: Analysis = analyze({
   sampleHz: 0,
@@ -84,6 +88,10 @@ function SessionHeader({
   back: string;
 }) {
   const { start, stop } = useProfiles();
+  const { save } = useRuns();
+  const route = useRoute();
+  const [saving, setSaving] = useState(false);
+  const [savedId, setSavedId] = useState<number | null>(null);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,6 +114,22 @@ function SessionHeader({
         duration_s: 0,
       }),
     );
+
+  const onSave = async (label: string, note: string) => {
+    const meta = await save({
+      job: session.job,
+      label,
+      note,
+      program: session.name,
+      command: session.command,
+    });
+    setSavedId(meta.id);
+  };
+
+  const savedHref =
+    savedId === null
+      ? ""
+      : route.nav(Routes.runs, { params: { 0: String(savedId) } }).href();
 
   const exportFolded = () => {
     const blob = new Blob([folded(profile) + "\n"], { type: "text/plain" });
@@ -164,6 +188,24 @@ function SessionHeader({
           <Eye /> Watch too
         </Button>
       )}
+      {savedId === null ? (
+        <Button
+          variant="outline"
+          onClick={() => setSaving(true)}
+          disabled={profile.total === 0}
+          title="Keep this profile with a label, to look at again or compare later"
+        >
+          <Bookmark /> Save run
+        </Button>
+      ) : (
+        <Button
+          variant="outline"
+          nativeButton={false}
+          render={<a href={savedHref} />}
+        >
+          <BookmarkCheck /> Saved
+        </Button>
+      )}
       <Button
         variant="outline"
         onClick={exportFolded}
@@ -171,6 +213,20 @@ function SessionHeader({
       >
         <Download /> Export
       </Button>
+      <RunLabelDialog
+        open={saving}
+        title="Save this run"
+        description={
+          session.running
+            ? "Keeps the profile so far, with every name, even after this session is gone."
+            : "Keeps the profile, with every name, even after this session is gone."
+        }
+        action="Save run"
+        label={`${session.name} · ${new Date().toLocaleString()}`}
+        note=""
+        onSubmit={onSave}
+        onClose={() => setSaving(false)}
+      />
     </header>
   );
 }

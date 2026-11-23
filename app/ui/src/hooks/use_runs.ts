@@ -11,6 +11,7 @@ export interface RunsState {
   runs: RunMeta[];
   error: Error | undefined;
   loading: boolean;
+  refresh: () => Promise<void>;
   save: (request: SaveRequest) => Promise<RunMeta>;
   relabel: (id: number, label: string, note: string) => Promise<void>;
   remove: (id: number) => Promise<void>;
@@ -69,6 +70,7 @@ export function useStoreRuns(): RunsState {
     runs: runs ?? [],
     error,
     loading: !runs && !error,
+    refresh: reload,
     save,
     relabel,
     remove,
