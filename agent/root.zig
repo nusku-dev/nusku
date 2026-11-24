@@ -3,6 +3,7 @@
 const run_file = @import("run.zig");
 const watch_file = @import("watch.zig");
 const os = @import("os/os.zig");
+const probe_file = @import("probe.zig");
 
 pub const Run = run_file.Run;
 pub const RunOptions = run_file.Options;
@@ -14,6 +15,10 @@ pub const WatchEvent = watch_file.Event;
 
 /// Collects a program a run launched, once it has ended; false while it still runs.
 pub const program_reaped = os.launch.reaped;
+
+pub const ProbeRun = probe_file.ProbeRun;
+pub const ProbeOptions = probe_file.Options;
+pub const ProbeEvent = probe_file.Event;
 
 test {
     _ = os;
@@ -27,6 +32,7 @@ test {
     _ = @import("message.zig");
     _ = run_file;
     _ = watch_file;
+    _ = probe_file;
 
     _ = @import("testing/e2e/vdso_unwind.zig");
     _ = @import("testing/e2e/cpu_hotplug.zig");

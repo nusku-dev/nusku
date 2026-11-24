@@ -17,6 +17,7 @@ pub const Done = job_file.Done;
 pub const Spec = union(enum) {
     profile: Profile,
     processes: Processes,
+    probe: Probe,
 
     pub const Profile = struct {
         pid: ?u32 = null,
@@ -30,12 +31,21 @@ pub const Spec = union(enum) {
         interval_ms: u32 = 1000,
         duration_s: u32 = 0,
     };
+
+    pub const Probe = struct {
+        pid: u32,
+        function: []const u8,
+        module: ?[]const u8 = null,
+        interval_ms: u32 = 1000,
+        duration_s: u32 = 0,
+    };
 };
 
 pub const Started = struct {
     job: JobId,
     pid: ?u32 = null,
     target: ?server_layer.TargetId,
+    probe: ?server_layer.ProbeId = null,
 };
 
 pub const Options = struct {
@@ -95,6 +105,7 @@ pub const Controller = struct {
         };
         var target: ?server_layer.TargetId = null;
         var pid: ?u32 = null;
+        var probe_id: ?server_layer.ProbeId = null;
         switch (spec) {
             .profile => |profile| {
                 job.work = .{ .profile = .{
@@ -123,13 +134,28 @@ pub const Controller = struct {
                     .duration_s = processes.duration_s,
                 }) };
             },
+            .probe => |probe| {
+                job.work = .{ .probe = .{
+                    .run = try agent.ProbeRun.init(controller.gpa, .{
+                        .pid = probe.pid,
+                        .function = probe.function,
+                        .module = probe.module,
+                        .interval_ms = probe.interval_ms,
+                        .duration_s = probe.duration_s,
+                    }),
+                    .feed = undefined,
+                } };
+                errdefer job.work.probe.run.deinit();
+                job.work.probe.feed = try controller.server.probe_feed();
+                probe_id = job.work.probe.feed.id;
+            },
         }
         errdefer job.deinit();
         job.thread = try std.Thread.spawn(.{}, Job.thread_main, .{ job, controller.server });
         job.active = true;
         controller.next_id += 1;
         log.info("job started", .{ .job = job.id, .kind = std.meta.activeTag(spec) });
-        return .{ .job = job.id, .pid = pid, .target = target };
+        return .{ .job = job.id, .pid = pid, .target = target, .probe = probe_id };
     }
 
     pub fn stop(controller: *Controller, id: JobId) !Done {
@@ -171,6 +197,11 @@ pub const Controller = struct {
             .processes => |reason| log.info("job ended", .{
                 .job = job.id,
                 .kind = "processes",
+                .reason = reason,
+            }),
+            .probe => |reason| log.info("job ended", .{
+                .job = job.id,
+                .kind = "probe",
                 .reason = reason,
             }),
         } else |err| {

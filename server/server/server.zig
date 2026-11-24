@@ -6,20 +6,25 @@ const windows_layer = @import("../windows/windows.zig");
 const symbols_layer = @import("../symbols/symbols.zig");
 const processes_layer = @import("../processes/processes.zig");
 const naming = @import("../naming/naming.zig");
+const probes_layer = @import("../probes/probes.zig");
 const log = @import("../log.zig").server;
 
 const Windows = windows_layer.Windows;
 const Symbols = symbols_layer.Symbols;
 const Processes = processes_layer.Processes;
+const Probes = probes_layer.Probes;
 
 pub const TargetId = windows_layer.TargetId;
 pub const Query = windows_layer.Query;
 pub const Profile = naming.Profile;
 pub const Latest = processes_layer.Latest;
+pub const ProbeId = probes_layer.ProbeId;
+pub const ProbeSnapshot = probes_layer.Snapshot;
 
 pub const Options = struct {
     windows: windows_layer.Options = .{},
     symbols: symbols_layer.Options = .{},
+    probes: probes_layer.Options = .{},
 };
 
 pub const Names = enum { as_they_are, all_built };
@@ -29,6 +34,7 @@ pub const Server = struct {
     windows: Windows,
     symbols: Symbols,
     latest: Processes,
+    probes: Probes,
 
     /// Starts the symbols' builder thread: the server must stay at its address until `deinit`.
     pub fn init(server: *Server, gpa: std.mem.Allocator, options: Options) !void {
@@ -39,6 +45,8 @@ pub const Server = struct {
         try server.symbols.init(gpa, options.symbols);
         errdefer server.symbols.deinit();
         server.latest = .init(gpa);
+        errdefer server.latest.deinit();
+        server.probes = try .init(gpa, options.probes);
 
         const windows = options.windows;
         log.info("server started", .{
@@ -51,6 +59,7 @@ pub const Server = struct {
     }
 
     pub fn deinit(server: *Server) void {
+        server.probes.deinit(server.gpa);
         server.latest.deinit();
         server.symbols.deinit();
         server.windows.deinit(server.gpa);
@@ -89,6 +98,28 @@ pub const Server = struct {
 
     pub fn processes(server: *Server, arena: std.mem.Allocator) !Latest {
         return server.latest.latest(arena);
+    }
+
+    pub fn probe_feed(server: *Server) !ProbeFeed {
+        return .{ .server = server, .id = try server.probes.add(server.gpa) };
+    }
+
+    pub fn probe(server: *Server, arena: std.mem.Allocator, id: ProbeId) !ProbeSnapshot {
+        return server.probes.snapshot(arena, id);
+    }
+};
+
+pub const ProbeFeed = struct {
+    server: *Server,
+    id: ProbeId,
+
+    pub fn take(feed: *ProbeFeed, event: protocol.ProbeEvent) !void {
+        try feed.server.probes.take(feed.server.gpa, feed.id, event);
+    }
+
+    pub fn close(feed: *ProbeFeed) void {
+        feed.server.probes.finish(feed.id);
+        feed.* = undefined;
     }
 };
 

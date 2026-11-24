@@ -5,6 +5,7 @@ const server_lib = @import("server");
 const protocol = @import("shared").protocol;
 const local = @import("local.zig");
 const profile_cache = @import("profile_cache.zig");
+const probes_file = @import("probe_list.zig");
 
 const assert = std.debug.assert;
 const Server = server_lib.Server;
@@ -13,6 +14,8 @@ const JobId = server_lib.JobId;
 const TargetId = server_lib.TargetId;
 const ProfileCache = profile_cache.ProfileCache;
 pub const Delta = profile_cache.Delta;
+pub const ProbeOptions = probes_file.Options;
+pub const ProbeSnapshot = server_lib.ProbeSnapshot;
 
 pub const Options = struct {
     profiles_max: u32 = 8,
@@ -42,6 +45,18 @@ pub const ProfileState = struct {
     reason: ?protocol.RunStop,
     failure: ?[]const u8,
     profile: ?server_lib.Profile,
+};
+
+pub const ProbeState = struct {
+    job: JobId,
+    pid: u32,
+    running: bool,
+    elapsed_ms: u64,
+    reason: ?protocol.RunStop,
+    failure: ?[]const u8,
+    info: ?protocol.probe.Info,
+    /// The latest totals, counted since the probe was attached.
+    totals: protocol.probe.Totals,
 };
 
 const users_max = 8;
@@ -92,6 +107,7 @@ pub const Session = struct {
     count: u32,
     watch_job: ?JobId,
     processes_interval_ms: u32,
+    probes: probes_file.List,
 
     /// The session must stay at its address until `deinit`.
     pub fn init(session: *Session, gpa: std.mem.Allocator, options: Options) !void {
@@ -99,13 +115,16 @@ pub const Session = struct {
         assert(options.processes_interval_ms > 0);
         const entries = try gpa.alloc(Entry, options.profiles_max);
         errdefer gpa.free(entries);
-        try session.server.init(gpa, .{ .windows = .{
-            .targets_max = options.profiles_max,
-            .windows_per_target_max = options.windows_per_profile,
-        } });
+        try session.server.init(gpa, .{
+            .windows = .{
+                .targets_max = options.profiles_max,
+                .windows_per_target_max = options.windows_per_profile,
+            },
+            .probes = .{ .probes_max = 2 * probes_file.probes_max },
+        });
         errdefer session.server.deinit();
         try session.controller.init(gpa, &session.server, .{
-            .jobs_max = options.profiles_max + 1,
+            .jobs_max = options.profiles_max + probes_file.probes_max + 1,
         });
         session.gpa = gpa;
         session.lock = std.c.PTHREAD_MUTEX_INITIALIZER;
@@ -113,6 +132,7 @@ pub const Session = struct {
         session.count = 0;
         session.watch_job = null;
         session.processes_interval_ms = options.processes_interval_ms;
+        session.probes = .{};
     }
 
     pub fn deinit(session: *Session) void {
@@ -187,6 +207,80 @@ pub const Session = struct {
             entry.user_remove(user) catch continue;
             if (entry.users_count == 0) entry_end(entry, session.controller.stop(entry.job));
         }
+        session.probes.leave(&session.controller, user, local.monotonic_ms());
+    }
+
+    /// Finds the function and attaches at once: one that cannot be probed fails here.
+    pub fn probe_start(session: *Session, options: ProbeOptions, user: UserId) !JobId {
+        session.held();
+        defer session.release();
+        session.reap();
+        try session.probes.room();
+        const started = try session.controller.start(.{ .probe = .{
+            .pid = options.pid,
+            .function = options.function,
+            .module = options.module,
+            .interval_ms = options.interval_ms,
+            .duration_s = options.duration_s,
+        } });
+        session.probes.add(.{
+            .job = started.job,
+            .probe = started.probe.?,
+            .pid = options.pid,
+            .user = user,
+            .started_ms = local.monotonic_ms(),
+        });
+        return started.job;
+    }
+
+    /// Detaches the probe; the process goes on.
+    pub fn probe_stop(session: *Session, job: JobId) !protocol.RunStop {
+        session.held();
+        defer session.release();
+        const entry = session.probes.find(job) orelse return error.ProbeUnknown;
+        if (entry.open()) entry.end(session.controller.stop(job), local.monotonic_ms());
+        if (entry.failure) |err| return err;
+        return entry.reason.?;
+    }
+
+    pub fn probe_list(session: *Session, arena: std.mem.Allocator) ![]ProbeState {
+        session.held();
+        session.reap();
+        const listed = session.probes.entries[0..session.probes.count];
+        const entries = arena.dupe(probes_file.Entry, listed) catch |err| {
+            session.release();
+            return err;
+        };
+        session.release();
+        const now_ms = local.monotonic_ms();
+        const states = try arena.alloc(ProbeState, entries.len);
+        for (entries, states) |*entry, *state| {
+            const seen = session.server.probe(arena, entry.probe) catch null;
+            const points = if (seen) |found| found.points else &.{};
+            state.* = .{
+                .job = entry.job,
+                .pid = entry.pid,
+                .running = entry.open(),
+                .elapsed_ms = (entry.ended_ms orelse now_ms) - entry.started_ms,
+                .reason = entry.reason,
+                .failure = if (entry.failure) |err| @errorName(err) else null,
+                .info = if (seen) |found| found.info else null,
+                .totals = if (points.len > 0) points[points.len - 1].totals else .{},
+            };
+        }
+        return states;
+    }
+
+    pub fn probe_get(session: *Session, arena: std.mem.Allocator, job: JobId) !ProbeSnapshot {
+        session.held();
+        session.reap();
+        const entry = session.probes.find(job) orelse {
+            session.release();
+            return error.ProbeUnknown;
+        };
+        const id = entry.probe;
+        session.release();
+        return session.server.probe(arena, id);
     }
 
     pub fn profiles(session: *Session, arena: std.mem.Allocator) ![]ProfileState {
@@ -253,6 +347,7 @@ pub const Session = struct {
     }
 
     fn reap(session: *Session) void {
+        session.probes.reap(&session.controller, local.monotonic_ms());
         for (session.entries[0..session.count]) |*entry| {
             if (!entry.open() or session.controller.running(entry.job)) continue;
             entry_end(entry, session.controller.wait(entry.job));
@@ -636,6 +731,46 @@ test "a launched program is profiled from its start, and ended with it or not (r
     }
     try testing.expect(alive(kept_pid));
     _ = std.os.linux.kill(@intCast(kept_pid), .KILL);
+}
+
+test "a probe on this process counts its calls, and ends when stopped (root)" {
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    const session = try session_test();
+    defer session_destroy(session);
+    const own: u32 = @intCast(std.os.linux.getpid());
+    const unknown = ProbeOptions{ .pid = own, .function = "no_such_function_nusku" };
+    try testing.expectError(error.FunctionNotFound, session.probe_start(unknown, 1));
+
+    const job = try session.probe_start(.{
+        .pid = own,
+        .function = "session.probed_here",
+        .interval_ms = 50,
+    }, 1);
+    for (0..500) |_| std.mem.doNotOptimizeAway(probed_here(1000));
+    local.sleep_ms(120);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const listed = try session.probe_list(arena.allocator());
+    try testing.expectEqual(@as(usize, 1), listed.len);
+    try testing.expect(listed[0].running);
+    try testing.expectEqualStrings("session.probed_here", listed[0].info.?.function);
+    try testing.expectEqual(@as(u64, 500), listed[0].totals.calls);
+
+    try testing.expectEqual(protocol.RunStop.cancelled, try session.probe_stop(job));
+    const seen = try session.probe_get(arena.allocator(), job);
+    try testing.expect(seen.finished);
+    try testing.expectEqual(@as(u64, 500), seen.points[seen.points.len - 1].totals.timed);
+    try testing.expectError(error.ProbeUnknown, session.probe_get(arena.allocator(), job + 99));
+}
+
+noinline fn probed_here(rounds: u64) u64 {
+    var sum: u64 = 0;
+    var i: u64 = 0;
+    while (i < rounds) : (i += 1) {
+        sum +%= i;
+        std.mem.doNotOptimizeAway(&sum);
+    }
+    return sum;
 }
 
 fn alive(pid: u32) bool {

@@ -7,6 +7,7 @@ pub const Message = message.Message;
 pub const Region = message.Region;
 pub const binary = @import("binary.zig");
 pub const kernel = @import("kernel.zig");
+pub const probe = @import("probe.zig");
 pub const ProcessInfo = processes.ProcessInfo;
 pub const ProcessFrame = processes.Frame;
 pub const Machine = processes.Machine;
@@ -17,6 +18,13 @@ pub const Metric = enum { cpu, offcpu, mem, io, net, locks, sched };
 pub const RunStop = enum { duration, target_exited, cancelled };
 
 pub const WatchStop = enum { duration, cancelled };
+
+/// Each points into the sender's memory, valid until the next event.
+pub const ProbeEvent = union(enum) {
+    attached: *const probe.Info,
+    report: *const probe.Report,
+    stopped: RunStop,
+};
 
 /// Each points into the sender's memory, valid until the next event.
 pub const RunEvent = union(enum) {

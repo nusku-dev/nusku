@@ -7,12 +7,14 @@ const server_layer = @import("../server/server.zig");
 
 const Server = server_layer.Server;
 const Feed = server_layer.Feed;
+const ProbeFeed = server_layer.ProbeFeed;
 
 pub const JobId = u64;
 
 pub const Done = union(enum) {
     profile: protocol.RunStop,
     processes: protocol.WatchStop,
+    probe: protocol.RunStop,
 };
 
 pub const Job = struct {
@@ -22,6 +24,7 @@ pub const Job = struct {
     work: union(enum) {
         profile: struct { run: agent.Run, feed: Feed },
         processes: agent.Watch,
+        probe: struct { run: agent.ProbeRun, feed: ProbeFeed },
     },
     result: anyerror!Done,
     finished: std.atomic.Value(bool),
@@ -30,6 +33,7 @@ pub const Job = struct {
         job.result = switch (job.work) {
             .profile => |*profile| profile_take(&profile.run, &profile.feed),
             .processes => |*watch| processes_take(watch, server),
+            .probe => |*probe| probe_take(&probe.run, &probe.feed),
         };
         job.finished.store(true, .release);
     }
@@ -39,6 +43,7 @@ pub const Job = struct {
         switch (job.work) {
             .profile => |*profile| profile.run.stop(),
             .processes => |*watch| watch.stop(),
+            .probe => |*probe| probe.run.stop(),
         }
     }
 
@@ -49,10 +54,22 @@ pub const Job = struct {
                 profile.run.deinit();
             },
             .processes => |*watch| watch.deinit(),
+            .probe => |*probe| {
+                probe.feed.close();
+                probe.run.deinit();
+            },
         }
         job.active = false;
     }
 };
+
+fn probe_take(run: *agent.ProbeRun, feed: *ProbeFeed) !Done {
+    while (try run.next()) |event| {
+        try feed.take(event);
+        if (event == .stopped) return .{ .probe = event.stopped };
+    }
+    unreachable;
+}
 
 fn profile_take(run: *agent.Run, feed: *Feed) !Done {
     while (try run.next()) |event| {

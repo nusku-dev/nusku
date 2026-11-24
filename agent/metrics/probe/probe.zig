@@ -19,6 +19,14 @@ const Stats = wire.Stats;
 pub const buckets = wire.buckets;
 pub const bucket_of = wire.bucket_of;
 
+pub const function = @import("function.zig");
+
+pub const Totals = @import("shared").protocol.probe.Totals;
+
+comptime {
+    std.debug.assert(buckets == @import("shared").protocol.probe.buckets);
+}
+
 const MapName = enum {
     probe_config,
     probe_calls,
@@ -34,18 +42,6 @@ pub const Options = struct {
     path: []const u8,
     /// Where the function starts in that file.
     offset: u64,
-};
-
-/// Counted since the probe was attached.
-pub const Totals = struct {
-    calls: u64 = 0,
-    timed: u64 = 0,
-    total_ns: u64 = 0,
-    max_ns: u64 = 0,
-    untimed: u64 = 0,
-    unmatched: u64 = 0,
-    dropped: u64 = 0,
-    histogram: [buckets]u64 = @splat(0),
 };
 
 pub const Probe = struct {
@@ -156,6 +152,10 @@ fn maps_create(object: *const Object, maps: *std.EnumArray(MapName, Map)) !void 
 }
 
 const testing = std.testing;
+
+test {
+    _ = function;
+}
 
 test "the probe's maps are declared as the agent expects them" {
     const object = try Object.init(@embedFile("probe_bpf"));

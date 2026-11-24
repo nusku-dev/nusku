@@ -20,6 +20,8 @@ pub const Spec = control_file.Spec;
 pub const Started = control_file.Started;
 pub const Done = control_file.Done;
 pub const JobId = control_file.JobId;
+pub const ProbeId = server_file.ProbeId;
+pub const ProbeSnapshot = server_file.ProbeSnapshot;
 
 test {
     _ = @import("log.zig");
@@ -30,6 +32,7 @@ test {
     _ = naming;
     _ = server_file;
     _ = control_file;
+    _ = @import("probes/probes.zig");
 
     _ = @import("testing/e2e/profile_named.zig");
 }
