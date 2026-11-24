@@ -13,7 +13,7 @@ pub const instruction_size = 8;
 pub const Program = struct {
     fd: i32,
 
-    pub const Kind = enum { perf_event };
+    pub const Kind = enum { perf_event, kprobe };
 
     pub const Options = struct {
         kind: Kind,
@@ -33,6 +33,7 @@ pub const Program = struct {
 
         const program_type: c_uint = switch (options.kind) {
             .perf_event => c.BPF_PROG_TYPE_PERF_EVENT,
+            .kprobe => c.BPF_PROG_TYPE_KPROBE,
         };
         const instructions: *const c.struct_bpf_insn = @ptrCast(options.instructions.ptr);
         const instruction_count = options.instructions.len / instruction_size;

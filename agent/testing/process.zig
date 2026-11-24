@@ -109,31 +109,6 @@ pub fn cpu_online_set(cpu: u32, online: bool) !void {
     if (std.c.write(fd, value.ptr, value.len) != 1) return error.CpuOnlineWriteFailed;
 }
 
-pub fn child_kill(pid: u32) void {
-    assert(process.pid_valid(pid));
-    _ = linux.kill(@intCast(pid), .KILL);
-}
-
-pub fn zombie_wait(pid: u32) !void {
-    const process_maps = @import("../target/process_maps.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var tries: u32 = 0;
-    while (tries < 100) : (tries += 1) {
-        _ = arena.reset(.retain_capacity);
-        const mappings = try process_maps.read(arena.allocator(), pid);
-        if (mappings.len == 0) return;
-        timer.sleep_ms(10);
-    }
-    return error.ZombieTimeout;
-}
-
-pub fn child_reap(pid: u32) void {
-    child_kill(pid);
-    var status: u32 = 0;
-    _ = linux.wait4(@intCast(pid), &status, 0, null);
-}
-
 /// Copies `source` to `copy` and runs the copy with `argv`, until it has replaced the child.
 pub fn copy_spawn(
     source: [:0]const u8,
@@ -179,6 +154,73 @@ fn file_copy(source: [:0]const u8, copy: [:0]const u8) !void {
         const bytes: usize = @intCast(got);
         if (std.c.write(to, &buffer, bytes) != got) return error.CopyFailed;
     }
+}
+
+/// The function the probe tests watch: spins for about `rounds` iterations, then calls
+/// itself until it is `depth` calls deep.
+pub noinline fn probed_function(rounds: u64, depth: u32) u64 {
+    var sum: u64 = if (depth > 1) probed_function(rounds, depth - 1) else 0;
+    var i: u64 = 0;
+    while (i < rounds) : (i += 1) {
+        sum +%= i *% 2654435761;
+        std.mem.doNotOptimizeAway(&sum);
+    }
+    return sum;
+}
+
+pub const Caller = struct { pid: u32, start_fd: i32 };
+
+/// A child that calls `probed_function` `calls` times once something is written to `start_fd`.
+pub fn caller_spawn(calls: u32, rounds: u64, depth: u32) !Caller {
+    var pipe: [2]i32 = undefined;
+    if (linux.errno(linux.pipe2(&pipe, .{ .CLOEXEC = true })) != .SUCCESS) return error.PipeFailed;
+    const pid = std.c.fork();
+    if (pid < 0) return error.ForkFailed;
+    if (pid == 0) {
+        _ = linux.close(pipe[1]);
+        var byte: [1]u8 = undefined;
+        _ = linux.read(pipe[0], &byte, 1);
+        var i: u32 = 0;
+        while (i < calls) : (i += 1) std.mem.doNotOptimizeAway(probed_function(rounds, depth));
+        std.c._exit(0);
+    }
+    _ = linux.close(pipe[0]);
+    return .{ .pid = @intCast(pid), .start_fd = pipe[1] };
+}
+
+pub fn caller_start(caller: Caller) void {
+    _ = linux.write(caller.start_fd, "s", 1);
+    _ = linux.close(caller.start_fd);
+}
+
+pub fn child_wait(pid: u32) void {
+    var status: u32 = 0;
+    _ = linux.wait4(@intCast(pid), &status, 0, null);
+}
+
+pub fn child_kill(pid: u32) void {
+    assert(process.pid_valid(pid));
+    _ = linux.kill(@intCast(pid), .KILL);
+}
+
+pub fn zombie_wait(pid: u32) !void {
+    const process_maps = @import("../target/process_maps.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tries: u32 = 0;
+    while (tries < 100) : (tries += 1) {
+        _ = arena.reset(.retain_capacity);
+        const mappings = try process_maps.read(arena.allocator(), pid);
+        if (mappings.len == 0) return;
+        timer.sleep_ms(10);
+    }
+    return error.ZombieTimeout;
+}
+
+pub fn child_reap(pid: u32) void {
+    child_kill(pid);
+    var status: u32 = 0;
+    _ = linux.wait4(@intCast(pid), &status, 0, null);
 }
 
 test "the vDSO's clock_gettime, called directly, tells the same time as the system call" {

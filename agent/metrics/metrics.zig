@@ -13,6 +13,7 @@ const Target = target_layer.Target;
 const Unwind = unwind_layer.Unwind;
 const CpuCollector = cpu_collector.Collector;
 
+pub const probe = @import("probe/probe.zig");
 pub const Metric = protocol.Metric;
 pub const CpuWindow = cpu_collector.Window;
 pub const CpuStack = cpu_collector.Stack;
@@ -139,6 +140,8 @@ test {
     _ = @import("cpu/frame_cache.zig");
     _ = @import("cpu/sampler.zig");
     _ = @import("cpu/window.zig");
+    _ = probe;
+    _ = @import("kernel/shared/probe_wire.zig");
 }
 
 const cpu_only = Options{ .metrics = .initOne(.cpu) };

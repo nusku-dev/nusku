@@ -6,6 +6,7 @@ const linux = std.os.linux;
 
 pub const Error = error{
     CpuOffline,
+    ProcessNotFound,
     PermissionDenied,
     NotSupported,
     Unexpected,
@@ -41,6 +42,35 @@ pub const PerfEvent = struct {
         };
     }
 
+    /// A probe on the instruction at `offset` in the file at `path`, in process `pid` only:
+    /// at its entry, or with `on_return` when the function returns. Needs root or CAP_PERFMON.
+    pub fn uprobe_open(pid: u32, path: [:0]const u8, offset: u64, on_return: bool) Error!PerfEvent {
+        assert(pid > 0 and pid <= std.math.maxInt(i32));
+        const pmu = try uprobe_pmu();
+        var attributes = linux.perf_event_attr{
+            .type = @enumFromInt(pmu.type),
+            .config = if (on_return) @as(u64, 1) << pmu.return_bit else 0,
+            .config1 = @intFromPtr(path.ptr),
+            .config2 = offset,
+            .sample_period_or_freq = 1,
+            .flags = .{ .disabled = true },
+        };
+        const result = linux.perf_event_open(
+            &attributes,
+            @intCast(pid),
+            -1,
+            -1,
+            linux.PERF.FLAG.FD_CLOEXEC,
+        );
+        return switch (linux.errno(result)) {
+            .SUCCESS => .{ .fd = @intCast(result) },
+            .ACCES, .PERM => error.PermissionDenied,
+            .NOENT, .OPNOTSUPP, .NOSYS, .INVAL => error.NotSupported,
+            .SRCH => error.ProcessNotFound,
+            else => error.Unexpected,
+        };
+    }
+
     pub fn deinit(event: *PerfEvent) void {
         assert(event.fd >= 0);
         _ = linux.close(event.fd);
@@ -68,6 +98,36 @@ pub const PerfEvent = struct {
         };
     }
 };
+
+const Pmu = struct { type: u32, return_bit: u6 };
+
+/// The uprobe event type is chosen by the kernel at boot, and so is the bit for a return.
+fn uprobe_pmu() Error!Pmu {
+    var buffer: [64]u8 = undefined;
+    const type_text = sysfs_read("/sys/bus/event_source/devices/uprobe/type", &buffer) orelse
+        return error.NotSupported;
+    const pmu_type = std.fmt.parseInt(u32, type_text, 10) catch return error.NotSupported;
+    const format = "/sys/bus/event_source/devices/uprobe/format/retprobe";
+    const bit_text = sysfs_read(format, &buffer) orelse return error.NotSupported;
+    if (!std.mem.startsWith(u8, bit_text, "config:")) return error.NotSupported;
+    const bit = std.fmt.parseInt(u6, bit_text["config:".len..], 10) catch return error.NotSupported;
+    return .{ .type = pmu_type, .return_bit = bit };
+}
+
+fn sysfs_read(path: [:0]const u8, buffer: []u8) ?[]const u8 {
+    const opened = linux.open(path, .{ .CLOEXEC = true }, 0);
+    if (linux.errno(opened) != .SUCCESS) return null;
+    const fd: i32 = @intCast(opened);
+    defer _ = linux.close(fd);
+    const got = linux.read(fd, buffer.ptr, buffer.len);
+    if (linux.errno(got) != .SUCCESS) return null;
+    return std.mem.trim(u8, buffer[0..got], " \n");
+}
+
+test "the uprobe event type and its return bit are read from sysfs" {
+    const pmu = uprobe_pmu() catch return error.SkipZigTest;
+    try std.testing.expect(pmu.type > @intFromEnum(linux.PERF.TYPE.MAX));
+}
 
 test "opens a CPU-clock event (needs root, skipped otherwise)" {
     var event = PerfEvent.cpu_clock_open(0, 99) catch |err| switch (err) {

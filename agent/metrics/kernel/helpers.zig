@@ -12,6 +12,13 @@ pub const map_update_elem: *align(1) const fn (
     flags: u64,
 ) callconv(.c) c_long = @ptrFromInt(2);
 
+pub const map_delete_elem: *align(1) const fn (
+    map: *const anyopaque,
+    key: *const anyopaque,
+) callconv(.c) c_long = @ptrFromInt(3);
+
+pub const ktime_get_ns: *align(1) const fn () callconv(.c) u64 = @ptrFromInt(5);
+
 pub const get_smp_processor_id: *align(1) const fn () callconv(.c) u32 = @ptrFromInt(8);
 
 pub const tail_call: *align(1) const fn (
@@ -67,6 +74,7 @@ pub const MapType = struct {
     pub const array: u32 = 2;
     pub const prog_array: u32 = 3;
     pub const percpu_array: u32 = 6;
+    pub const percpu_hash: u32 = 5;
     pub const stack_trace: u32 = 7;
     pub const ringbuf: u32 = 27;
 };

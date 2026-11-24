@@ -20,6 +20,7 @@ pub fn add(b: *std.Build, options: Options) *std.Build.Module {
     module.addImport("log", options.log);
     add_c_libraries(b, module, options);
     add_kernel_program(b, module, "cpu", "agent/metrics/kernel/cpu.bpf.zig");
+    add_kernel_program(b, module, "probe", "agent/metrics/kernel/probe.bpf.zig");
     add_kernel_program(b, module, "loader_testing", "agent/metrics/kernel/loader_testing.bpf.zig");
 
     add_tests(b, module, options.test_step);
