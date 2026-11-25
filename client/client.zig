@@ -3,6 +3,7 @@ const server = @import("server");
 const local = @import("local.zig");
 const session = @import("session.zig");
 
+pub const compact = @import("compact.zig");
 pub const store = @import("store_runs.zig");
 
 pub const ProfileOptions = local.Options;
@@ -31,5 +32,6 @@ test {
     _ = store;
     _ = local;
     _ = session;
+    _ = compact;
     _ = @import("profile_cache.zig");
 }

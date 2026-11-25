@@ -30,6 +30,10 @@ pub const cmd: cli.Command = .{
     \\CPU, the call tree, and what the profile could not see. A launched process
     \\that is still running then is stopped, unless --keep-running is given. Its
     \\input is empty and its output is discarded.
+    \\
+    \\With --save, the profile is also kept as a saved run, in the same place
+    \\the app keeps them (~/.local/share/nusku/runs; under sudo, the home of
+    \\the user who ran sudo), to open or compare in the app.
     ,
     .flags = &.{
         .{
@@ -96,6 +100,16 @@ pub const cmd: cli.Command = .{
             .help = "Show only the run up to this many seconds after its start",
         },
         .{
+            .name = "save",
+            .kind = .string,
+            .help = "Keep the profile as a saved run with this label, to open in the app",
+        },
+        .{
+            .name = "note",
+            .kind = .string,
+            .help = "A note for the saved run: what changed, how it was run",
+        },
+        .{
             .name = "folded",
             .kind = .string,
             .help = "Also write the stacks to this file, in the folded format of flame graph tools",
@@ -120,6 +134,10 @@ fn run(ctx: *cli.Context) anyerror!void {
         std.fs.path.basename(ctx.getString("exec"))
     else
         process_name(settings.pid.?, &name_buffer);
+    const command = if (program) |launched|
+        try std.mem.join(ctx.allocator, " ", launched.argv)
+    else
+        try command_of(ctx, settings.pid.?);
 
     const terminal = std.Io.File.stdout().isTty(ctx.io) catch false;
     var live = Live{ .ctx = ctx, .name = name, .options = settings.view };
@@ -164,7 +182,66 @@ fn run(ctx: *cli.Context) anyerror!void {
         .reason = result.reason,
         .part = part_of(settings),
     }, settings.view);
+
+    if (settings.save) |label| try run_save(ctx, label, settings.note, .{
+        .program = name orelse "",
+        .command = command,
+        .pid = result.pid,
+    }, &result);
+
     try ctx.stdout.flush();
+}
+
+const Program = struct { program: []const u8, command: []const u8, pid: u32 };
+
+fn run_save(
+    ctx: *cli.Context,
+    label: []const u8,
+    note: []const u8,
+    program: Program,
+    result: *const client.Result,
+) !void {
+    const arena = ctx.allocator;
+    const owner = client.store.sudo_owner(arena);
+    const store: client.store.StoreRuns = undefined;
+
+    store.init(arena, null, owner) catch |err| {
+        return ctx.fail("cannot save the run: no runs folder ({t})", .{err});
+    };
+    const profile = &result.profile;
+    const first = if (profile.windows.len > 0) profile.windows[0].start_unix_ns else 0;
+    const saved = store.save(arena, .{
+        .label = label,
+        .note = note,
+        .program = program.program,
+        .command = program.command,
+        .pid = program.pid,
+        .started_unix_ms = first / std.time.ns_per_ms,
+        .elapsed_ms = result.elapsed_ms,
+        .samples = profile.samples,
+        .sample_hz = profile.sample_hz,
+    }, try client.compact.json_of(arena, profile)) catch |err| {
+        return ctx.fail("cannot save the run: {t}", .{err});
+    };
+    try ctx.stdout.print("\n  Saved as \"{s}\" in {s}: open it in the app under Saved runs.\n", .{
+        saved.label,
+        store.dir,
+    });
+}
+
+/// The command line of a process, its arguments joined by spaces; empty if unreadable.
+fn command_of(ctx: *cli.Context, pid: u32) ![]const u8 {
+    var path_buffer: [32]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/cmdline", .{pid}) catch unreachable;
+    var file = @import("shared").File.open(path) catch return "";
+    defer file.deinit();
+    const buffer = try ctx.allocator.alloc(u8, 4096);
+    const got = file.read_at(buffer, 0) catch return "";
+    const text = std.mem.trimEnd(u8, buffer[0..got], "\x00");
+    for (@constCast(text)) |*byte| if (byte.* == 0) {
+        byte.* = ' ';
+    };
+    return text;
 }
 
 const Live = struct {
@@ -217,6 +294,8 @@ const Settings = struct {
     interval_ms: u32,
     duration_s: u32,
     folded: ?[]const u8,
+    save: ?[]const u8,
+    note: []const u8,
     no_live: bool,
     keep_running: bool,
     from_ms: ?u64,
@@ -256,6 +335,17 @@ fn settings_read(ctx: *cli.Context) error{InvalidUsage}!Settings {
         const text = "--from and --to need 0 <= from < to (got {d} and {d})";
         return ctx.usageFail(text, .{ from, to });
     }
+    if (ctx.isSet("save")) {
+        const label = std.mem.trim(u8, ctx.getString("save"), " ");
+        if (label.len == 0 or label.len > client.runs.label_bytes_max) {
+            return ctx.usageFail("--save needs a label of 1 to {d} characters", .{
+                client.store.label_bytes_max,
+            });
+        }
+    }
+    if (ctx.isSet("note") and !ctx.isSet("save")) {
+        return ctx.usageFail("--note goes with --save", .{});
+    }
 
     const top = ctx.getInt("top");
     if (top < 1) return ctx.usageFail("--top must be at least 1 (got {d})", .{top});
@@ -270,6 +360,8 @@ fn settings_read(ctx: *cli.Context) error{InvalidUsage}!Settings {
         .interval_ms = @intCast(interval),
         .duration_s = @intCast(duration),
         .folded = if (ctx.isSet("folded")) ctx.getString("folded") else null,
+        .save = if (ctx.isSet("save")) ctx.getString("save") else null,
+        .note = if (ctx.isSet("note")) ctx.getString("note") else "",
         .no_live = ctx.getBool("no-live"),
         .keep_running = ctx.getBool("keep-running"),
         .from_ms = if (ctx.isSet("from")) @as(u64, @intCast(from)) * std.time.ms_per_s else null,

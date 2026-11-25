@@ -43,14 +43,21 @@ pub const Meta = struct {
     sample_hz: u32 = 0,
 };
 
+pub const Owner = struct {
+    uid: u32,
+    gid: u32,
+    home: []const u8,
+};
+
 pub const StoreRuns = struct {
     dir: []const u8,
+    owner: ?Owner = null,
 
-    pub fn init(store: *StoreRuns, gpa: std.mem.Allocator, dir: ?[]const u8) Error!void {
-        const path = try dir_pick(gpa, dir);
+    pub fn init(store: *StoreRuns, gpa: std.mem.Allocator, dir: ?[]const u8, owner: ?Owner) Error!void {
+        const path = try dir_for(gpa, dir, owner);
         errdefer gpa.free(path);
-        try dir_make(path);
-        store.* = .{ .dir = path };
+        try dir_make(path, owner);
+        store.* = .{ .dir = path, .owner = owner };
     }
 
     pub fn deinit(store: *StoreRuns, gpa: std.mem.Allocator) void {
@@ -59,12 +66,7 @@ pub const StoreRuns = struct {
     }
 
     /// Keeps a profile under a new id; `meta.id` and `meta.saved_unix_ms` are set here.
-    pub fn save(
-        store: *const StoreRuns,
-        arena: std.mem.Allocator,
-        meta: Meta,
-        profile_text: []const u8,
-    ) Error!Meta {
+    pub fn save(store: *const StoreRuns, arena: std.mem.Allocator, meta: Meta, profile_text: []const u8) Error!Meta {
         try label_check(meta.label, meta.note);
         var kept = meta;
         kept.saved_unix_ms = now_ms();
@@ -142,7 +144,7 @@ pub const StoreRuns = struct {
     fn write(store: *const StoreRuns, arena: std.mem.Allocator, id: u64, kind: []const u8, bytes: []const u8) Error!void {
         const temporary = try store.path_of(arena, id, kind, ".tmp");
         const path = try store.path_of(arena, id, kind, "");
-        try file_write(temporary, bytes);
+        try file_write(temporary, bytes, store.owner);
         if (linux.errno(linux.rename(temporary, path)) != .SUCCESS) {
             _ = linux.unlink(temporary);
             return error.Unwritable;
@@ -164,7 +166,7 @@ pub const StoreRuns = struct {
         return bytes;
     }
 
-    fn dir_make(path: []const u8) Error!void {
+    fn dir_make(path: []const u8, owner: ?Owner) Error!void {
         if (path.len == 0 or path.len >= path_bytes_max or path[0] != '/') return error.NoDirectory;
         var buffer: [path_bytes_max]u8 = undefined;
 
@@ -175,10 +177,19 @@ pub const StoreRuns = struct {
             buffer[end] = 0;
             const made = linux.mkdir(buffer[0..end :0], 0o755);
             switch (linux.errno(made)) {
-                .SUCCESS, .EXIST => {},
+                .SUCCESS => if (owner) |user| {
+                    _ = linux.chown(buffer[0..end :0], user.uid, user.gid);
+                },
+                .EXIST => {},
                 else => return error.NoDirectory,
             }
         }
+    }
+
+    fn dir_for(gpa: std.mem.Allocator, dir: ?[]const u8, owner: ?Owner) Error![]const u8 {
+        const user = owner orelse return dir_pick(gpa, dir);
+        if (dir != null or env("NUSKU_RUNS_DIR") != null) return dir_pick(gpa, dir);
+        return join(gpa, &.{ user.home, ".local/share/nusku/runs" });
     }
 
     fn dir_pick(gpa: std.mem.Allocator, dir: ?[]const u8) Error![]const u8 {
@@ -204,6 +215,39 @@ pub const StoreRuns = struct {
     }
 };
 
+pub fn sudo_owner(arena: std.mem.Allocator) ?Owner {
+    if (linux.getuid() != 0) return null;
+    const uid_text = std.mem.span(std.c.getenv("SUDO_UID") orelse return null);
+    const uid = std.fmt.parseInt(u32, uid_text, 10) catch return null;
+
+    if (uid == 0) return null;
+
+    var file = File.open("/etc/passwd") catch return null;
+    defer file.deinit();
+    const bytes = arena.alloc(u8, 1 << 20) catch return null;
+    const got = file.read_at(bytes, 0) catch return null;
+
+    return passwd_find(bytes[0..got], uid);
+}
+
+/// name:password:uid:gid:gecos:home:shell
+fn passwd_find(text: []const u8, uid: u32) ?Owner {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        var fields = std.mem.splitScalar(u8, line, ':');
+        _ = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        const found = std.fmt.parseInt(u32, fields.next() orelse continue, 10) catch continue;
+        if (found != uid) continue;
+        const gid = std.fmt.parseInt(u32, fields.next() orelse continue, 10) catch continue;
+        _ = fields.next() orelse continue;
+        const home = fields.next() orelse continue;
+        if (home.len == 0 or home[0] != '/') return null;
+        return .{ .uid = uid, .gid = gid, .home = home };
+    }
+    return null;
+}
+
 fn label_check(label: []const u8, note: []const u8) Error!void {
     const trimmed = std.mem.trim(u8, label, " \t\r\n");
     if (trimmed.len == 0 or label.len > label_bytes_max) return error.InvalidLabel;
@@ -226,12 +270,13 @@ fn id_of(name: []const u8, suffix: []const u8) ?u64 {
     return std.fmt.parseInt(u64, name[0 .. name.len - suffix.len], 10) catch null;
 }
 
-fn file_write(path: [:0]const u8, bytes: []const u8) Error!void {
+fn file_write(path: [:0]const u8, bytes: []const u8, owner: ?Owner) Error!void {
     const flags = linux.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true };
     const opened = linux.open(path, flags, 0o644);
     if (linux.errno(opened) != .SUCCESS) return error.Unwritable;
     const fd: i32 = @intCast(opened);
     defer _ = linux.close(fd);
+    if (owner) |user| _ = linux.fchown(fd, user.uid, user.gid);
     var written: usize = 0;
     while (written < bytes.len) {
         const result = linux.write(fd, bytes[written..].ptr, bytes.len - written);
@@ -252,7 +297,7 @@ const testing = std.testing;
 
 fn store_test(store: *StoreRuns, arena: std.mem.Allocator) !void {
     const dir = try std.fmt.allocPrint(arena, "/tmp/nusku-runs-test-{d}/a/b", .{linux.getpid()});
-    return store.init(arena, dir);
+    return store.init(arena, dir, null);
 }
 
 fn tree_remove(arena: std.mem.Allocator) void {
@@ -320,4 +365,12 @@ test "a run needs a label, and an unknown id is refused" {
     try testing.expectError(error.InvalidLabel, store.save(arena, .{ .label = long }, "{}"));
     try testing.expectError(error.RunUnknown, store.info(arena, 42));
     try testing.expectEqual(@as(usize, 0), (try store.list(arena)).len);
+}
+
+test "the user behind sudo is found by uid in the passwd file" {
+    const text = "root:x:0:0:root:/root:/bin/bash\nali:x:1000:1000:Ali,,,:/home/ali:/bin/bash\n";
+    const found = passwd_find(text, 1000).?;
+    try testing.expectEqual(@as(u32, 1000), found.gid);
+    try testing.expectEqualStrings("/home/ali", found.home);
+    try testing.expect(passwd_find(text, 1001) == null);
 }

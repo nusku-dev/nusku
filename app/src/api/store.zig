@@ -2,10 +2,9 @@ const std = @import("std");
 const client = @import("client");
 const webui = @import("webui");
 const json = @import("json.zig");
-const compact = @import("compact.zig");
-
 const session = @import("session.zig");
 
+const compact = client.compact;
 const Store = client.store.StoreRuns;
 
 var store: Store = undefined;
@@ -29,7 +28,7 @@ const Live = *client.Session;
 const Arena = std.mem.Allocator;
 
 pub fn init() !void {
-    try store.init(std.heap.smp_allocator, null);
+    try store.init(std.heap.smp_allocator, null, null);
     is_store_init = true;
 }
 
@@ -225,7 +224,7 @@ test "runs are saved from a session, listed, read, relabelled and deleted" {
     const own = std.os.linux.getpid();
     const dir = try std.fmt.allocPrint(a, "/tmp/nusku-app-runs-test-{d}", .{own});
     var s: Store = undefined;
-    try s.init(testing.allocator, dir);
+    try s.init(testing.allocator, dir, null);
     defer s.deinit(testing.allocator);
     defer store_clear(&s, a);
     const live = try testing.allocator.create(client.Session);

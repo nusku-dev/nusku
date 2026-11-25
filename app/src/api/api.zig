@@ -39,5 +39,4 @@ test {
     _ = store;
     _ = probes;
     _ = @import("json.zig");
-    _ = @import("compact.zig");
 }

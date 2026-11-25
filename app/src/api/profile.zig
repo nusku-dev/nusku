@@ -4,7 +4,7 @@ const client = @import("client");
 const protocol = @import("shared").protocol;
 const json = @import("json.zig");
 const session = @import("session.zig");
-const compact = @import("compact.zig");
+const compact = client.compact;
 
 const Request = struct {
     pid: u32,
