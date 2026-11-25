@@ -1,13 +1,14 @@
+import { useEffect, useState } from "react";
 import { Bookmark, GitCompare } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useNow } from "@/hooks/use-now";
 import type { RunMeta } from "@/lib/backend";
 import { formatAgo, formatClock, formatInt } from "@/lib/format";
 import { Routes, useRoute } from "@/lib/router";
-import { useEffect, useState } from "react";
+import { compareKeyOf } from "@/lib/runs";
 import { useRuns } from "@/hooks/use_runs";
-import { Button } from "@base-ui/react";
 
 export function RunsPage() {
   const { runs, loading, error, refresh } = useRuns();
@@ -16,24 +17,20 @@ export function RunsPage() {
     void refresh();
   }, [refresh]);
   const route = useRoute();
-  const [picked, setPicked] = useState<number[]>([]);
-
-  const pick = (id: number) =>
+  const rows = rowsOf(runs);
+  const [picked, setPicked] = useState<string[]>([]);
+  const pick = (key: string) =>
     setPicked((last) =>
-      last.includes(id)
-        ? last.filter((p) => p !== id)
-        : [...last, id].slice(-2),
+      last.includes(key)
+        ? last.filter((p) => p !== key)
+        : [...last, key].slice(-2),
     );
-
-  const chosen = picked
-    .filter((id) => runs.some((r) => r.id === id))
-    .sort((x, y) => x - y);
-
+  const chosen = rows
+    .filter((row) => picked.includes(row.key))
+    .sort((x, y) => x.saved - y.saved);
   const compareGo = () =>
     route
-      .nav(Routes.compare, {
-        params: { 0: String(chosen[0]), 1: String(chosen[1]) },
-      })
+      .nav(Routes.compare, { params: { 0: chosen[0].key, 1: chosen[1].key } })
       .go();
 
   return (
@@ -64,7 +61,7 @@ export function RunsPage() {
               <Skeleton key={i} className="h-12" />
             ))}
           </div>
-        ) : runs.length === 0 ? (
+        ) : rows.length === 0 ? (
           <div className="grid h-full place-items-center p-10 text-center">
             <div className="flex flex-col items-center gap-2">
               <span className="grid size-10 place-items-center rounded-md bg-muted">
@@ -96,12 +93,12 @@ export function RunsPage() {
               </tr>
             </thead>
             <tbody>
-              {runs.map((run) => (
+              {rows.map((row) => (
                 <RunRow
-                  key={run.id}
-                  run={run}
+                  key={row.key}
+                  row={row}
                   now={now}
-                  picked={chosen.includes(run.id)}
+                  picked={picked.includes(row.key)}
                   onPick={pick}
                 />
               ))}
@@ -113,18 +110,74 @@ export function RunsPage() {
   );
 }
 
+interface Row {
+  key: string;
+  label: string;
+  note: string;
+  program: string;
+  command: string;
+  elapsedMs: number;
+  samples: number;
+  saved: number;
+  count: number;
+  first: number;
+}
+
+function rowsOf(runs: RunMeta[]): Row[] {
+  const rows: Row[] = [];
+  const series = new Map<string, RunMeta[]>();
+  for (const run of runs) {
+    if (!run.series) {
+      rows.push({
+        key: compareKeyOf(run),
+        label: run.label,
+        note: run.note,
+        program: run.program,
+        command: run.command,
+        elapsedMs: run.elapsed_ms,
+        samples: run.samples,
+        saved: run.saved_unix_ms,
+        count: 1,
+        first: run.id,
+      });
+      continue;
+    }
+    series.set(run.series, [...(series.get(run.series) ?? []), run]);
+  }
+  for (const [name, members] of series) {
+    const mean = (f: (m: RunMeta) => number) =>
+      members.reduce((sum, m) => sum + f(m), 0) / members.length;
+    const first = [...members].sort((x, y) => x.repeat - y.repeat)[0];
+    rows.push({
+      key: compareKeyOf(first),
+      label: name,
+      note: first.note,
+      program: first.program,
+      command: first.command,
+      elapsedMs: mean((m) => m.elapsed_ms),
+      samples: Math.round(mean((m) => m.samples)),
+      saved: Math.max(...members.map((m) => m.saved_unix_ms)),
+      count: members.length,
+      first: first.id,
+    });
+  }
+  return rows.sort((x, y) => y.saved - x.saved);
+}
+
 function RunRow({
-  run,
+  row,
   now,
   picked,
   onPick,
 }: {
-  run: RunMeta;
+  row: Row;
   now: number;
   picked: boolean;
-  onPick: (id: number) => void;
+  onPick: (key: string) => void;
 }) {
-  const open = useRoute().nav(Routes.runs, { params: { 0: String(run.id) } });
+  const open = useRoute().nav(Routes.runs, {
+    params: { 0: String(row.first) },
+  });
   return (
     <tr
       onClick={open.go}
@@ -134,39 +187,49 @@ function RunRow({
         <input
           type="checkbox"
           checked={picked}
-          onChange={() => onPick(run.id)}
-          aria-label={`Pick ${run.label} to compare`}
+          onChange={() => onPick(row.key)}
+          aria-label={`Pick ${row.label} to compare`}
           className="size-4 accent-primary"
         />
       </td>
       <td className="px-3 py-2.5">
-        <div className="truncate font-medium">{run.label}</div>
-        {run.note && (
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-medium">{row.label}</span>
+          {row.count > 1 && (
+            <span
+              className="shrink-0 border px-1.5 text-xs text-muted-foreground"
+              title="A series: compared, its runs are averaged"
+            >
+              {row.count} runs
+            </span>
+          )}
+        </div>
+        {row.note && (
           <div className="truncate text-xs text-muted-foreground">
-            {run.note}
+            {row.note}
           </div>
         )}
       </td>
       <td className="px-3 py-2.5">
-        <div className="truncate">{run.program || "—"}</div>
+        <div className="truncate">{row.program || "—"}</div>
         <div
           className="truncate font-mono text-xs text-muted-foreground"
-          title={run.command}
+          title={row.command}
         >
-          {run.command}
+          {row.command}
         </div>
       </td>
       <td className="px-3 py-2.5 text-right tabular-nums">
-        {formatClock(run.elapsed_ms)}
+        {formatClock(row.elapsedMs)}
       </td>
       <td className="px-3 py-2.5 text-right tabular-nums">
-        {formatInt(run.samples)}
+        {formatInt(row.samples)}
       </td>
       <td
         className="px-6 py-2.5 text-right text-xs text-muted-foreground"
-        title={new Date(run.saved_unix_ms).toLocaleString()}
+        title={new Date(row.saved).toLocaleString()}
       >
-        {formatAgo(run.saved_unix_ms, now)}
+        {formatAgo(row.saved, now)}
       </td>
     </tr>
   );

@@ -100,6 +100,12 @@ pub const cmd: cli.Command = .{
             .help = "Show only the run up to this many seconds after its start",
         },
         .{
+            .name = "repeat",
+            .kind = .int,
+            .default = "1",
+            .help = "Launch and profile the program this many times, saved as one series",
+        },
+        .{
             .name = "save",
             .kind = .string,
             .help = "Keep the profile as a saved run with this label, to open in the app",
@@ -124,6 +130,7 @@ fn run(ctx: *cli.Context) anyerror!void {
     try flags.log_apply(ctx);
     const settings = try settings_read(ctx);
     interrupt.arm();
+    if (settings.repeat > 1) return @import("prof_repeat.zig").run(ctx, settings);
 
     const program: ?protocol.Program = if (settings.pid == null) .{
         .argv = try argv_of(ctx, ctx.getString("exec"), ctx.args),
@@ -192,19 +199,37 @@ fn run(ctx: *cli.Context) anyerror!void {
     try ctx.stdout.flush();
 }
 
-const Program = struct { program: []const u8, command: []const u8, pid: u32 };
+pub const Program = struct { program: []const u8, command: []const u8, pid: u32 };
 
-fn run_save(
+pub const Series = struct { name: []const u8, repeat: u32, repeats: u32 };
+
+pub fn run_save(
     ctx: *cli.Context,
     label: []const u8,
     note: []const u8,
     program: Program,
     result: *const client.Result,
 ) !void {
+    const saved = try run_keep(ctx, label, note, program, result, null);
+    try ctx.stdout.print("\n  Saved as \"{s}\" in {s}: open it in the app under Saved runs.\n", .{
+        saved.meta.label,
+        saved.dir,
+    });
+}
+
+pub const Kept = struct { meta: client.store.Meta, dir: []const u8 };
+
+pub fn run_keep(
+    ctx: *cli.Context,
+    label: []const u8,
+    note: []const u8,
+    program: Program,
+    result: *const client.Result,
+    series: ?Series,
+) !Kept {
     const arena = ctx.allocator;
     const owner = client.store.sudo_owner(arena);
-    const store: client.store.StoreRuns = undefined;
-
+    var store: client.store.StoreRuns = undefined;
     store.init(arena, null, owner) catch |err| {
         return ctx.fail("cannot save the run: no runs folder ({t})", .{err});
     };
@@ -220,17 +245,17 @@ fn run_save(
         .elapsed_ms = result.elapsed_ms,
         .samples = profile.samples,
         .sample_hz = profile.sample_hz,
+        .series = if (series) |s| s.name else "",
+        .repeat = if (series) |s| s.repeat else 0,
+        .repeats = if (series) |s| s.repeats else 0,
     }, try client.compact.json_of(arena, profile)) catch |err| {
         return ctx.fail("cannot save the run: {t}", .{err});
     };
-    try ctx.stdout.print("\n  Saved as \"{s}\" in {s}: open it in the app under Saved runs.\n", .{
-        saved.label,
-        store.dir,
-    });
+    return .{ .meta = saved, .dir = store.dir };
 }
 
 /// The command line of a process, its arguments joined by spaces; empty if unreadable.
-fn command_of(ctx: *cli.Context, pid: u32) ![]const u8 {
+pub fn command_of(ctx: *cli.Context, pid: u32) ![]const u8 {
     var path_buffer: [32]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buffer, "/proc/{d}/cmdline", .{pid}) catch unreachable;
     var file = @import("shared").File.open(path) catch return "";
@@ -288,7 +313,8 @@ fn folded_save(ctx: *cli.Context, path: []const u8, profile: *const server.Profi
     slog.debug("folded stacks written", .{ .path = path, .stacks = profile.stacks.len });
 }
 
-const Settings = struct {
+pub const Settings = struct {
+    repeat: u32,
     pid: ?u32,
     metrics: std.EnumSet(Metric),
     interval_ms: u32,
@@ -302,6 +328,24 @@ const Settings = struct {
     to_ms: ?u64,
     view: view.Options,
 };
+
+fn repeat_read(ctx: *cli.Context, has_exec: bool) error{InvalidUsage}!u32 {
+    const repeat = ctx.getInt("repeat");
+    if (repeat < 1 or repeat > 100) {
+        return ctx.usageFail("--repeat must be 1 to 100 (got {d})", .{repeat});
+    }
+    if (repeat == 1) return 1;
+    if (!has_exec) {
+        return ctx.usageFail("--repeat needs --exec: it launches the program each time", .{});
+    }
+    if (!ctx.isSet("save")) {
+        return ctx.usageFail("--repeat needs --save: the runs are kept as a series", .{});
+    }
+    if (ctx.getBool("keep-running")) {
+        return ctx.usageFail("--repeat and --keep-running do not go together", .{});
+    }
+    return @intCast(repeat);
+}
 
 fn settings_read(ctx: *cli.Context) error{InvalidUsage}!Settings {
     const has_exec = ctx.isSet("exec");
@@ -364,6 +408,7 @@ fn settings_read(ctx: *cli.Context) error{InvalidUsage}!Settings {
         .note = if (ctx.isSet("note")) ctx.getString("note") else "",
         .no_live = ctx.getBool("no-live"),
         .keep_running = ctx.getBool("keep-running"),
+        .repeat = try repeat_read(ctx, has_exec),
         .from_ms = if (ctx.isSet("from")) @as(u64, @intCast(from)) * std.time.ms_per_s else null,
         .to_ms = if (ctx.isSet("to")) @as(u64, @intCast(to)) * std.time.ms_per_s else null,
         .view = .{
@@ -395,14 +440,14 @@ fn metrics_read(ctx: *cli.Context) error{InvalidUsage}!std.EnumSet(Metric) {
     return set;
 }
 
-fn argv_of(ctx: *cli.Context, exec: []const u8, args: []const []const u8) ![]const []const u8 {
+pub fn argv_of(ctx: *cli.Context, exec: []const u8, args: []const []const u8) ![]const []const u8 {
     const argv = try ctx.allocator.alloc([]const u8, args.len + 1);
     argv[0] = exec;
     @memcpy(argv[1..], args);
     return argv;
 }
 
-fn launch_failure(err: anyerror) ?[]const u8 {
+pub fn launch_failure(err: anyerror) ?[]const u8 {
     return switch (err) {
         error.ProgramNotFound => "no such program (give a path, or a name on PATH)",
         error.NotExecutable => "the file cannot be run",
@@ -413,7 +458,7 @@ fn launch_failure(err: anyerror) ?[]const u8 {
     };
 }
 
-fn hint(err: anyerror) []const u8 {
+pub fn hint(err: anyerror) []const u8 {
     return switch (err) {
         error.PermissionDenied => "run as root, or grant CAP_BPF, CAP_PERFMON, CAP_SYSLOG" ++
             " and CAP_CHECKPOINT_RESTORE",

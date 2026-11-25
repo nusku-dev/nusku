@@ -41,6 +41,9 @@ pub const Meta = struct {
     saved_unix_ms: u64 = 0,
     samples: u64 = 0,
     sample_hz: u32 = 0,
+    series: []const u8 = "",
+    repeat: u32 = 0,
+    repeats: u32 = 0,
 };
 
 pub const Owner = struct {
@@ -317,6 +320,32 @@ fn tree_remove(arena: std.mem.Allocator) void {
         const path = std.fmt.allocPrintSentinel(arena, "{s}{s}", .{ root, part }, 0) catch return;
         _ = linux.rmdir(path);
     }
+}
+
+test "runs of a series keep their series and their place in it" {
+    var state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer state.deinit();
+    const arena = state.allocator();
+    defer tree_remove(arena);
+
+    var store: StoreRuns = undefined;
+    try store_test(&store, arena);
+
+    for (1..4) |k| {
+        _ = try store.save(arena, .{
+            .label = try std.fmt.allocPrint(arena, "v1 ({d}/3)", .{k}),
+            .series = "v1",
+            .repeat = @intCast(k),
+            .repeats = 3,
+        }, "{}");
+    }
+    const listed = try store.list(arena);
+    try testing.expectEqual(@as(usize, 3), listed.len);
+    for (listed) |meta| {
+        try testing.expectEqualStrings("v1", meta.series);
+        try testing.expectEqual(@as(u32, 3), meta.repeats);
+    }
+    try testing.expectEqual(@as(u32, 3), listed[0].repeat);
 }
 
 test "a run is saved, listed newest first, read back, relabelled and deleted" {

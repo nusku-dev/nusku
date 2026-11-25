@@ -6,6 +6,7 @@ import { useWidth } from "@/hooks/use-width";
 import { frameName, moduleName } from "@/lib/profile/analyze";
 import {
   changeOf,
+  meanOf,
   type Change,
   type DiffNode,
   type Measure,
@@ -72,7 +73,7 @@ export function DiffFlame({
     const byId = new Map<string, Box>();
     let depth = 0;
     let largest = 0;
-    const total = shape === "after" ? zoom.b : zoom.a;
+    const total = meanOf(shape === "after" ? zoom.b : zoom.a);
     if (width > 0 && total > 0) {
       const scale = width / total;
       const place = (
@@ -81,7 +82,7 @@ export function DiffFlame({
         x: number,
         level: number,
       ) => {
-        const w = (shape === "after" ? node.b : node.a) * scale;
+        const w = meanOf(shape === "after" ? node.b : node.a) * scale;
         if (w < 0.75 || boxes.length >= maxBoxes) return;
         const box = { node, path: trail, x, width: w, depth: level };
         boxes.push(box);
@@ -93,7 +94,7 @@ export function DiffFlame({
         let cx = x;
         for (const child of node.children) {
           place(child, [...trail, child], cx, level + 1);
-          cx += (shape === "after" ? child.b : child.a) * scale;
+          cx += meanOf(shape === "after" ? child.b : child.a) * scale;
         }
       };
       place(zoom, [], 0, 0);

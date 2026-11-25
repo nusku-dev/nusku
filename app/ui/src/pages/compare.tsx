@@ -11,7 +11,7 @@ import { DiffFlame, type Shape } from "@/components/compare/diff-flame";
 import { formatChange, formatMeasure } from "@/components/compare/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { backend, type CompactWire, type RunMeta } from "@/lib/backend";
+import { backend, type RunMeta } from "@/lib/backend";
 import { formatClock, formatInt } from "@/lib/format";
 import { frameName, moduleName } from "@/lib/profile/analyze";
 import {
@@ -25,17 +25,36 @@ import {
 } from "@/lib/profile/compare";
 import { profileOf } from "@/lib/profile/wire";
 import { Routes, useRoute } from "@/lib/router";
+import { seriesPrefix } from "@/lib/runs";
 
-type Loaded = { meta: RunMeta; side: Side };
+type Loaded = { key: string; label: string; metas: RunMeta[]; side: Side };
 type By = "self" | "total";
 
 const rowsMax = 300;
 
-function sideOf(wire: CompactWire): Side {
-  return { profile: profileOf(wire), hz: wire.sample_hz };
+async function load(key: string): Promise<Loaded> {
+  const metas = key.startsWith(seriesPrefix)
+    ? (await backend.runsList())
+        .filter((m) => m.series === key.slice(seriesPrefix.length))
+        .sort((x, y) => x.repeat - y.repeat)
+    : [(await backend.runsGet(Number(key))).meta];
+  if (metas.length === 0)
+    throw new Error("No saved run of that series is left");
+  const wires = await Promise.all(metas.map((m) => backend.runsGet(m.id)));
+  return {
+    key,
+    label: key.startsWith(seriesPrefix)
+      ? key.slice(seriesPrefix.length)
+      : metas[0].label,
+    metas: wires.map((w) => w.meta),
+    side: {
+      profiles: wires.map((w) => profileOf(w.profile)),
+      hz: wires[0].profile.sample_hz,
+    },
+  };
 }
 
-export function ComparePage({ a, b }: { a: number; b: number }) {
+export function ComparePage({ a, b }: { a: string; b: string }) {
   const route = useRoute();
   const back = route.nav(Routes.runs).href();
   const [runs, setRuns] = useState<[Loaded, Loaded] | null>(null);
@@ -43,14 +62,8 @@ export function ComparePage({ a, b }: { a: number; b: number }) {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([backend.runsGet(a), backend.runsGet(b)])
-      .then(([x, y]) => {
-        if (alive)
-          setRuns([
-            { meta: x.meta, side: sideOf(x.profile) },
-            { meta: y.meta, side: sideOf(y.profile) },
-          ]);
-      })
+    Promise.all([load(decodeURIComponent(a)), load(decodeURIComponent(b))])
+      .then((both) => alive && setRuns(both))
       .catch(
         (e: unknown) =>
           alive && setError(e instanceof Error ? e.message : String(e)),
@@ -85,6 +98,14 @@ export function ComparePage({ a, b }: { a: number; b: number }) {
   return <Comparison before={runs[0]} after={runs[1]} back={back} />;
 }
 
+function totalsOf(side: Side): number[] {
+  return side.profiles.map((p) => p.total);
+}
+
+function elapsedOf(run: Loaded): number {
+  return run.metas.reduce((sum, m) => sum + m.elapsed_ms, 0) / run.metas.length;
+}
+
 function Comparison({
   before,
   after,
@@ -102,16 +123,16 @@ function Comparison({
   const [shape, setShape] = useState<Shape>("after");
 
   const comparison = useMemo(
-    () => compare(before.side.profile, after.side.profile),
+    () => compare(before.side.profiles, after.side.profiles),
     [before, after],
   );
   const tree = useMemo(
-    () => diffTree(before.side.profile, after.side.profile, focus),
+    () => diffTree(before.side.profiles, after.side.profiles, focus),
     [before, after, focus],
   );
   const total = changeOf(
-    before.side.profile.total,
-    after.side.profile.total,
+    totalsOf(before.side),
+    totalsOf(after.side),
     before.side,
     after.side,
     measure,
@@ -139,12 +160,9 @@ function Comparison({
   }, [comparison, by, search, before, after, measure]);
 
   const swap = () =>
-    route
-      .nav(Routes.compare, {
-        params: { 0: String(after.meta.id), 1: String(before.meta.id) },
-      })
-      .go();
-  const sameProgram = before.meta.program === after.meta.program;
+    route.nav(Routes.compare, { params: { 0: after.key, 1: before.key } }).go();
+  const sameProgram = before.metas[0].program === after.metas[0].program;
+  const lasted = [elapsedOf(before), elapsedOf(after)];
   const focused = focus ? comparison.byKey.get(focus) : undefined;
 
   return (
@@ -159,9 +177,9 @@ function Comparison({
           <ArrowLeft />
         </Button>
         <div className="flex min-w-0 flex-1 items-center gap-2 text-base font-semibold tracking-tight">
-          <span className="truncate">{before.meta.label}</span>
+          <RunName run={before} />
           <span className="shrink-0 text-muted-foreground">→</span>
-          <span className="truncate">{after.meta.label}</span>
+          <RunName run={after} />
         </div>
         <Button
           variant="outline"
@@ -176,12 +194,12 @@ function Comparison({
         <Stat
           label="Before"
           value={totalText(before, total.before, measure)}
-          hint={runHint(before.meta)}
+          hint={runHint(before)}
         />
         <Stat
           label="After"
           value={totalText(after, total.after, measure)}
-          hint={runHint(after.meta)}
+          hint={runHint(after)}
         />
         {measure === "time" && (
           <Stat
@@ -193,19 +211,16 @@ function Comparison({
         {!sameProgram && (
           <p className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
             <TriangleAlert className="size-3.5" /> Different programs:{" "}
-            {before.meta.program} and {after.meta.program}
+            {before.metas[0].program} and {after.metas[0].program}
           </p>
         )}
         {measure === "time" &&
-          before.meta.elapsed_ms !== 0 &&
-          Math.abs(before.meta.elapsed_ms - after.meta.elapsed_ms) /
-            before.meta.elapsed_ms >
-            0.2 && (
+          lasted[0] !== 0 &&
+          Math.abs(lasted[0] - lasted[1]) / lasted[0] > 0.2 && (
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <TriangleAlert className="size-3.5" /> The runs lasted{" "}
-              {formatClock(before.meta.elapsed_ms)} and{" "}
-              {formatClock(after.meta.elapsed_ms)}: for a fixed workload compare
-              CPU time, otherwise share of run
+              {formatClock(lasted[0])} and {formatClock(lasted[1])}: for a fixed
+              workload compare CPU time, otherwise share of run
             </p>
           )}
       </div>
@@ -379,11 +394,31 @@ function toneClass(t: Tone): string {
 
 function totalText(run: Loaded, value: number, measure: Measure): string {
   if (measure === "time") return formatMeasure(value, measure);
-  return `${formatInt(run.side.profile.total)} samples`;
+  const mean =
+    totalsOf(run.side).reduce((sum, n) => sum + n, 0) /
+    run.side.profiles.length;
+  return `${formatInt(Math.round(mean))} samples`;
 }
 
-function runHint(meta: RunMeta): string {
-  return `${formatClock(meta.elapsed_ms)} · ${formatInt(meta.samples)} samples · ${new Date(meta.saved_unix_ms).toLocaleString()}`;
+function runHint(run: Loaded): string {
+  if (run.metas.length === 1) {
+    const meta = run.metas[0];
+    return `${formatClock(meta.elapsed_ms)} · ${formatInt(meta.samples)} samples · ${new Date(meta.saved_unix_ms).toLocaleString()}`;
+  }
+  return `The mean of ${run.metas.length} runs: a change counts only past their spread`;
+}
+
+function RunName({ run }: { run: Loaded }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span className="truncate">{run.label}</span>
+      {run.metas.length > 1 && (
+        <span className="shrink-0 border px-1.5 text-xs font-normal text-muted-foreground">
+          {run.metas.length} runs
+        </span>
+      )}
+    </span>
+  );
 }
 
 function Stat({

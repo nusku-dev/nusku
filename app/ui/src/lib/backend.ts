@@ -112,6 +112,9 @@ export interface RunMeta {
   saved_unix_ms: number;
   samples: number;
   sample_hz: number;
+  series: string;
+  repeat: number;
+  repeats: number;
 }
 
 export interface SaveRequest {

@@ -40,8 +40,8 @@ export default function App() {
       {route.current === "compare" && (
         <ComparePage
           key={`${route.params?.["0"]}-${route.params?.["1"]}`}
-          a={Number(route.params?.["0"])}
-          b={Number(route.params?.["1"])}
+          a={route.params?.["0"] ?? ""}
+          b={route.params?.["1"] ?? ""}
         />
       )}
     </AppShell>

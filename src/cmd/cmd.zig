@@ -33,6 +33,7 @@ test {
     _ = ps;
     _ = watch;
     _ = probe;
+    _ = @import("prof_repeat.zig");
     _ = @import("flags.zig");
     _ = @import("interrupt.zig");
 }
