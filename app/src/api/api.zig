@@ -3,6 +3,7 @@ const session = @import("session.zig");
 const processes = @import("processes.zig");
 const profile = @import("profile.zig");
 const store = @import("store.zig");
+const probes = @import("probes.zig");
 
 pub fn bind(window: webui) !void {
     try session.init();
@@ -21,6 +22,10 @@ pub fn bind(window: webui) !void {
     _ = try window.binding("store_runs_get", store.get);
     _ = try window.binding("store_runs_relabel", store.relabel);
     _ = try window.binding("store_runs_delete", store.delete);
+    _ = try window.binding("probe_start", probes.start);
+    _ = try window.binding("probe_stop", probes.stop);
+    _ = try window.binding("probe_list", probes.list);
+    _ = try window.binding("probe_get", probes.get);
 }
 
 pub fn deinit() void {
@@ -32,6 +37,7 @@ test {
     _ = processes;
     _ = profile;
     _ = store;
+    _ = probes;
     _ = @import("json.zig");
     _ = @import("compact.zig");
 }

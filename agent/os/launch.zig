@@ -1,4 +1,5 @@
-//! Starting a program to profile: it is held stopped before it has run, so profiling misses nothing of it.
+//! Starting a program to profile: it is held before its first instruction, so profiling misses
+//! nothing of it.
 
 const std = @import("std");
 const linux = std.os.linux;

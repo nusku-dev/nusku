@@ -7,6 +7,7 @@ import { SessionsPage } from "./pages/sessions";
 import { RunsPage } from "./pages/runs";
 import { RunPage } from "./pages/run";
 import { ComparePage } from "./pages/compare";
+import { ProbePage } from "./pages/probe";
 
 export default function App() {
   const route = useRoute();
@@ -30,6 +31,12 @@ export default function App() {
       </Activity>
       {!Number.isNaN(job) && <SessionPage key={job} job={job} />}
       {!Number.isNaN(run) && <RunPage key={run} id={run} />}
+      {route.current === "probes" && (
+        <ProbePage
+          key={route.params?.["0"]}
+          job={Number(route.params?.["0"])}
+        />
+      )}
       {route.current === "compare" && (
         <ComparePage
           key={`${route.params?.["0"]}-${route.params?.["1"]}`}

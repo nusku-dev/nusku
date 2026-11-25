@@ -11,18 +11,19 @@ import {
 } from "lucide-react";
 import { cn } from "cn";
 import { ProfileWorkspace } from "@/components/profile/workspace";
-import { SessionStatus } from "@/components/session-status";
+import { LiveDot, SessionStatus } from "@/components/session-status";
 import { Button } from "@/components/ui/button";
 import { useLiveProfile } from "@/hooks/use-live-profile";
 import { useProfiles, useSession } from "@/hooks/use-profiles";
-import { folded } from "@/lib/profile/analyze";
-import { formatClock, formatInt, formatPercent } from "@/lib/format";
+import { folded, frameName } from "@/lib/profile/analyze";
+import { formatClock, formatInt, formatNs, formatPercent } from "@/lib/format";
 import { analyze, type Analysis } from "@/components/profile/analysis";
-import type { Profile, Session } from "@/lib/profile/types";
+import type { Frame, Profile, Session } from "@/lib/profile/types";
 import { share, trusted, type Quality } from "@/lib/profile/quality";
 import { Routes, useRoute } from "@/lib/router";
 import { useRuns } from "@/hooks/use_runs";
 import { RunLabelDialog } from "@/components/run-label-dialog";
+import { useProbes } from "@/hooks/use-probes";
 
 const empty: Analysis = analyze({
   sampleHz: 0,
@@ -34,6 +35,18 @@ const empty: Analysis = analyze({
 
 export function SessionPage({ job }: { job: number }) {
   const session = useSession(job);
+  const { start: probeStart } = useProbes();
+  const route = useRoute();
+  const track = async (frame: Frame, pid: number) => {
+    const probe = await probeStart({
+      pid,
+      function: frameName(frame),
+      module: frame.module,
+      interval_ms: 1000,
+      duration_s: 0,
+    });
+    route.nav(Routes.probes, { params: { 0: String(probe) } }).go();
+  };
   const live = useLiveProfile(job);
   const analysis = live.analysis ?? empty;
   const profile = analysis.profile;
@@ -69,10 +82,14 @@ export function SessionPage({ job }: { job: number }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <SessionHeader session={session} profile={profile} back={back} />
       <SessionStats session={session} analysis={analysis} />
+      <SessionProbes pid={session.pid} />
       <ProfileWorkspace
         session={session}
         live={analysis}
         loading={!live.analysis && !live.error}
+        onTrack={
+          session.running ? (frame) => track(frame, session.pid) : undefined
+        }
       />
     </div>
   );
@@ -372,6 +389,38 @@ function QualityDetails({ q, sampleHz }: { q: Quality; sampleHz: number }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+function SessionProbes({ pid }: { pid: number }) {
+  const { probes } = useProbes();
+  const route = useRoute();
+  const mine = probes.filter((p) => p.pid === pid);
+  if (mine.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b px-6 py-2 text-xs">
+      <span className="text-muted-foreground">Probes</span>
+      {mine.map((p) => {
+        const timed = Number(p.timed);
+        const mean = timed > 0 ? Number(p.total_ns) / timed : null;
+        return (
+          <a
+            key={p.job}
+            href={route
+              .nav(Routes.probes, { params: { 0: String(p.job) } })
+              .href()}
+            className="flex items-center gap-1.5 border px-2 py-0.5 hover:bg-muted"
+          >
+            {p.running && <LiveDot />}
+            <span className="font-mono">{p.function}</span>
+            <span className="text-muted-foreground tabular-nums">
+              {formatInt(Number(p.calls))} calls
+              {mean !== null ? ` · ${formatNs(mean)} mean` : ""}
+            </span>
+          </a>
+        );
+      })}
     </div>
   );
 }

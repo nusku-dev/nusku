@@ -24,6 +24,8 @@ pub const cmd: cli.Command = .{
     \\
     \\Each call costs a few microseconds of probe: fine for a function called a few
     \\thousand times a second, too much for one called millions of times.
+    \\
+    \\Needs root or CAP_SYS_ADMIN: the kernel opens uprobes to nothing less.
     ,
     .flags = &.{
         .{ .name = "pid", .short = 'p', .kind = .int, .help = "The process to probe" },
@@ -170,6 +172,8 @@ fn hint(err: anyerror) []const u8 {
             "(no call to probe), or named differently (use the names nusku prof shows)",
         error.FunctionAmbiguous => "the name is in more than one file: pick one with --module",
         error.GoProgram => "Go programs cannot take return probes: their runtime moves stacks",
+        error.PermissionDenied => "function probes need root or CAP_SYS_ADMIN: " ++
+            "the kernel lets nothing less open a uprobe",
         error.PermissionDenied => "run as root, or grant CAP_BPF, CAP_PERFMON and CAP_SYSLOG",
         error.ProcessNotFound, error.InvalidPid => "no process with that pid",
         error.NotSupported => "this kernel cannot put a probe there",

@@ -5,6 +5,7 @@ export const Routes = {
   sessions: "sessions",
   runs: "runs",
   compare: "compare",
+  probes: "probes",
 } as const;
 
 export type Routes = (typeof Routes)[keyof typeof Routes];

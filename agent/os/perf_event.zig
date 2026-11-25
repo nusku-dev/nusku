@@ -43,7 +43,8 @@ pub const PerfEvent = struct {
     }
 
     /// A probe on the instruction at `offset` in the file at `path`, in process `pid` only:
-    /// at its entry, or with `on_return` when the function returns. Needs root or CAP_PERFMON.
+    /// at its entry, or with `on_return` when the function returns. Needs root or
+    /// CAP_SYS_ADMIN: for uprobes, CAP_PERFMON is not enough.
     pub fn uprobe_open(pid: u32, path: [:0]const u8, offset: u64, on_return: bool) Error!PerfEvent {
         assert(pid > 0 and pid <= std.math.maxInt(i32));
         const pmu = try uprobe_pmu();

@@ -61,3 +61,17 @@ export function formatCpuTime(value: number, sampleHz: number): string {
     ? formatDuration((value / sampleHz) * 1000)
     : formatInt(value);
 }
+
+export function formatNs(ns: number): string {
+  const units: [number, string][] = [
+    [1e9, "s"],
+    [1e6, "ms"],
+    [1e3, "µs"],
+  ];
+  for (const [size, unit] of units) {
+    if (ns < size) continue;
+    const value = ns / size;
+    return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${unit}`;
+  }
+  return `${Math.round(ns)} ns`;
+}

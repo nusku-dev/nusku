@@ -12,7 +12,7 @@ import { cn } from "cn";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import { useRangeProfile } from "@/hooks/use-range-profile";
-import type { Range, Session } from "@/lib/profile/types";
+import type { Frame, Range, Session } from "@/lib/profile/types";
 import { useAnalysis, type Analysis, type ViewProps } from "./analysis";
 import { CallTree } from "./call-tree";
 import { FlameGraph } from "./flame-graph";
@@ -64,11 +64,13 @@ export function ProfileWorkspace({
   live,
   loading,
   rangeable = true,
+  onTrack,
 }: {
   session: Source;
   live: Analysis;
   loading: boolean;
   rangeable?: boolean;
+  onTrack?: (frame: Frame) => Promise<void>;
 }) {
   const [view, setView] = useState<ViewId>("both");
   const [range, setRange] = useState<Range | null>(null);
@@ -202,6 +204,7 @@ export function ProfileWorkspace({
             analysis={analysis}
             functionKey={selected}
             onSelect={setSelected}
+            onTrack={onTrack}
           />
         )}
       </div>

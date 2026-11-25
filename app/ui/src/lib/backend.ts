@@ -122,6 +122,56 @@ export interface SaveRequest {
   command: string;
 }
 
+export interface ProbeListed {
+  job: number;
+  pid: number;
+  running: boolean;
+  elapsed_ms: number;
+  reason: StopReason | null;
+  failure: string | null;
+  function: string;
+  path: string;
+  calls: number | string;
+  timed: number | string;
+  total_ns: number | string;
+  max_ns: number | string;
+}
+
+export interface ProbePointWire {
+  t: number | string;
+  d: number | string;
+  c: number | string;
+  n: number | string;
+  s: number | string;
+  m: number | string;
+  h: [number, number | string][];
+}
+
+export interface ProbeGetWire {
+  job: number;
+  finished: boolean;
+  first: number;
+  info: {
+    pid: number;
+    function: string;
+    path: string;
+    offset: number | string;
+    size: number | string;
+  } | null;
+  unmatched: number | string;
+  untimed: number | string;
+  dropped: number | string;
+  points: ProbePointWire[];
+}
+
+export interface ProbeStartRequest {
+  pid: number;
+  function: string;
+  module: string | null;
+  interval_ms: number;
+  duration_s: number;
+}
+
 const listeners = new Set<(connected: boolean) => void>();
 let connected = false;
 let listening = false;
@@ -204,7 +254,13 @@ export const backend = {
         to_ms: Math.ceil(toMs),
       }),
     ),
-
+  probeStart: (request: ProbeStartRequest) =>
+    call<{ job: number }>("probe_start", JSON.stringify(request)),
+  probeStop: (job: number) =>
+    call<{ job: number; reason: StopReason }>("probe_stop", job),
+  probeList: () => call<ProbeListed[]>("probe_list"),
+  probeGet: (job: number, from: number) =>
+    call<ProbeGetWire>("probe_get", JSON.stringify({ job, from })),
   runsList: () => call<RunMeta[]>("store_runs_list"),
   runsSave: (request: SaveRequest) =>
     call<RunMeta>("store_runs_save", JSON.stringify(request)),

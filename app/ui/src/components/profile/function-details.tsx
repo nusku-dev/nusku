@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { useMemo } from "react";
-import { Copy, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Copy, Timer, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,15 +14,18 @@ import {
 import { formatPercent, formatSamples } from "@/lib/format";
 import type { Analysis } from "./analysis";
 import { frameColor, frameKind, kindLabels } from "./colors";
+import type { Frame } from "@/lib/profile/types";
 
 export function FunctionDetails({
   analysis,
   functionKey,
   onSelect,
+  onTrack,
 }: {
   analysis: Analysis;
   functionKey: string;
   onSelect: (key: string | null) => void;
+  onTrack?: (frame: Frame) => Promise<void>;
 }) {
   const stat = analysis.byKey.get(functionKey);
   const { callers, callees } = useMemo(
@@ -85,6 +88,9 @@ export function FunctionDetails({
           >
             <Copy /> Copy name
           </Button>
+          {onTrack && !frame.kernel && frame.function && (
+            <TrackButton key={functionKey} frame={frame} onTrack={onTrack} />
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-px border bg-border">
@@ -269,4 +275,51 @@ function Neighbours({
       )}
     </section>
   );
+}
+
+function TrackButton({
+  frame,
+  onTrack,
+}: {
+  frame: Frame;
+  onTrack: (frame: Frame) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const track = () => {
+    setBusy(true);
+    setError(null);
+    onTrack(frame)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : String(e)),
+      )
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div className="space-y-1">
+      <Button
+        variant="outline"
+        size="xs"
+        onClick={track}
+        disabled={busy}
+        title="Count and time every call of this function with a probe on its entry and return"
+      >
+        <Timer /> {busy ? "Attaching…" : "Track calls"}
+      </Button>
+      {error && <p className="text-xs text-destructive">{trackError(error)}</p>}
+    </div>
+  );
+}
+
+function trackError(error: string): string {
+  if (error === "FunctionNotFound")
+    return "It has no call to probe: it is inlined, or not in its file’s symbols.";
+  if (error === "FunctionAmbiguous")
+    return "Its name is in more than one file.";
+  if (error === "GoProgram")
+    return "Go programs cannot take return probes: their runtime moves stacks.";
+  if (error === "PermissionDenied")
+    return "Function probes need root or CAP_SYS_ADMIN: the kernel lets nothing less open a uprobe.";
+  if (error === "ProbesFull") return "Too many probes running: stop one first.";
+  return error;
 }

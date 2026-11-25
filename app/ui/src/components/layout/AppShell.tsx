@@ -7,12 +7,14 @@ import {
   Moon,
   Sun,
   TerminalSquare,
+  Timer,
 } from "lucide-react";
 import { cn } from "cn";
 import { useTheme } from "next-themes";
 import { onConnection } from "@/lib/backend";
 import { LiveDot } from "@/components/session-status";
 import { useProfiles } from "@/hooks/use-profiles";
+import { useProbes } from "@/hooks/use-probes";
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
@@ -31,6 +33,9 @@ function Sidebar() {
   const sessions = route.nav(Routes.sessions).href;
   const runs = route.nav(Routes.runs).href;
   const live = useProfiles().sessions.filter((s) => s.running);
+  const probing = useProbes().probes.filter((p) => p.running);
+  const openProbe =
+    route.current === "probes" ? route.params?.["0"] : undefined;
   const openJob =
     route.current === "sessions" ? route.params?.["0"] : undefined;
 
@@ -64,7 +69,7 @@ function Sidebar() {
         </NavLink>
       </nav>
 
-      {live.length > 0 && (
+      {(live.length > 0 || probing.length > 0) && (
         <div className="px-2 pt-3">
           <p className="px-2 pb-1.5 text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
             Live now
@@ -85,6 +90,28 @@ function Sidebar() {
                   <span className="min-w-0 flex-1 truncate">{s.name}</span>
                   <span className="text-xs text-muted-foreground tabular-nums">
                     {s.pid}
+                  </span>
+                </a>
+              </li>
+            ))}
+            {probing.map((p) => (
+              <li key={`probe-${p.job}`}>
+                <a
+                  href={route
+                    .nav(Routes.probes, { params: { 0: String(p.job) } })
+                    .href()}
+                  className={cn(
+                    "flex items-center gap-2.5 px-2 py-1.5 text-sm hover:bg-sidebar-accent",
+                    openProbe === String(p.job) && "bg-sidebar-accent",
+                  )}
+                  title={`Probe on ${p.function}`}
+                >
+                  <Timer className="size-3.5 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                    {p.function}
+                  </span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {p.pid}
                   </span>
                 </a>
               </li>

@@ -130,11 +130,18 @@ pub const Probe = struct {
         var buffer: [path_bytes_max + 32]u8 = undefined;
         const root = "/proc/{d}/root{s}";
         const path = std.fmt.bufPrintZ(&buffer, root, .{ options.pid, options.path }) catch return error.InvalidPath;
-        probe.events[1] = try PerfEvent.uprobe_open(options.pid, path, options.offset, true);
+        const opened = PerfEvent.uprobe_open(options.pid, path, options.offset, true);
+        probe.events[1] = opened catch |err| {
+            log.debug("the return probe cannot be opened", .{ .path = path, .cause = err });
+            return err;
+        };
         errdefer probe.events[1].deinit();
         probe.events[0] = try PerfEvent.uprobe_open(options.pid, path, options.offset, false);
         errdefer probe.events[0].deinit();
-        try probe.events[1].program_attach(probe.exit.fd);
+        probe.events[1].program_attach(probe.exit.fd) catch |err| {
+            log.debug("the return program cannot be attached", .{ .cause = err });
+            return err;
+        };
         try probe.events[0].program_attach(probe.enter.fd);
         try probe.events[1].enable();
         try probe.events[0].enable();
