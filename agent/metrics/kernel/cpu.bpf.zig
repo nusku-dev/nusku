@@ -45,8 +45,12 @@ const cfa_plt = @intFromEnum(unwind_wire.CfaType.plt);
 const cfa_end = @intFromEnum(unwind_wire.CfaType.end);
 const rbp_same = @intFromEnum(unwind_wire.RbpType.same);
 const rbp_saved = @intFromEnum(unwind_wire.RbpType.saved);
+const cfa_go_sched = @intFromEnum(unwind_wire.CfaType.go_sched);
+const cfa_go_vdso = @intFromEnum(unwind_wire.CfaType.go_vdso);
 
 const syscall_instruction_tail: u64 = 0x050f;
+
+const go_switches_max: u64 = 2;
 
 export var cpu_config: MapDef linksection(".maps") = .{
     .map_type = MapType.array,
@@ -165,6 +169,9 @@ inline fn walk_begin(state: *WalkState, context: *anyopaque, pid_tgid: u64) bool
     state.leaf_is_return = if (leaf_is_return) 1 else 0;
     state.frame_count = 0;
     state.frame_pointer_steps = 0;
+    state.go_g = registers.r14;
+    state.go_switches = 0;
+    state.go_pending = 0;
     state.stack_hash = 0;
 
     var flags: u8 = 0;
@@ -191,7 +198,10 @@ inline fn walk_run(state: *WalkState, tgid: u32) StopReason {
         return .no_mapping;
     };
     const process: *const ProcessEntry = @ptrCast(@alignCast(process_pointer));
-
+    if (state.go_pending != 0) {
+        const resumed = @call(.always_inline, go_resume, .{state});
+        if (resumed != .none) return resumed;
+    }
     var frame_index: u32 = 0;
     while (frame_index < frames_per_run) : (frame_index += 1) {
         const count = state.frame_count;
@@ -210,6 +220,13 @@ inline fn walk_run(state: *WalkState, tgid: u32) StopReason {
             return .no_mapping;
         }
         frame_push(state, count, pc);
+
+        const kind = found.row.cfa_type;
+        if (found.status == .found and (kind == cfa_go_sched or kind == cfa_go_vdso)) {
+            state.go_pending = kind;
+            state.go_module = found.module_index;
+            return .none;
+        }
 
         const caller = frame_caller(found, pc, sp, bp);
         if (caller.stop != .none) return caller.stop;
@@ -262,6 +279,47 @@ inline fn frame_caller(found: RowLookup, pc: u64, sp: u64, bp: u64) Caller {
     caller = frame_pointer_unwind(sp, bp);
     caller.used_frame_pointer = true;
     return caller;
+}
+
+/// Go switched stacks at the last frame, and wrote down where the goroutine was: in
+/// m.vdsoPC and m.vdsoSP for a clock read, in curg.sched for the rest. The thread's g came
+/// from r14. Done once at the start of a run, so the code is not repeated per frame.
+inline fn go_resume(state: *WalkState) StopReason {
+    const kind = state.go_pending;
+    state.go_pending = 0;
+    if (state.go_switches >= go_switches_max) return .unsupported_unwind;
+    state.go_switches += 1;
+    var module_key: u32 = @truncate(state.go_module);
+    const module_pointer = map_lookup_elem(&unwind_modules, &module_key) orelse
+        return .unsupported_unwind;
+    const go = &@as(*const Module, @ptrCast(@alignCast(module_pointer))).go;
+    const g = state.go_g;
+    if (go.known == 0 or g == 0) return .unsupported_unwind;
+    if (!word_read(&state.go_m, g + go.g_m)) return .stack_read_failed;
+    const m = state.go_m;
+    if (m == 0) return .unsupported_unwind;
+
+    if (kind == cfa_go_vdso) {
+        if (!word_read(&state.pc, m + go.m_vdso_pc)) return .stack_read_failed;
+        if (!word_read(&state.sp, m + go.m_vdso_sp)) return .stack_read_failed;
+    } else {
+        if (!word_read(&state.go_word, m + go.m_g0)) return .stack_read_failed;
+        if (state.go_word != g) return .unsupported_unwind;
+        if (!word_read(&state.go_word, m + go.m_curg)) return .stack_read_failed;
+        const curg = state.go_word;
+        if (curg == 0) return .end;
+        const sched = curg + go.g_sched;
+        if (!word_read(&state.pc, sched + go.gobuf_pc)) return .stack_read_failed;
+        if (!word_read(&state.sp, sched + go.gobuf_sp)) return .stack_read_failed;
+        if (!word_read(&state.bp, sched + go.gobuf_bp)) return .stack_read_failed;
+    }
+    if (state.pc == 0 or state.sp == 0) return .unsupported_unwind;
+    state.pc_is_leaf = 0;
+    return .none;
+}
+
+inline fn word_read(into: *u64, address: u64) bool {
+    return probe_read_user(into, @sizeOf(u64), address) == 0;
 }
 
 inline fn stack_hash_mix(value: u64) u64 {
@@ -374,6 +432,7 @@ const RowStatus = enum(u8) {
 const RowLookup = struct {
     status: RowStatus,
     row: Row,
+    module_index: u32 = 0,
 };
 
 const row_zero = Row{
@@ -430,6 +489,7 @@ fn row_find(process: *const ProcessEntry, ip: u64) RowLookup {
 
     result.status = .found;
     result.row = row.*;
+    result.module_index = module_key;
     return result;
 }
 

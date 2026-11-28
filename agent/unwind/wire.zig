@@ -20,6 +20,8 @@ pub const CfaType = enum(u8) {
     rbp = 3,
     plt = 4,
     end = 5,
+    go_sched = 6,
+    go_vdso = 7,
 };
 
 pub const RbpType = enum(u8) {
@@ -35,12 +37,27 @@ pub const Row = extern struct {
     rbp_offset: i16,
 };
 
+pub const GoOffsets = extern struct {
+    known: u16 = 0,
+    g_m: u16 = 0,
+    g_sched: u16 = 0,
+    m_g0: u16 = 0,
+    m_curg: u16 = 0,
+    m_vdso_sp: u16 = 0,
+    m_vdso_pc: u16 = 0,
+    gobuf_sp: u16 = 0,
+    gobuf_pc: u16 = 0,
+    gobuf_bp: u16 = 0,
+    reserved: u32 = 0,
+};
+
 pub const Module = extern struct {
     base: u64,
     row_start: u32,
     row_count: u32,
     end: u32,
     reserved: u32 = 0,
+    go: GoOffsets = .{},
 };
 
 pub const Mapping = extern struct {
@@ -59,7 +76,8 @@ pub const ProcessEntry = extern struct {
 
 comptime {
     if (@sizeOf(Row) != 12) @compileError("Row must be 12 bytes");
-    if (@sizeOf(Module) != 24) @compileError("Module must be 24 bytes");
+    if (@sizeOf(GoOffsets) != 24) @compileError("GoOffsets must be 24 bytes");
+    if (@sizeOf(Module) != 48) @compileError("Module must be 48 bytes");
     if (@sizeOf(Mapping) != 32) @compileError("Mapping must be 32 bytes");
     if (@sizeOf(ProcessEntry) != 8 + mappings_max * 32) @compileError("ProcessEntry size");
 

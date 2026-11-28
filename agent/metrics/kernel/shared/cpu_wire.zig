@@ -67,6 +67,13 @@ pub const WalkState = extern struct {
     frame_count: u64,
     frame_pointer_steps: u64,
 
+    go_g: u64,
+    go_switches: u64,
+    go_pending: u64,
+    go_module: u64,
+    go_m: u64,
+    go_word: u64,
+
     walks_completed: u64,
     walks_from_kernel: u64,
     walks_abandoned: u64,

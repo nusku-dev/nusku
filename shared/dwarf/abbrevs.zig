@@ -1,7 +1,8 @@
 /// Parses DWARF abbreviation tables into DIE definitions and their attribute specifications.
-const std = @import("std");
 const r = @import("reader.zig");
+const std = @import("std");
 const FORM = @import("form.zig").FORM;
+
 const Reader = r.Reader;
 const Error = r.Error;
 

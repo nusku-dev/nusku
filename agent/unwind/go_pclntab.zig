@@ -25,6 +25,7 @@ pub const Pclntab = struct {
     function_count: u32,
     functab_offset: u64,
     pctab_offset: u64,
+    funcnametab_offset: u64,
     flag_offset: u32,
 
     pub fn init(bytes: []const u8, text_vaddr: u64) Error!Pclntab {
@@ -46,6 +47,7 @@ pub const Pclntab = struct {
             .text_start = if (text_start_header != 0) text_start_header else text_vaddr,
             .function_count = function_count,
             .pctab_offset = try int_read(u64, bytes, 56),
+            .funcnametab_offset = try int_read(u64, bytes, 32),
             .functab_offset = try int_read(u64, bytes, 64),
             .flag_offset = flag_offset,
         };
@@ -54,6 +56,17 @@ pub const Pclntab = struct {
         if (functab_size > bytes.len - pclntab.functab_offset) return error.Truncated;
         if (pclntab.pctab_offset > bytes.len) return error.Truncated;
         return pclntab;
+    }
+
+    pub fn name_of(pclntab: *const Pclntab, index: u32) []const u8 {
+        assert(index < pclntab.function_count);
+        const entry_at = pclntab.functab_offset + @as(u64, index) * 8;
+        const func_offset = int_read(u32, pclntab.bytes, entry_at + 4) catch return "";
+        const func_at = pclntab.functab_offset + func_offset;
+        const name_offset = int_read(u32, pclntab.bytes, func_at + 4) catch return "";
+        const at = pclntab.funcnametab_offset + name_offset;
+        if (at >= pclntab.bytes.len) return "";
+        return std.mem.sliceTo(pclntab.bytes[@intCast(at)..], 0);
     }
 
     pub fn function(pclntab: *const Pclntab, index: u32) Error!Function {

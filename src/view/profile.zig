@@ -500,8 +500,8 @@ fn quality_write(
     }
     if (switched > 0) {
         const share = tenths(@min(switched, samples), samples);
-        const text = "{d}.{d}% of samples stop where Go switches to its system stack " ++
-            "(stack growth, the scheduler, clock reads): their callers are not shown yet";
+        const text = "{d}.{d}% of samples stop where Go switches to its system stack: " ++
+            "following it needs the binary's DWARF (it was built with -ldflags=-w?)";
         try quality_line(w, style, false, text, .{ share / 10, share % 10 });
     }
     if (unnamed == 0) {

@@ -4,10 +4,17 @@ const std = @import("std");
 
 pub const Error = error{ NotElf, Truncated, Unsupported };
 
+pub const shf_compressed = 0x800;
+
 const shdr_size = 64;
 const SHT_NOBITS = 8;
 const phdr_size = 56;
 const PT_LOAD = 1;
+
+const chdr_bytes = 24;
+const elfcompress_zlib = 1;
+const elfcompress_zstd = 2;
+const section_bytes_max = 1024 * 1024 * 1024;
 
 const PF_X = 1;
 const page_mask: u64 = 0xfff;
@@ -61,8 +68,6 @@ pub fn find(file: []const u8, wanted: []const u8) Error!?Section {
     return null;
 }
 
-pub const shf_compressed = 0x800;
-
 pub fn bytes_of(file: []const u8, section: Section) ?[]const u8 {
     if (section.kind == SHT_NOBITS) return null;
     const end = std.math.add(u64, section.offset, section.size) catch return null;
@@ -70,35 +75,32 @@ pub fn bytes_of(file: []const u8, section: Section) ?[]const u8 {
     return file[@intCast(section.offset)..@intCast(end)];
 }
 
-const ProgramHeaders = struct { offset: u64, count: u16 };
-
-fn program_headers(file: []const u8) Error!?ProgramHeaders {
-    if (file.len < 4 or !std.mem.eql(u8, file[0..4], "\x7fELF")) return error.NotElf;
-    if (file.len < 64) return error.Truncated;
-    if (file[4] != 2 or file[5] != 1) return error.Unsupported;
-
-    const phoff = u64_read(file, 32);
-    const phentsize = u16_read(file, 54);
-    const phnum = u16_read(file, 56);
-    if (phnum == 0) return null;
-    if (phentsize != phdr_size) return error.Unsupported;
-    const table = std.math.mul(u64, phnum, phdr_size) catch return error.Truncated;
-    const table_end = std.math.add(u64, phoff, table) catch return error.Truncated;
-    if (table_end > file.len) return error.Truncated;
-    return .{ .offset = phoff, .count = phnum };
-}
-
-pub const Segment = struct { offset: u64, vaddr: u64, filesz: u64 };
-
-fn segment_executable(file: []const u8, h: ProgramHeaders, index: u64) ?Segment {
-    const base: usize = @intCast(h.offset + index * phdr_size);
-    if (u32_read(file, base) != PT_LOAD) return null;
-    if (u32_read(file, base + 4) & PF_X == 0) return null;
-    return .{
-        .offset = u64_read(file, base + 8),
-        .vaddr = u64_read(file, base + 16),
-        .filesz = u64_read(file, base + 32),
-    };
+/// The bytes of a section marked SHF_COMPRESSED: zlib or zstd, after its header.
+pub fn decompress(gpa: std.mem.Allocator, raw: []const u8) error{ OutOfMemory, Malformed }![]u8 {
+    if (raw.len < chdr_bytes) return error.Malformed;
+    const kind = std.mem.readInt(u32, raw[0..4], .little);
+    const size = std.mem.readInt(u64, raw[8..16], .little);
+    if (size == 0 or size > section_bytes_max) return error.Malformed;
+    const out = try gpa.alloc(u8, @intCast(size));
+    errdefer gpa.free(out);
+    var input: std.Io.Reader = .fixed(raw[chdr_bytes..]);
+    switch (kind) {
+        elfcompress_zlib => {
+            const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
+            defer gpa.free(window);
+            var flate: std.compress.flate.Decompress = .init(&input, .zlib, window);
+            flate.reader.readSliceAll(out) catch return error.Malformed;
+        },
+        elfcompress_zstd => {
+            const zstd_lib = std.compress.zstd;
+            const window = try gpa.alloc(u8, zstd_lib.default_window_len + zstd_lib.block_size_max);
+            defer gpa.free(window);
+            var zstd: zstd_lib.Decompress = .init(&input, window, .{});
+            zstd.reader.readSliceAll(out) catch return error.Malformed;
+        },
+        else => return error.Malformed,
+    }
+    return out;
 }
 
 pub fn segment_mapped(file: []const u8, region_offset: u64) Error!?Segment {
@@ -131,6 +133,37 @@ pub fn segments_executable(file: []const u8, out: []Segment) Error!usize {
 pub fn load_bias(file: []const u8, region_start: u64, region_offset: u64) Error!?u64 {
     const s = (try segment_mapped(file, region_offset)) orelse return null;
     return region_start -% region_offset -% s.vaddr +% s.offset;
+}
+
+const ProgramHeaders = struct { offset: u64, count: u16 };
+
+fn program_headers(file: []const u8) Error!?ProgramHeaders {
+    if (file.len < 4 or !std.mem.eql(u8, file[0..4], "\x7fELF")) return error.NotElf;
+    if (file.len < 64) return error.Truncated;
+    if (file[4] != 2 or file[5] != 1) return error.Unsupported;
+
+    const phoff = u64_read(file, 32);
+    const phentsize = u16_read(file, 54);
+    const phnum = u16_read(file, 56);
+    if (phnum == 0) return null;
+    if (phentsize != phdr_size) return error.Unsupported;
+    const table = std.math.mul(u64, phnum, phdr_size) catch return error.Truncated;
+    const table_end = std.math.add(u64, phoff, table) catch return error.Truncated;
+    if (table_end > file.len) return error.Truncated;
+    return .{ .offset = phoff, .count = phnum };
+}
+
+pub const Segment = struct { offset: u64, vaddr: u64, filesz: u64 };
+
+fn segment_executable(file: []const u8, h: ProgramHeaders, index: u64) ?Segment {
+    const base: usize = @intCast(h.offset + index * phdr_size);
+    if (u32_read(file, base) != PT_LOAD) return null;
+    if (u32_read(file, base + 4) & PF_X == 0) return null;
+    return .{
+        .offset = u64_read(file, base + 8),
+        .vaddr = u64_read(file, base + 16),
+        .filesz = u64_read(file, base + 32),
+    };
 }
 
 const Header = struct { name: u32, kind: u32, flags: u64, vaddr: u64, offset: u64, size: u64 };
@@ -171,15 +204,7 @@ fn u64_put(b: []u8, at: usize, v: u64) void {
     std.mem.writeInt(u64, b[at..][0..8], v, .little);
 }
 
-fn section_put(
-    b: []u8,
-    index: usize,
-    name: u32,
-    kind: u32,
-    vaddr: u64,
-    offset: u64,
-    size: u64,
-) void {
+fn section_put(b: []u8, index: usize, name: u32, kind: u32, vaddr: u64, offset: u64, size: u64) void {
     const base = 104 + index * shdr_size;
     u32_put(b, base, name);
     u32_put(b, base + 4, kind);

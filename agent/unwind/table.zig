@@ -106,6 +106,7 @@ pub const Table = struct {
     base: u64,
     end: u32,
     rows: []const Row,
+    go: unwind_wire.GoOffsets = .{},
 
     pub fn init(table: *Table, gpa: std.mem.Allocator, fdes: []const eh_frame.Fde) !void {
         if (fdes.len == 0) {
@@ -151,6 +152,7 @@ pub const Table = struct {
         table: *Table,
         gpa: std.mem.Allocator,
         pclntab: *const go_pclntab.Pclntab,
+        go: ?unwind_wire.GoOffsets,
     ) !void {
         if (pclntab.function_count == 0) {
             table.* = .{ .base = 0, .end = 0, .rows = &.{} };
@@ -167,7 +169,9 @@ pub const Table = struct {
             const function = try pclntab.function(index);
             if (function.entry < cursor) return error.Overlap;
             if (function.entry > cursor) try push(gpa, &rows, cursor - base, gap_row);
-            cursor = try go_function_push(gpa, &rows, base, &function);
+            const name = pclntab.name_of(index);
+            const switch_row = if (go != null) switch_row_of(name) else null;
+            cursor = try go_function_push(gpa, &rows, base, &function, switch_row);
         }
         try push(gpa, &rows, cursor - base, gap_row);
         const end = std.math.cast(u32, cursor - base) orelse return error.TooLarge;
@@ -176,6 +180,7 @@ pub const Table = struct {
             .base = base,
             .end = end,
             .rows = try rows.toOwnedSlice(gpa),
+            .go = go orelse .{},
         };
     }
 
@@ -184,10 +189,15 @@ pub const Table = struct {
         rows: *std.ArrayList(Row),
         base: u64,
         function: *const go_pclntab.Function,
+        switch_row: ?Row,
     ) !u64 {
         assert(function.entry >= base);
         if (function.flag & go_pclntab.flag_top_frame != 0) {
             try push(gpa, rows, function.entry - base, end_row);
+            return function.next_entry;
+        }
+        if (switch_row) |row| {
+            try push(gpa, rows, function.entry - base, row);
             return function.next_entry;
         }
         const sp_unknown = function.pcsp.len == 0;
@@ -205,6 +215,23 @@ pub const Table = struct {
             end = range.end;
         }
         return end;
+    }
+
+    fn switch_row_of(name_given: []const u8) ?Row {
+        const name = if (std.mem.endsWith(u8, name_given, ".abi0"))
+            name_given[0 .. name_given.len - ".abi0".len]
+        else
+            name_given;
+        const sched = [_][]const u8{ "runtime.morestack", "runtime.mcall", "runtime.systemstack" };
+        const vdso = [_][]const u8{ "runtime.nanotime1", "runtime.walltime", "time.now" };
+        for (sched) |known| if (std.mem.eql(u8, name, known)) return row_of(.go_sched);
+        for (vdso) |known| if (std.mem.eql(u8, name, known)) return row_of(.go_vdso);
+        return null;
+    }
+
+    fn row_of(cfa_type: CfaType) Row {
+        const kind = @intFromEnum(cfa_type);
+        return .{ .pc = 0, .cfa_offset = 0, .cfa_type = kind, .rbp_type = 0, .rbp_offset = 0 };
     }
 
     fn row_go(sp_delta: i32) Row {

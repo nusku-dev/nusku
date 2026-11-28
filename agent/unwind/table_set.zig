@@ -69,6 +69,7 @@ pub const TableSet = struct {
             .row_start = row_start,
             .row_count = row_count,
             .end = module_table.end,
+            .go = module_table.go,
         };
         set.rows_count += row_count;
         set.modules_count += 1;

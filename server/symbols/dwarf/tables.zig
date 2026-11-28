@@ -1,10 +1,10 @@
 //! DWARF line tables: which file and line each address came from.
 const std = @import("std");
-const reader = @import("reader.zig");
-const decoder = @import("decoder.zig");
+const dwarf = @import("shared").dwarf;
 
-const Reader = reader.Reader;
-const Error = reader.Error;
+const Reader = dwarf.Reader;
+const Error = dwarf.Error;
+const decoder = dwarf.decoder;
 
 pub const Row = struct {
     address: u64,

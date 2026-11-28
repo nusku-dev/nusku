@@ -3,6 +3,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const elf = @import("../elf/elf.zig");
+const go_runtime = @import("go_runtime.zig");
 const target = @import("../target/target.zig");
 const registry_file = @import("registry.zig");
 const process_table = @import("process_table.zig");
@@ -152,8 +153,7 @@ fn outcome_for(context: BuildContext, region: *const Region) !Outcome {
     };
     defer file.deinit();
 
-    const loading = elf.file.load(&file, &elf.file.sections_unwind, elf.file.file_size_max);
-    var loaded = loading catch |err| switch (err) {
+    var loaded = load_for_unwinding(&file) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             log.debug("binary not readable as ELF", .{ .path = region.path, .cause = err });
@@ -216,6 +216,15 @@ fn identity_of(region: *const Region) Identity {
     return .{ .file = .{ .inode = region.inode, .path = region.path } };
 }
 
+fn load_for_unwinding(file: *const @import("shared").File) !elf.file.Loaded {
+    var loaded = try elf.file.load(file, &elf.file.sections_unwind, elf.file.file_size_max);
+    const is_go = (@import("shared").elf.find(loaded.bytes, ".gopclntab") catch null) != null;
+    if (!is_go) return loaded;
+    loaded.deinit();
+    const go_sections = elf.file.sections_unwind ++ go_runtime.sections;
+    return elf.file.load(file, &go_sections, elf.file.file_size_max);
+}
+
 const testing = std.testing;
 const os = @import("../os/os.zig");
 
@@ -226,6 +235,7 @@ test {
     _ = @import("module.zig");
     _ = process_table;
     _ = registry_file;
+    _ = go_runtime;
     _ = @import("table.zig");
     _ = @import("table_set.zig");
 }

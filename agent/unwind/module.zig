@@ -5,6 +5,7 @@ const assert = std.debug.assert;
 const eh_frame = @import("../elf/elf.zig").eh_frame;
 const elf = @import("shared").elf;
 const go_pclntab = @import("go_pclntab.zig");
+const go_runtime = @import("go_runtime.zig");
 const table = @import("table.zig");
 
 pub const Mapping = struct {
@@ -32,7 +33,7 @@ pub fn table_build(target: *table.Table, gpa: std.mem.Allocator, mapping: Mappin
         const text = (try elf.find(mapping.file, ".text")) orelse
             return error.NoUnwindInfo;
         const pclntab = try go_pclntab.Pclntab.init(bytes, text.vaddr);
-        try target.init_go(gpa, &pclntab);
+        try target.init_go(gpa, &pclntab, go_runtime.offsets_of(gpa, mapping.file));
         return .{ .bias = bias, .source = .go_pclntab };
     }
 

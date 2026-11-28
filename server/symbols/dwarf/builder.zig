@@ -1,16 +1,16 @@
 //! build and Parses DWARF sections and builds the debug information
 
 const std = @import("std");
-const decoder = @import("decoder.zig");
-const reader = @import("reader.zig");
 const tables = @import("tables.zig");
 const i = @import("info.zig");
-const ab = @import("abbrev.zig");
+const dwarf = @import("shared").dwarf;
 
-const Reader = reader.Reader;
+const Reader = dwarf.Reader;
+const decoder = dwarf.decoder;
 const Value = decoder.Value;
-const Abbrevs = ab.Abbrevs;
-pub const Error = reader.Error;
+const Abbrevs = dwarf.Abbrevs;
+const Abbrev = dwarf.Abbrev;
+pub const Error = dwarf.Error;
 
 const Func = i.Func;
 const Range = i.Range;
@@ -265,7 +265,7 @@ const Builder = struct {
         return index;
     }
 
-    fn die_read(r: *Reader, abbrev: *const ab.Abbrev, unit: *const Unit) Error!Die {
+    fn die_read(r: *Reader, abbrev: *const Abbrev, unit: *const Unit) Error!Die {
         var die = Die{ .tag = abbrev.tag };
         for (abbrev.attrs) |attr| {
             const value = try decoder.value_read(r, attr.form, attr.implicit, unit.format);

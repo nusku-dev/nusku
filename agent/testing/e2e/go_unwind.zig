@@ -134,3 +134,75 @@ test "a running Go program: the caller of a frameless function is found (needs r
     try testing.expect(leaf_samples_called_by_middle * 10 >= leaf_samples * 9);
     try testing.expect(complete * 10 >= window.samples * 9);
 }
+
+const switches_source = @embedFile("go/switches.go");
+
+const Switched = struct { samples: u64 = 0, whole: u64 = 0, reach_work: u64 = 0 };
+
+fn switched_count(into: *Switched, stack: collector_file.Stack, work: go_build.Range) void {
+    into.samples += stack.samples;
+    if (stack.stop == .end) into.whole += stack.samples;
+    for (stack.user[1..]) |address| {
+        if (address - 1 >= work.start and address - 1 < work.end) {
+            into.reach_work += stack.samples;
+            return;
+        }
+    }
+}
+
+test "a running Go program: clock reads and stack growth go on to the goroutine (needs root)" {
+    if (std.os.linux.geteuid() != 0) return error.SkipZigTest;
+    var plain = (try go_build.build(testing.allocator, switches_source, "")) orelse
+        return error.SkipZigTest;
+    defer plain.deinit(testing.allocator);
+    const file = try go_build.file_read_whole(testing.allocator, plain.binary);
+    defer testing.allocator.free(file);
+    const work = (try go_build.symbol_range(file, "main.work")).?;
+    const newstack = (try go_build.symbol_range(file, "runtime.newstack")).?;
+
+    const child = try go_build.spawn(plain.binary);
+    defer child_process.child_reap(child);
+    timer.sleep_ms(50);
+    var target = try Target.init(testing.allocator, child);
+    defer target.deinit(testing.allocator);
+    const metrics = try testing.allocator.create(Metrics);
+    defer testing.allocator.destroy(metrics);
+    try metrics.init(testing.allocator, &target, .{ .metrics = .initOne(.cpu) });
+    defer metrics.deinit(testing.allocator);
+    var round: u32 = 0;
+    while (round < 15) : (round += 1) {
+        timer.sleep_ms(100);
+        try metrics.tick(testing.allocator, &target);
+    }
+    const windows = try metrics.collect(testing.allocator, &target);
+    const window = windows.cpu orelse return error.TestUnexpectedResult;
+
+    var vdso_range = go_build.Range{ .start = 0, .end = 0 };
+    for (target.regions) |region| {
+        if (!std.mem.eql(u8, region.path, "[vdso]")) continue;
+        vdso_range = .{ .start = region.start, .end = region.end };
+    }
+    var clock = Switched{};
+    var growth = Switched{};
+    for (window.stacks) |stack| {
+        if (stack.user.len < 2) continue;
+        const leaf = stack.user[0];
+        if (leaf >= vdso_range.start and leaf < vdso_range.end) switched_count(&clock, stack, work);
+        for (stack.user) |address| {
+            if (address >= newstack.start and address < newstack.end + 1) {
+                switched_count(&growth, stack, work);
+                break;
+            }
+        }
+    }
+    std.debug.print("go switches: clock {d} samples, {d} whole, {d} reach main.work; " ++
+        "growth {d} samples, {d} whole, {d} reach main.work\n", .{
+        clock.samples,  clock.whole,  clock.reach_work,
+        growth.samples, growth.whole, growth.reach_work,
+    });
+    try testing.expect(clock.samples > 0 and growth.samples > 0);
+    try testing.expect(clock.whole * 10 >= clock.samples * 9);
+    try testing.expect(clock.reach_work * 10 >= clock.samples * 9);
+    try testing.expect(growth.whole * 10 >= growth.samples * 9);
+    try testing.expect(growth.reach_work * 10 >= growth.samples * 8);
+}

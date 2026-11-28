@@ -4,11 +4,6 @@ const std = @import("std");
 const elf = @import("shared").elf;
 const Sections = @import("builder.zig").Sections;
 
-const chdr_bytes = 24;
-const elfcompress_zlib = 1;
-const elfcompress_zstd = 2;
-const section_bytes_max = 1024 * 1024 * 1024;
-
 pub const Error = error{ OutOfMemory, Malformed };
 
 pub const names = .{
@@ -40,7 +35,7 @@ pub const Loaded = struct {
         raw: []const u8,
         compressed: bool,
     ) Error!void {
-        const bytes = if (compressed) try decompress(gpa, raw) else raw;
+        const bytes = if (compressed) try elf.decompress(gpa, raw) else raw;
         if (compressed) loaded.owned[index] = @constCast(bytes);
         inline for (names, 0..) |pair, i| {
             if (i == index) @field(loaded.sections, pair[0]) = bytes;
@@ -60,31 +55,4 @@ pub fn from_elf(gpa: std.mem.Allocator, file: []const u8) Error!Loaded {
         }
     }
     return loaded;
-}
-
-pub fn decompress(gpa: std.mem.Allocator, raw: []const u8) Error![]u8 {
-    if (raw.len < chdr_bytes) return error.Malformed;
-    const kind = std.mem.readInt(u32, raw[0..4], .little);
-    const size = std.mem.readInt(u64, raw[8..16], .little);
-    if (size == 0 or size > section_bytes_max) return error.Malformed;
-    const out = try gpa.alloc(u8, @intCast(size));
-    errdefer gpa.free(out);
-    var input: std.Io.Reader = .fixed(raw[chdr_bytes..]);
-    switch (kind) {
-        elfcompress_zlib => {
-            const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
-            defer gpa.free(window);
-            var flate: std.compress.flate.Decompress = .init(&input, .zlib, window);
-            flate.reader.readSliceAll(out) catch return error.Malformed;
-        },
-        elfcompress_zstd => {
-            const zstd_lib = std.compress.zstd;
-            const window = try gpa.alloc(u8, zstd_lib.default_window_len + zstd_lib.block_size_max);
-            defer gpa.free(window);
-            var zstd: zstd_lib.Decompress = .init(&input, window, .{});
-            zstd.reader.readSliceAll(out) catch return error.Malformed;
-        },
-        else => return error.Malformed,
-    }
-    return out;
 }

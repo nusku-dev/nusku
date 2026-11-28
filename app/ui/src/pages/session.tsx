@@ -318,7 +318,7 @@ function QualityDetails({ q, sampleHz }: { q: Quality; sampleHz: number }) {
       ? [
           {
             level: "warn" as const,
-            text: `${formatPercent(q.goSwitch, q.samples)} of samples stop where Go switches to its system stack (stack growth, the scheduler, clock reads): their callers are not shown yet.`,
+            text: `${formatPercent(q.goSwitch, q.samples)} of samples stop where Go switches to its system stack: following it needs the binary's DWARF (was it built with -ldflags=-w?).`,
           },
         ]
       : []),

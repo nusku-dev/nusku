@@ -7,3 +7,10 @@ pub const Location = info.Location;
 pub const depth_max = info.depth_max;
 pub const DebugInfo = info.DebugInfo;
 pub const build = builder.build;
+
+test {
+    _ = @import("tables.zig");
+    _ = info;
+    _ = builder;
+    _ = dwarf_load;
+}
