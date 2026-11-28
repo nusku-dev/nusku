@@ -13,6 +13,8 @@
 #   path  hot;hot_leaf 50   the stack ends in hot, then hot_leaf, in 50% of the samples
 #   kernel 40               the stack has a kernel frame in 40% of the samples, +-5 points
 #   kernel_named >95        of those, the share whose kernel frames have names
+#   go_switch <5            at most 5% of the samples stop where Go switches to its system stack
+#                           (counted apart from "complete": a known limit, not a lost stack)
 
 set -eu
 
@@ -31,6 +33,7 @@ FNR == NR {
     samples_of[stacks] = count
     samples += count
     if (frames[1] == "[incomplete]") stopped += count
+    if (frames[1] == "[go system stack]") switched += count
     next
 }
 
@@ -74,6 +77,7 @@ function ends_with(s, path,    wanted, n, i, at) {
 
 function within(got, expected, tolerance) {
     if (expected ~ /^>/) return got >= substr(expected, 2) + 0
+    if (expected ~ /^</) return got <= substr(expected, 2) + 0
     return got >= expected - tolerance && got <= expected + tolerance
 }
 
@@ -126,6 +130,11 @@ function result(ok, what, got, expected) {
         got = share("kernel", "")
         shown = expected ~ /^>/ ? expected "%" : expected "% +-" tolerance
         result(within(got, expected, tolerance), "kernel", sprintf("%.1f%%", got), shown)
+        next
+    }
+    if (kind == "go_switch") {
+        got = samples > 0 ? 100 * switched / samples : 0
+        result(within(got, $2, 0), "stopped at the Go system stack", sprintf("%.1f%%", got), $2 "%")
         next
     }
     if (kind == "complete") {

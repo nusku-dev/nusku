@@ -1,5 +1,6 @@
 samples   >300
 complete  >95                  # unwound with the pclntab
+go_switch <5                   # stops where Go moves to its system stack: morestack, mcall, clock reads
 self  main.hotLeaf     50
 self  main.recurse     30
 total main.cold        20

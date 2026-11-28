@@ -381,7 +381,7 @@ fn settings_read(ctx: *cli.Context) error{InvalidUsage}!Settings {
     }
     if (ctx.isSet("save")) {
         const label = std.mem.trim(u8, ctx.getString("save"), " ");
-        if (label.len == 0 or label.len > client.runs.label_bytes_max) {
+        if (label.len == 0 or label.len > client.store.label_bytes_max) {
             return ctx.usageFail("--save needs a label of 1 to {d} characters", .{
                 client.store.label_bytes_max,
             });

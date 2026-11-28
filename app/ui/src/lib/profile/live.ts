@@ -7,7 +7,7 @@ import {
   type FunctionStat,
   type TreeNode,
 } from "./analyze";
-import type { ModuleGap, Quality } from "./quality";
+import { goSwitch, type ModuleGap, type Quality } from "./quality";
 import type { Frame, Profile, Stack } from "./types";
 
 interface Cell {
@@ -31,6 +31,7 @@ export interface Change {
 export interface Engine {
   stacks: Map<number, Stack>;
   incomplete: number;
+  goSwitch: number;
   unnamed: number;
   gaps: Map<string, ModuleGap>;
   stats: Map<string, FunctionStat>;
@@ -75,6 +76,7 @@ export function engineCreate(): Engine {
   return {
     stacks: new Map(),
     incomplete: 0,
+    goSwitch: 0,
     unnamed: 0,
     gaps: new Map(),
     stats: new Map(),
@@ -133,6 +135,7 @@ export function engineUpdate(
   const quality: Quality = {
     samples: engine.root.total,
     incomplete: engine.incomplete,
+    goSwitch: engine.goSwitch,
     unnamed: engine.unnamed,
     lost: profile.lost,
     rejected: profile.rejected,
@@ -170,7 +173,8 @@ function cellView(at: Cell) {
 const vdso = "[vdso]";
 
 function qualityAdd(engine: Engine, stack: Stack, delta: number) {
-  if (!stack.complete) engine.incomplete += delta;
+  if (goSwitch(stack)) engine.goSwitch += delta;
+  else if (!stack.complete) engine.incomplete += delta;
   if (stack.frames[0] && !stack.frames[0].function) engine.unnamed += delta;
   const counted = new Set<string>();
   for (const frame of stack.frames) {

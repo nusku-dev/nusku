@@ -81,7 +81,9 @@ pub fn folded_write(w: *Writer, arena: std.mem.Allocator, profile: *const Profil
     var names = Names{ .arena = arena };
     for (profile.stacks) |stack| {
         if (stack.frames.len == 0) continue;
-        if (!stack.complete) try w.writeAll("[incomplete];");
+        if (!stack.complete) {
+            try w.writeAll(if (go_switch(stack)) go_marker ++ ";" else "[incomplete];");
+        }
         var position = stack.frames.len;
         while (position > 0) {
             position -= 1;
@@ -329,7 +331,10 @@ const Tree = struct {
     fn add(tree: *Tree, names: *Names, stack: server.SymbolStack) !void {
         var current: u32 = 0;
         tree.nodes.items[0].total += stack.samples;
-        if (!stack.complete) current = try tree.step(current, incomplete, null, stack.samples);
+        if (!stack.complete) {
+            const marker = if (go_switch(stack)) go_marker else incomplete;
+            current = try tree.step(current, marker, null, stack.samples);
+        }
 
         var position = stack.frames.len;
         while (position > 0) {
@@ -471,10 +476,15 @@ fn quality_write(
     profile: *const Profile,
 ) !void {
     var incomplete: u64 = 0;
+    var switched: u64 = 0;
     var unnamed: u64 = 0;
     var gaps: std.StringArrayHashMapUnmanaged(Gap) = .empty;
     for (profile.stacks) |stack| {
-        if (!stack.complete) incomplete += stack.samples;
+        if (go_switch(stack)) {
+            switched += stack.samples;
+        } else if (!stack.complete) {
+            incomplete += stack.samples;
+        }
         if (stack.frames.len > 0 and stack.frames[0].function == null) unnamed += stack.samples;
         try gaps_count(arena, &gaps, stack);
     }
@@ -486,6 +496,12 @@ fn quality_write(
         const share = tenths(@min(incomplete, samples), samples);
         const text = "{d}.{d}% of samples have a stack cut short: " ++
             "the unwinder could not go further, their callers are missing";
+        try quality_line(w, style, false, text, .{ share / 10, share % 10 });
+    }
+    if (switched > 0) {
+        const share = tenths(@min(switched, samples), samples);
+        const text = "{d}.{d}% of samples stop where Go switches to its system stack " ++
+            "(stack growth, the scheduler, clock reads): their callers are not shown yet";
         try quality_line(w, style, false, text, .{ share / 10, share % 10 });
     }
     if (unnamed == 0) {
@@ -640,6 +656,33 @@ fn module_of(frame: Frame) ?[]const u8 {
     if (frame.function == null) return null;
     const module = frame.module orelse return null;
     return std.fs.path.basename(module);
+}
+
+pub const go_marker = "[go system stack]";
+
+const go_switches = [_][]const u8{
+    "runtime.morestack",
+    "runtime.mcall",
+    "runtime.systemstack",
+    "runtime.nanotime1",
+    "runtime.walltime",
+    "runtime.sigreturn",
+};
+
+/// A Go stack cut short where Go moves to its system stack: the unwinder stops there, as
+/// the goroutine's own frames are on another stack.
+pub fn go_switch(stack: server.SymbolStack) bool {
+    if (stack.complete or stack.frames.len == 0) return false;
+    const outermost = stack.frames[stack.frames.len - 1].function orelse return false;
+    for (go_switches) |prefix| {
+        if (std.mem.startsWith(u8, outermost, prefix)) return true;
+    }
+    if (!std.mem.eql(u8, outermost, "time.now")) return false;
+    for (stack.frames) |frame| {
+        const module = frame.module orelse continue;
+        if (std.mem.eql(u8, module, "[vdso]")) return true;
+    }
+    return false;
 }
 
 const testing = std.testing;

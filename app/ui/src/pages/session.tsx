@@ -314,6 +314,14 @@ function QualityDetails({ q, sampleHz }: { q: Quality; sampleHz: number }) {
           ? "Every sample has a whole stack, from the function running out to the program start."
           : `${formatPercent(q.incomplete, q.samples)} of samples have a stack that stops early: the unwinder could not go further, so their callers are missing.`,
     },
+    ...(q.goSwitch > 0
+      ? [
+          {
+            level: "warn" as const,
+            text: `${formatPercent(q.goSwitch, q.samples)} of samples stop where Go switches to its system stack (stack growth, the scheduler, clock reads): their callers are not shown yet.`,
+          },
+        ]
+      : []),
     {
       level: share(q.unnamed, q.samples) < 0.05 ? "ok" : "warn",
       text:
